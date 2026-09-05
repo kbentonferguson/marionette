@@ -910,6 +910,34 @@ class ToolDispatchMixin:
         phases = getattr(self, "_todo_phases", None) or []
         return snapshot_payload(phases)
 
+    def apply_todo_landing(self, objective: str, files=None):
+        """Best-effort: complete one open todo that uniquely matches a landing."""
+        from .todo import apply_successful_landing, snapshot_payload
+
+        descriptions = []
+        if objective:
+            descriptions.append(str(objective))
+        for path in files or []:
+            text = str(path or "").strip()
+            if text:
+                descriptions.append(text)
+        if not descriptions:
+            return None
+        try:
+            sid = self._todo_session_id()
+            store = self._get_todo_store()
+            current = store.load(session_id=sid) if sid else []
+            if not current:
+                current = getattr(self, "_todo_phases", None) or []
+            nxt, hit = apply_successful_landing(current, descriptions)
+            if not hit:
+                return None
+            self._todo_phases = nxt
+            store.save(nxt, session_id=sid)
+            return snapshot_payload(nxt, "done")
+        except Exception:
+            return None
+
     def _do_todo(self, act: PilotAction) -> tuple[bool, str, Any]:
         from .todo import apply_todo_op, format_todo_tree, snapshot_payload
 

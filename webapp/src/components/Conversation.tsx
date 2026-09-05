@@ -2338,6 +2338,10 @@ export default function Conversation({
   const handleSwarmResult = (d: any) => {
     const job_id = d.job_id;
     if (!job_id) return;
+    if (d.todos && Array.isArray(d.todos.phases)) {
+      const todoSid = String(d.session_id || "").trim();
+      if (todoSid) publishSessionTodos(d.todos, todoSid);
+    }
 
     // Ref is a fast path only — applySwarmResultToItems is the real idempotency
     // gate so poll/SSE/rehydrate stay safe after session-switch clears the ref.

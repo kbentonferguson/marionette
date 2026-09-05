@@ -474,3 +474,88 @@ def test_opencode_go_curated_bound_into_auto_registry():
     assert "gpt-5.6-luna" in slugs
     assert "deepseek-v4-flash" in slugs
     assert slugs == set(CURATED_MODELS)
+
+
+def test_exposed_catalog_lists_enabled_astra_ahead_of_file_order_junk(
+    monkeypatch, tmp_path,
+):
+    """Settings-enabled Astra must appear in the 16-slot hint.
+
+    File order puts cursor peers and openai-api leftovers first; Astra is last.
+    Yesterday's registry write is not enough if the exposed list is file order.
+    """
+    models_path = tmp_path / "models.json"
+    junk = [
+        {"id": f"cursor/filler-{i}", "adapter": "cursor"}
+        for i in range(14)
+    ]
+    models_path.write_text(
+        json.dumps({
+            "models": junk + [
+                {"id": "cursor/gpt-5-6-luna", "adapter": "cursor"},
+                {"id": "cursor/gpt-5-6-sol", "adapter": "cursor"},
+                {
+                    "id": "agentic/gpt-3.5-turbo",
+                    "adapter": "agentic",
+                    "adapter_model_name": "gpt-3.5-turbo",
+                    "payload_defaults": {"provider": "openai-api"},
+                },
+                {
+                    "id": "agentic/openai-codex/gpt-5.6-luna",
+                    "adapter": "agentic",
+                    "adapter_model_name": "gpt-5.6-luna",
+                    "payload_defaults": {"provider": "openai-codex"},
+                },
+                {
+                    "id": "agentic/openai-codex/gpt-6-astra",
+                    "adapter": "agentic",
+                    "adapter_model_name": "gpt-6-astra",
+                    "payload_defaults": {"provider": "openai-codex"},
+                },
+                {
+                    "id": "agentic/moonshotai/kimi-k3",
+                    "adapter": "agentic",
+                    "adapter_model_name": "moonshotai/kimi-k3",
+                    "payload_defaults": {"provider": "openrouter"},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"openai-codex", "openrouter"},
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: [
+            "openai-codex:gpt-5.6-luna",
+            "openai-codex:gpt-6-astra",
+            "openrouter:moonshotai/kimi-k3",
+        ],
+    )
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic", "cursor"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
+    )
+
+    from harness.swarm_model_pin import (
+        list_available_worker_models,
+        swarm_model_pin_hint,
+    )
+
+    available = list_available_worker_models(
+        limit=16, adapters={"agentic", "cursor"},
+    )
+    assert "agentic/openai-codex/gpt-6-astra" in available
+    assert "agentic/openai-codex/gpt-5.6-luna" in available
+    assert "agentic/gpt-3.5-turbo" not in available
+    assert "cursor/filler-0" not in available
+    hint = swarm_model_pin_hint(limit=16)
+    assert "gpt-6-astra" in hint
+    assert "gpt-3.5-turbo" not in hint
