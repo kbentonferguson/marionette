@@ -1683,6 +1683,23 @@ class ConversationJobsMixin:
                         msg_content = f"{msg_content}\n{boundary}"
                     self._history.append({"role": "assistant", "content": msg_content})
 
+                    landing = None
+                    try:
+                        from harness.todo import should_fold_todo_landing
+
+                        if should_fold_todo_landing(
+                            applied,
+                            applied_files or [],
+                            failed=failed,
+                            analysis_ok=analysis_ok,
+                            error=display_error,
+                        ):
+                            landing = self.apply_todo_landing(
+                                objective, applied_files or [],
+                            )
+                    except Exception:
+                        landing = None
+
                     # Persist the outcome to the display transcript so the green/red
                     # "swarm done / swarm failed" badge survives a session reload or
                     # app restart -- the live ConvEvent below only reaches a renderer
@@ -1740,6 +1757,11 @@ class ConversationJobsMixin:
                             display_result[_rk] = value
                             if isinstance(res_job, dict) and res_job.get(_rk) in (None, "", [], {}):
                                 res_job[_rk] = value
+                    landing_sid = str(getattr(self, "harness_session_id", "") or "").strip()
+                    if landing:
+                        display_result["todos"] = landing
+                        if landing_sid:
+                            display_result["session_id"] = landing_sid
                     self._display_transcript.append(display_result)
                     if delivery is not None:
                         try:
@@ -1754,12 +1776,17 @@ class ConversationJobsMixin:
                         pass
 
                     # Yield ConvEvent kind="swarm_result" (per-job; badges depend on it)
-                    yield ConvEvent("swarm_result", {
+                    event_data = {
                         "job_id": job_id,
                         "objective": objective,
                         "result": res_job,
-                        "message": msg_content
-                    })
+                        "message": msg_content,
+                    }
+                    if landing:
+                        event_data["todos"] = landing
+                        if landing_sid:
+                            event_data["session_id"] = landing_sid
+                    yield ConvEvent("swarm_result", event_data)
 
                     pending_review = res_job.get("pending_review")
                     if pending_review:

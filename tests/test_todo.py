@@ -3,6 +3,7 @@ from __future__ import annotations
 from harness.pilot import from_wire
 from harness.send_loop_phases import LOCAL_ACTION_KINDS
 from harness.todo import (
+    apply_successful_landing,
     apply_todo_op,
     export_todo_markdown,
     format_todo_tree,
@@ -14,6 +15,7 @@ from harness.todo import (
     phases_from_raw,
     phases_to_markdown,
     SessionTodoStore,
+    should_fold_todo_landing,
     todo_matches_any_description,
 )
 
@@ -266,6 +268,79 @@ def test_todo_matches_live_job_label():
     assert todo_matches_any_description("fix", ["fixture loader"]) is False
 
 
+def test_containment_misses_wave_landing_labels():
+    wave = (
+        "Implement versioned ruleset validator for part legality "
+        "(BX vs CX, banlists, duplicate parts check)"
+    )
+    parser = (
+        "Create src/lib/rulesets/parser.ts with a pure ruleset definition and "
+        "validator for Beyblade X and deck legality constraints."
+    )
+    assert todo_matches_any_description(wave, [parser]) is False
+
+
+def test_should_fold_todo_landing_requires_applied_files():
+    assert should_fold_todo_landing(
+        True, ["src/lib/rulesets/parser.ts"], failed=False, analysis_ok=False,
+    )
+    assert not should_fold_todo_landing(
+        False, [], failed=True, error="agentic_no_diff",
+    )
+    assert not should_fold_todo_landing(
+        False, [], analysis_ok=True,
+    )
+
+
+def test_successful_landing_completes_matching_wave_item():
+    phases, _, _ = _apply([], op="init", list=[
+        {"phase": "Wave 1 — Station & Stadium Operations", "items": [
+            "Add stadium/station schema (SQLite & Postgres) + migration and station service logic",
+            "Implement station management server actions and UI controls (station list, queue dispatch, match call)",
+            "Validate Wave 1 with typecheck, lint, unit/integration tests, and build",
+        ]},
+        {"phase": "Wave 3 — Deck Legality & Ruleset Engine", "items": [
+            "Implement versioned ruleset validator for part legality (BX vs CX, banlists, duplicate parts check)",
+            "Validate Wave 3 with domain unit tests, typecheck, lint, and build",
+        ]},
+    ])
+    phases[0].tasks[0].status = "completed"
+    phases[0].tasks[1].status = "in_progress"
+
+    parser = (
+        "Create src/lib/rulesets/parser.ts with a pure ruleset definition and "
+        "validator for Beyblade X and deck legality constraints."
+    )
+    nxt, hit = apply_successful_landing(phases, [parser, "src/lib/rulesets/parser.ts"])
+    assert hit == phases[1].tasks[0].content
+    assert nxt[1].tasks[0].status == "completed"
+    assert nxt[1].tasks[1].status == "pending"
+    assert nxt[0].tasks[1].status == "in_progress"
+
+    scheduler = (
+        "STATION MANAGEMENT SLICE — Create src/lib/stations/scheduler.ts "
+        "for queueing and match allocation."
+    )
+    same, missed = apply_successful_landing(nxt, [scheduler, "src/lib/stations/scheduler.ts"])
+    assert missed is None
+    assert same[0].tasks[1].status == "in_progress"
+    assert same[0].tasks[2].status == "pending"
+
+    legality = "Create src/lib/deck/legality-rules.ts and src/lib/deck/legality-rules.test.ts"
+    fresh, _, _ = _apply([], op="init", list=[
+        {"phase": "Wave 3 — Deck Legality & Ruleset Engine", "items": [
+            "Implement versioned ruleset validator for part legality (BX vs CX, banlists, duplicate parts check)",
+            "Validate Wave 3 with domain unit tests, typecheck, lint, and build",
+        ]},
+    ])
+    done, hit = apply_successful_landing(
+        fresh, [legality, "src/lib/deck/legality-rules.ts"],
+    )
+    assert hit == fresh[0].tasks[0].content
+    assert done[0].tasks[0].status == "completed"
+    assert done[0].tasks[1].status != "completed"
+
+
 def test_mixin_slash_persists(tmp_path):
     from types import SimpleNamespace
 
@@ -287,3 +362,85 @@ def test_mixin_slash_persists(tmp_path):
     assert (tmp_path / "TODO.md").is_file()
     reloaded = SessionTodoStore(str(tmp_path)).load()
     assert reloaded[0].tasks[0].content == "hosted pari"
+
+
+def test_mixin_landing_persists_matching_wave(tmp_path):
+    from types import SimpleNamespace
+
+    from harness.pilot import PilotAction
+    from harness.tool_dispatch import ToolDispatchMixin
+
+    host = SimpleNamespace(
+        config=SimpleNamespace(state_dir=str(tmp_path), repo=str(tmp_path)),
+        state_dir=str(tmp_path),
+        harness_session_id="8cc8a1c2281d",
+        _todo_store=None,
+        _todo_phases=None,
+    )
+    host._todo_session_id = ToolDispatchMixin._todo_session_id.__get__(host)
+    host._get_todo_store = ToolDispatchMixin._get_todo_store.__get__(host)
+    host._do_todo = ToolDispatchMixin._do_todo.__get__(host)
+    host.apply_todo_landing = ToolDispatchMixin.apply_todo_landing.__get__(host)
+    ok, status, _val = host._do_todo(PilotAction(kind="todo", arguments={
+        "op": "init",
+        "list": [
+            {"phase": "Wave 3 — Deck Legality & Ruleset Engine", "items": [
+                "Implement versioned ruleset validator for part legality (BX vs CX, banlists, duplicate parts check)",
+                "Validate Wave 3 with domain unit tests, typecheck, lint, and build",
+            ]},
+        ],
+    }))
+    assert ok and status == "success"
+    snap = host.apply_todo_landing(
+        "Create src/lib/rulesets/parser.ts with a ruleset validator and deck legality constraints.",
+        ["src/lib/rulesets/parser.ts"],
+    )
+    assert snap and snap["op"] == "done"
+    assert snap["phases"][0]["tasks"][0]["status"] == "completed"
+    assert snap["phases"][0]["tasks"][1]["status"] != "completed"
+    stored = SessionTodoStore(str(tmp_path)).load("8cc8a1c2281d")
+    assert stored[0].tasks[0].status == "completed"
+
+
+def test_drain_swarm_result_includes_todo_landing(tmp_path):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.pilot import PilotAction
+
+    session = ConversationalSession(
+        HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path)),
+    )
+    session.harness_session_id = "8cc8a1c2281d"
+    session.reload_session_todos()
+    ok, status, _val = session._do_todo(PilotAction(kind="todo", arguments={
+        "op": "init",
+        "list": [
+            {"phase": "Wave 3 — Deck Legality & Ruleset Engine", "items": [
+                "Implement versioned ruleset validator for part legality (BX vs CX, banlists, duplicate parts check)",
+                "Validate Wave 3 with domain unit tests, typecheck, lint, and build",
+            ]},
+        ],
+    }))
+    assert ok and status == "success"
+    session._swarm_results.put({
+        "job_id": "local-parser",
+        "objective": (
+            "Create src/lib/rulesets/parser.ts with a ruleset validator "
+            "and deck legality constraints."
+        ),
+        "result": {
+            "applied": True,
+            "files": ["src/lib/rulesets/parser.ts"],
+            "summary": "ok",
+        },
+    })
+    events = list(session.drain_swarm_results())
+    result_ev = next(event for event in events if event.kind == "swarm_result")
+    assert result_ev.data["session_id"] == "8cc8a1c2281d"
+    assert result_ev.data["todos"]["phases"][0]["tasks"][0]["status"] == "completed"
+    assert result_ev.data["todos"]["phases"][0]["tasks"][1]["status"] != "completed"
+    display = next(
+        row for row in session._display_transcript
+        if isinstance(row, dict) and row.get("type") == "swarm_result"
+    )
+    assert display["todos"]["phases"][0]["tasks"][0]["status"] == "completed"

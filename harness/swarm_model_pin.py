@@ -215,36 +215,131 @@ def _registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
         return []
 
 
-def _agentic_registry_rows() -> list[dict]:
-    return _registry_rows(adapters={"agentic"})
+def _row_is_keyed_agentic(row: dict, keyed: set) -> bool:
+    adapter = str(row.get("adapter") or "").strip().lower()
+    if adapter != "agentic":
+        return True
+    defaults = row.get("payload_defaults")
+    provider = ""
+    if isinstance(defaults, dict):
+        provider = str(defaults.get("provider") or "").strip()
+    if keyed and provider and provider not in keyed:
+        return False
+    return True
 
 
-def list_available_agentic_worker_models(*, limit: int = 24) -> list[str]:
-    """Registry ids the agentic swarm router can actually pick right now."""
+def _usable_registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
     try:
         from .auto_registry import keyed_agentic_providers
 
         keyed = keyed_agentic_providers()
     except Exception as e:
-        _diag("swarm_model_pin.keyed", e)
+        _diag("swarm_model_pin.keyed_rows", e)
         keyed = set()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in _registry_rows(adapters=adapters):
+        mid = str(row.get("id") or "").strip()
+        if not mid or mid.lower() in seen:
+            continue
+        if not _row_is_keyed_agentic(row, keyed):
+            continue
+        seen.add(mid.lower())
+        out.append(row)
+    return out
+
+
+def _spec_preferred_registry_ids(spec: str) -> list[str]:
+    """Best registry ids for a Settings spec — agentic provider rows first."""
+    provider, model = _parse_pin_provider_model(spec)
+    out: list[str] = []
+    cursor_providers = {"cursor", "cursor-cli", "cursor-sdk"}
+    if provider and model:
+        if provider in cursor_providers:
+            out.append(f"cursor/{model}")
+        else:
+            out.append(f"agentic/{provider}/{model}")
+            out.append(f"agentic/{model}")
+    out.extend(pin_candidates(spec))
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for item in out:
+        key = item.lower()
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(item)
+    return uniq
+
+
+def _enabled_registry_ids(rows: list[dict]) -> list[str]:
+    """Settings-enabled picker specs mapped onto ids that exist in *rows*."""
+    try:
+        from .model_visibility import get_enabled
+
+        enabled = get_enabled()
+    except Exception as exc:
+        _diag("swarm_model_pin.enabled_ids", exc)
+        return []
+    if not enabled:
+        return []
+    by_id = {}
+    for row in rows:
+        mid = str(row.get("id") or "").strip()
+        if mid:
+            by_id[mid.lower()] = mid
     out: list[str] = []
     seen: set[str] = set()
-    for row in _agentic_registry_rows():
+    for spec in enabled:
+        hit = ""
+        for cand in _spec_preferred_registry_ids(spec):
+            found = by_id.get(cand.lower())
+            if found:
+                hit = found
+                break
+        if not hit:
+            provider, model = _parse_pin_provider_model(spec)
+            token = _model_family_token(model or spec)
+            if token and provider:
+                for row in rows:
+                    mid = str(row.get("id") or "").strip()
+                    if not mid or mid.lower() in seen:
+                        continue
+                    defaults = row.get("payload_defaults")
+                    row_prov = ""
+                    if isinstance(defaults, dict):
+                        row_prov = str(defaults.get("provider") or "").strip().lower()
+                    adapter = str(row.get("adapter") or "").strip().lower()
+                    if adapter != "agentic" or row_prov != provider:
+                        continue
+                    if _model_family_token(mid) == token:
+                        hit = mid
+                        break
+        if hit and hit.lower() not in seen:
+            seen.add(hit.lower())
+            out.append(hit)
+    return out
+
+
+def _ids_from_rows(rows: list[dict], limit: int) -> list[str]:
+    out: list[str] = []
+    for row in rows:
         mid = str(row.get("id") or "").strip()
-        if not mid or mid in seen:
+        if not mid:
             continue
-        provider = ""
-        defaults = row.get("payload_defaults")
-        if isinstance(defaults, dict):
-            provider = str(defaults.get("provider") or "").strip()
-        if keyed and provider and provider not in keyed:
-            continue
-        seen.add(mid)
         out.append(mid)
         if len(out) >= max(1, int(limit)):
             break
     return out
+
+
+def list_available_agentic_worker_models(*, limit: int = 24) -> list[str]:
+    """Registry ids the agentic swarm router can actually pick right now."""
+    rows = _usable_registry_rows(adapters={"agentic"})
+    preferred = _enabled_registry_ids(rows)
+    if preferred:
+        return preferred[: max(1, int(limit))]
+    return _ids_from_rows(rows, limit)
 
 
 def list_available_worker_models(
@@ -254,32 +349,11 @@ def list_available_worker_models(
 ) -> list[str]:
     """Registry ids across the allowed worker adapter union."""
     allow = set(adapters) if adapters is not None else None
-    try:
-        from .auto_registry import keyed_agentic_providers
-
-        keyed = keyed_agentic_providers()
-    except Exception as e:
-        _diag("swarm_model_pin.keyed_union", e)
-        keyed = set()
-    out: list[str] = []
-    seen: set[str] = set()
-    for row in _registry_rows(adapters=allow):
-        mid = str(row.get("id") or "").strip()
-        if not mid or mid in seen:
-            continue
-        adapter = str(row.get("adapter") or "").strip().lower()
-        if adapter == "agentic":
-            provider = ""
-            defaults = row.get("payload_defaults")
-            if isinstance(defaults, dict):
-                provider = str(defaults.get("provider") or "").strip()
-            if keyed and provider and provider not in keyed:
-                continue
-        seen.add(mid)
-        out.append(mid)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
+    rows = _usable_registry_rows(adapters=allow)
+    preferred = _enabled_registry_ids(rows)
+    if preferred:
+        return preferred[: max(1, int(limit))]
+    return _ids_from_rows(rows, limit)
 
 
 def swarm_model_pin_hint(*, limit: int = 16) -> str:

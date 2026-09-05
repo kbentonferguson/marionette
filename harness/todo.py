@@ -23,6 +23,60 @@ TODO_FILENAME = "session_todos.json"
 COLLAPSED_OPEN_CAP = 5
 COLLAPSED_CLOSED_CONTEXT = 2
 TODO_DESCRIPTION_MIN_OVERLAP = 6
+TODO_LANDING_MIN_TOKEN_OVERLAP = 3
+_LANDING_GENERIC_TOKENS = frozenset({
+    "implement",
+    "explore",
+    "audit",
+    "review",
+    "architect",
+    "worker",
+    "swarm",
+    "plan",
+    "agentic",
+    "analysis",
+    "parallel",
+    "wave",
+    "coder",
+    "create",
+    "add",
+    "edit",
+    "file",
+    "files",
+    "src",
+    "lib",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "test",
+    "tests",
+    "spec",
+    "only",
+    "other",
+    "with",
+    "from",
+    "the",
+    "and",
+    "for",
+    "via",
+    "using",
+    "new",
+    "plus",
+    "slice",
+    "this",
+    "that",
+    "into",
+    "onto",
+    "than",
+    "then",
+    "also",
+    "just",
+    "more",
+    "some",
+    "each",
+    "both",
+})
 
 
 class TodoError(ValueError):
@@ -598,6 +652,136 @@ def todo_matches_any_description(content: str, descriptions: Sequence[str]) -> b
         if len(candidate) >= TODO_DESCRIPTION_MIN_OVERLAP and candidate in target:
             return True
     return False
+
+
+def _stem_todo_token(token: str) -> str:
+    if token.endswith("lists") and len(token) > 6:
+        return token[:-5]
+    if token.endswith("ing") and len(token) > 5:
+        return token[:-3]
+    if token.endswith("ed") and len(token) > 4:
+        return token[:-2]
+    if token.endswith("s") and not token.endswith("ss") and len(token) > 4:
+        return token[:-1]
+    return token
+
+
+def distinctive_todo_tokens(value: str) -> set:
+    tokens = set()
+    for raw in normalize_for_todo_match(value).split():
+        if raw in _LANDING_GENERIC_TOKENS:
+            continue
+        if len(raw) < 3 and not any(ch.isdigit() for ch in raw):
+            continue
+        tokens.add(_stem_todo_token(raw))
+    return tokens
+
+
+def _tokens_overlap(left: set, right: set) -> int:
+    score = 0
+    used_right = set()
+    for token in sorted(left):
+        for candidate in sorted(right):
+            if candidate in used_right:
+                continue
+            if token == candidate:
+                score += 1
+                used_right.add(candidate)
+                break
+            if (
+                len(token) >= 4
+                and len(candidate) >= 4
+                and (token.startswith(candidate) or candidate.startswith(token))
+            ):
+                score += 1
+                used_right.add(candidate)
+                break
+    return score
+
+
+def _missing_required_surface(todo_tokens: set, job_tokens: set) -> bool:
+    if ("ui" in todo_tokens or "ux" in todo_tokens) and not (
+        "ui" in job_tokens or "ux" in job_tokens
+    ):
+        return True
+    if "server" in todo_tokens and "action" in todo_tokens:
+        if not ("server" in job_tokens and "action" in job_tokens):
+            return True
+    return False
+
+
+def _is_validate_gate(content: str) -> bool:
+    return (content or "").strip().lower().startswith("validate")
+
+
+def landing_token_score(
+    content: str, phase_name: str, descriptions: Sequence[str]
+) -> int:
+    if _is_validate_gate(content):
+        return 0
+    todo_tokens = distinctive_todo_tokens(content) | distinctive_todo_tokens(phase_name)
+    if not todo_tokens:
+        return 0
+    job_tokens: set = set()
+    for desc in descriptions:
+        job_tokens |= distinctive_todo_tokens(desc)
+    if not job_tokens:
+        return 0
+    if _missing_required_surface(todo_tokens, job_tokens):
+        return 0
+    return _tokens_overlap(todo_tokens, job_tokens)
+
+
+def best_matching_open_todo(
+    phases: Sequence[TodoPhase], descriptions: Sequence[str]
+) -> Optional[str]:
+    best_score = 0
+    winners: List[TodoItem] = []
+    for phase in phases:
+        for task in phase.tasks:
+            if task.status not in ("pending", "in_progress"):
+                continue
+            score = landing_token_score(task.content, phase.name, descriptions)
+            if score < TODO_LANDING_MIN_TOKEN_OVERLAP:
+                continue
+            if score > best_score:
+                best_score = score
+                winners = [task]
+            elif score == best_score:
+                winners.append(task)
+    if not winners:
+        return None
+    if len(winners) == 1:
+        return winners[0].content
+    progressing = [task for task in winners if task.status == "in_progress"]
+    if len(progressing) == 1:
+        return progressing[0].content
+    return None
+
+
+def apply_successful_landing(
+    phases: Sequence[TodoPhase], descriptions: Sequence[str]
+) -> Tuple[List[TodoPhase], Optional[str]]:
+    """Complete one uniquely matching open todo after an applied implement."""
+    hit = best_matching_open_todo(phases, descriptions)
+    if not hit:
+        return clone_phases(phases), None
+    nxt, errors, _op = apply_todo_op(phases, {"op": "done", "task": hit})
+    if errors:
+        return clone_phases(phases), None
+    return nxt, hit
+
+
+def should_fold_todo_landing(
+    applied: bool,
+    files: Sequence[str],
+    failed: bool = False,
+    analysis_ok: bool = False,
+    error: Optional[str] = None,
+) -> bool:
+    if failed or analysis_ok or error:
+        return False
+    return bool(applied) and any(str(path).strip() for path in (files or []))
 
 
 def phases_to_markdown(phases: Sequence[TodoPhase]) -> str:
