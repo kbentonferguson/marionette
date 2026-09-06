@@ -3023,6 +3023,10 @@ def dispatch_local_action(
             or (args.get("workspace_root") or args.get("path") or args.get("repo") or "")
         ).strip()
         sid = (args.get("session_id") or args.get("id") or "").strip()
+        if not sid:
+            # Empty id must move THIS turn, not store.active. Mid-turn view
+            # switch used to relocate the other chat and hide the owner.
+            sid = str(getattr(session, "harness_session_id", "") or "").strip()
         title = args.get("title")
         if not target_repo:
             err_msg = "Error: workspace_root is required for relocate_session"

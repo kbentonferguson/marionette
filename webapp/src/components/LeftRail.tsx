@@ -19,7 +19,12 @@ import { writeTranscriptCache } from "./Conversation";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
-import { filterBranchWorkspaces } from "./leftRailBranches";
+import {
+  BRANCHES_MIN_HEIGHT,
+  branchesHeightFromPointerDelta,
+  branchesListBoxStyle,
+  filterBranchWorkspaces,
+} from "./leftRailBranches";
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -35,6 +40,7 @@ export {
   patchSessionSettledInCaches,
   patchSessionTitleInCaches,
   patchSessionArchivedInCaches,
+  patchActiveSessionInCaches,
   purgeSessionFromRootCaches,
   workspacesCacheKey,
   jobsCacheKey,
@@ -56,6 +62,7 @@ import {
   patchSessionSettledInCaches,
   patchSessionTitleInCaches,
   patchSessionArchivedInCaches,
+  patchActiveSessionInCaches,
   purgeSessionFromRootCaches,
   workspacesCacheKey,
   jobsCacheKey,
@@ -197,26 +204,41 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     saveSessionJobsHeight(sessionJobsHeightRef.current);
   };
 
-  const onBranchesResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    branchesResizeDragRef.current = { startY: e.clientY, startH: branchesHeightRef.current };
-  };
-
-  const onBranchesResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!branchesResizeDragRef.current) return;
-    const delta = e.clientY - branchesResizeDragRef.current.startY;
-    setBranchesHeight(clampBranchesHeight(branchesResizeDragRef.current.startH + delta));
-  };
-
-  const finishBranchesResize = (e: React.PointerEvent<HTMLDivElement>) => {
+  const branchesResizeCleanupRef = useRef<(() => void) | null>(null);
+  const finishBranchesResize = () => {
     if (!branchesResizeDragRef.current) return;
     branchesResizeDragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
+    branchesResizeCleanupRef.current?.();
+    branchesResizeCleanupRef.current = null;
     saveBranchesHeight(branchesHeightRef.current);
   };
+  const onBranchesResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    branchesResizeCleanupRef.current?.();
+    branchesResizeDragRef.current = { startY: e.clientY, startH: branchesHeightRef.current };
+    const onMove = (ev: PointerEvent) => {
+      const drag = branchesResizeDragRef.current;
+      if (!drag) return;
+      setBranchesHeight(branchesHeightFromPointerDelta(
+        drag.startH,
+        drag.startY,
+        ev.clientY,
+        getMaxBranchesHeight(),
+      ));
+    };
+    const onUp = () => finishBranchesResize();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    branchesResizeCleanupRef.current = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  };
+  useEffect(() => () => {
+    branchesResizeCleanupRef.current?.();
+  }, []);
 
   const toggleJobCard = (j: Job) => {
     const opening = !expandedJobs[j.id];
@@ -264,6 +286,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
+  const switchingSessionIdRef = useRef<string | null>(null);
   const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
   const [railTab, setRailTab] = useState<"projects" | "sessions">(() => {
@@ -330,6 +353,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (forRepo && currentRepoRef.current && !repoPathsEqual(forRepo, currentRepoRef.current)) {
       return;
     }
+    // Click already owns the view. A late list with a leftover active must
+    // not yank Conversation back to the other project mid-switch.
+    if (switchingSessionIdRef.current) {
+      return;
+    }
     const active = sess.find((s) => s.active);
     // Only push a real id. Passing "" during project open briefly clears the
     // conversation to the empty placeholder before the next root's active
@@ -376,6 +404,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     isTransitioning: sessionsTransitioning,
     isShowingStale: sessionsStale,
     revalidate: revalidateSessions,
+    mutate: mutateSessions,
   } = useStaleWhileRevalidate<Session[]>(
     `sessions:${currentRepo || "__none__"}`,
     () => api.sessions(currentRepo || undefined),
@@ -407,6 +436,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     switchingSessionId,
     workspaceTransitioning,
     sessionsTransitioning,
+    targetSessionsCached: !opening && (
+      !!switchingSessionId
+      || (!!currentRepo && (
+        !!sessionsResolvedRoots[currentRepo]
+        || readSWRCache<Session[]>(`sessions:${currentRepo}`) !== undefined
+      ))
+    ),
   });
 
   useEffect(() => {
@@ -739,6 +775,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
   const switchSession = async (id: string) => {
     if (switchingSessionId || opening) return;
+    const previousActiveId = sessions.find((s) => s.active)?.id || "";
+    switchingSessionIdRef.current = id;
     setSwitchingSessionId(id);
     setUnreadFinishedIds((prev) => {
       if (!prev[id]) return prev;
@@ -746,25 +784,46 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       delete next[id];
       return next;
     });
+    // Paint 1:1 active and start transcript hydrate before the switch POST.
+    // Waiting for every project's session list was the forever-load + dual-dot.
+    const roots = projectsRef.current.filter(Boolean);
+    patchActiveSessionInCaches(roots, id);
+    const currentRows = currentRepoRef.current
+      ? readSWRCache<Session[]>(`sessions:${currentRepoRef.current}`)
+      : undefined;
+    if (currentRows) mutateSessions(currentRows);
+    setSessionsCacheEpoch((n) => n + 1);
+    onSessionChange?.(id);
     try {
+      const prevRepo = currentRepoRef.current;
       const res: any = await api.switchSession(id);
-      await refreshSessionsRef.current();
-      // Session switch can repoint the active repo (and thus the codegraph) on the
-      // backend. Fire the same event the dir-open path uses so the codegraph/state
-      // panel refetches -- without this, clicking a session leaves the old graph
-      // shown even though the backend already swapped repos.
-      window.dispatchEvent(new Event("harness-config-changed"));
       const repo = (res?.repo || "").trim();
       if (repo) {
         setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
         setSelectedProjectPath(repo);
       }
+      // Same-root click is a view change. Cross-root still needs workspace /
+      // codegraph / FileTree to follow cfg.repo — do not refetch every rail
+      // list on the click path.
+      if (repo && !repoPathsEqual(repo, prevRepo)) {
+        window.dispatchEvent(new Event("harness-config-changed"));
+      }
       if (railTab === "sessions") {
         void refreshBankSessions();
       }
     } catch (err) {
+      if (previousActiveId && previousActiveId !== id) {
+        patchActiveSessionInCaches(projectsRef.current.filter(Boolean), previousActiveId);
+        const revertRows = currentRepoRef.current
+          ? readSWRCache<Session[]>(`sessions:${currentRepoRef.current}`)
+          : undefined;
+        if (revertRows) mutateSessions(revertRows);
+        setSessionsCacheEpoch((n) => n + 1);
+        onSessionChange?.(previousActiveId);
+      }
       notifySessionActivationBlocked(err);
     } finally {
+      switchingSessionIdRef.current = null;
       setSwitchingSessionId(null);
     }
   };
@@ -845,12 +904,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   useEffect(() => {
     const onRelocated = (e: Event) => {
-      const root = String((e as CustomEvent).detail?.workspace_root || "").trim();
+      const detail = (e as CustomEvent).detail || {};
+      const root = String(detail.workspace_root || "").trim();
+      const relocatedId = String(detail.session_id || "").trim();
       if (!root) return;
       setRailTab("projects");
       try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
       setExpandedProjects((prev) => ({ ...prev, [root]: true }));
       setSelectedProjectPath(root);
+      if (relocatedId) {
+        patchActiveSessionInCaches(projectsRef.current.filter(Boolean), relocatedId);
+        setSessionsCacheEpoch((n) => n + 1);
+        onSessionChange?.(relocatedId);
+      }
       // Await workspace refresh first so buildProjectsList includes the new
       // root, then seed that root's sessions cache even if projectsRef lagged.
       void (async () => {
@@ -876,7 +942,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     };
     window.addEventListener("harness-session-relocated", onRelocated);
     return () => window.removeEventListener("harness-session-relocated", onRelocated);
-  }, [revalidateWorkspace, revalidateWorkspaces]);
+  }, [revalidateWorkspace, revalidateWorkspaces, onSessionChange]);
 
   const newSession = async (inProjectPath?: string) => {
     try {
@@ -1842,7 +1908,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <div
             data-slot="left-rail-branches-list"
             className="space-y-0.5 overflow-y-auto"
-            style={{ maxHeight: branchesHeight }}
+            style={branchesListBoxStyle(branchesHeight)}
           >
             {filterBranchWorkspaces(workspaces).map((w) => {
               const linked = !!w.worktree_path;
@@ -1885,10 +1951,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             aria-orientation="horizontal"
             aria-label="Resize branches list"
             onPointerDown={onBranchesResizePointerDown}
-            onPointerMove={onBranchesResizePointerMove}
-            onPointerUp={finishBranchesResize}
-            onPointerCancel={finishBranchesResize}
-            className="h-1.5 mt-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
+            className="h-3 mt-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
           >
             <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
@@ -2257,7 +2320,6 @@ const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
 const SESSION_JOBS_DISPLAY_CAP = 20;
 
 const BRANCHES_HEIGHT_KEY = "pmharness.leftRail.branchesHeight.v1";
-const BRANCHES_MIN_HEIGHT = 90;
 const BRANCHES_DEFAULT_HEIGHT = 140;
 const BRANCHES_PROJECTS_RESERVE = 160;
 

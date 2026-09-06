@@ -1,5 +1,24 @@
 import type { Workspace } from "../lib/api";
 
+export const BRANCHES_MIN_HEIGHT = 90;
+
+/** Bottom-edge handle: drag down grows the list. */
+export function branchesHeightFromPointerDelta(
+  startHeight: number,
+  startY: number,
+  clientY: number,
+  maxHeight: number,
+  minHeight: number = BRANCHES_MIN_HEIGHT,
+): number {
+  const next = startHeight + (clientY - startY);
+  return Math.min(maxHeight, Math.max(minHeight, next));
+}
+
+/** Fixed height, not maxHeight — the handle must sit on the allocated edge. */
+export function branchesListBoxStyle(height: number): { height: number } {
+  return { height };
+}
+
 function originSet(originBranches?: Iterable<string> | null): Set<string> | null {
   if (originBranches == null) return null;
   return originBranches instanceof Set

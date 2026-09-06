@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BRANCHES_MIN_HEIGHT,
+  branchesHeightFromPointerDelta,
+  branchesListBoxStyle,
   filterBranchWorkspaces,
   isStaleLocalReleaseBranch,
 } from "../components/leftRailBranches";
@@ -66,5 +69,19 @@ describe("leftRailBranches stale release filter", () => {
     const origin = new Set(["main", "dev"]);
     const names = filterBranchWorkspaces(rows, origin).map((r) => r.name);
     expect(names).toEqual(["main", "dev", "feat/keep-unpushed"]);
+  });
+});
+
+describe("leftRailBranches list resize", () => {
+  it("uses a fixed height so the handle sits on the allocated edge", () => {
+    expect(branchesListBoxStyle(140)).toEqual({ height: 140 });
+    expect(branchesListBoxStyle(140)).not.toHaveProperty("maxHeight");
+  });
+
+  it("grows on drag down and shrinks on drag up, clamped to the rail budget", () => {
+    expect(branchesHeightFromPointerDelta(140, 400, 460, 400)).toBe(200);
+    expect(branchesHeightFromPointerDelta(140, 400, 340, 400)).toBe(BRANCHES_MIN_HEIGHT);
+    expect(branchesHeightFromPointerDelta(140, 400, 900, 220)).toBe(220);
+    expect(branchesHeightFromPointerDelta(140, 400, 400, 400)).toBe(140);
   });
 });

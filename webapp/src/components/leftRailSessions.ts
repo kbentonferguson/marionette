@@ -198,6 +198,33 @@ export function patchSessionTitleInCaches(
   return touched;
 }
 
+/** Exactly one `active` flag across every per-root sessions cache. */
+export function patchActiveSessionInCaches(
+  roots: string[],
+  sessionId: string,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+  write: (key: string, data: Session[]) => void = writeSWRCache,
+): number {
+  let touched = 0;
+  for (const root of roots) {
+    if (!root) continue;
+    const key = `sessions:${root}`;
+    const cached = read(key);
+    if (!cached?.length) continue;
+    let changed = false;
+    const next = cached.map((s) => {
+      const active = s.id === sessionId;
+      if (!!s.active === active) return s;
+      changed = true;
+      return { ...s, active };
+    });
+    if (!changed) continue;
+    write(key, next);
+    touched += 1;
+  }
+  return touched;
+}
+
 /** Optimistically flip durable `archived` on every per-root sessions cache that holds the id. */
 export function patchSessionArchivedInCaches(
   roots: string[],
@@ -282,17 +309,20 @@ export function collectUnreadFinishedSessionIds(
 /**
  * Rail-wide dim / project-switching signal. Browse-selecting an already-listed
  * project must not trip this — jobs SWR key changes on select and used to flash
- * the whole PROJECTS tree. Only real open/switch/session activation dims the rail.
+ * the whole PROJECTS tree. Warm session clicks keep last-good rows; only Open
+ * Folder (or a cold first bind) dims the rail.
  */
 export function isRailWideSwitching(flags: {
   opening: boolean;
   switchingSessionId: string | null;
   workspaceTransitioning: boolean;
   sessionsTransitioning: boolean;
+  targetSessionsCached?: boolean;
 }): boolean {
+  if (flags.opening) return true;
+  if (flags.targetSessionsCached) return false;
   return (
-    flags.opening
-    || !!flags.switchingSessionId
+    !!flags.switchingSessionId
     || flags.workspaceTransitioning
     || flags.sessionsTransitioning
   );
