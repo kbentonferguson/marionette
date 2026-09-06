@@ -35,7 +35,7 @@ describe("LeftRail branch layout", () => {
     clearSWRCache();
   });
 
-  it("keeps branch resizing without reserving empty list height", async () => {
+  it("gives the branches list a fixed height so the resize handle can move", async () => {
     const { container } = render(<LeftRail jobsRefresh={0} />);
 
     await screen.findByRole("button", { name: /main/ });
@@ -45,8 +45,8 @@ describe("LeftRail branch layout", () => {
     const jobScopes = container.querySelector<HTMLElement>("[data-slot=left-rail-job-scopes]");
     expect(screen.getByRole("button", { name: "Jobs" })).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "Resize branches list" })).toBeInTheDocument();
-    expect(branchList?.style.height).toBe("");
-    expect(branchList?.style.maxHeight).not.toBe("");
+    expect(branchList?.style.height).not.toBe("");
+    expect(branchList?.style.maxHeight).toBe("");
     expect(upperSections?.className.split(" ")).not.toContain("flex-1");
     expect(jobsPanel).toHaveClass("mt-auto");
     expect(jobScopes).toHaveClass("grid", "grid-cols-3");

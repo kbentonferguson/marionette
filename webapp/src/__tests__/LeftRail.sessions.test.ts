@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -574,6 +574,67 @@ describe("LeftRail session list contracts", () => {
         sessionsTransitioning: true,
       }),
     ).toBe(true);
+
+    // Warm session click: last-good rows stay painted. Dim only Open Folder.
+    expect(
+      isRailWideSwitching({
+        opening: false,
+        switchingSessionId: "sess-1",
+        workspaceTransitioning: true,
+        sessionsTransitioning: true,
+        targetSessionsCached: true,
+      }),
+    ).toBe(false);
+    expect(
+      isRailWideSwitching({
+        opening: true,
+        switchingSessionId: null,
+        workspaceTransitioning: false,
+        sessionsTransitioning: false,
+        targetSessionsCached: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("patchActiveSessionInCaches leaves exactly one active row across roots", () => {
+    const home = "/Users/cary/.pmharness/state/home";
+    const marionette = "/Users/cary/Projects/marionette";
+    writeSWRCache(`sessions:${home}`, [
+      {
+        id: "54c2d5c1ed2a",
+        title: "Https://github.com/professorpalmer/marionette",
+        created: 1,
+        repo: home,
+        workspace_root: home,
+        active: true,
+      },
+    ]);
+    writeSWRCache(`sessions:${marionette}`, [
+      {
+        id: "3f50c50e8a50",
+        title: "Astra product audit",
+        created: 2,
+        repo: marionette,
+        workspace_root: marionette,
+        active: true,
+      },
+      {
+        id: "other",
+        title: "Can you do a multi task",
+        created: 3,
+        repo: marionette,
+        workspace_root: marionette,
+        active: false,
+      },
+    ]);
+
+    expect(patchActiveSessionInCaches([home, marionette], "54c2d5c1ed2a")).toBeGreaterThanOrEqual(1);
+    const homeRows = readSWRCache<Session[]>(`sessions:${home}`) || [];
+    const marionetteRows = readSWRCache<Session[]>(`sessions:${marionette}`) || [];
+    const actives = [...homeRows, ...marionetteRows].filter((s) => s.active).map((s) => s.id);
+    expect(actives).toEqual(["54c2d5c1ed2a"]);
+    expect(homeRows.map((s) => s.id)).toEqual(["54c2d5c1ed2a"]);
+    expect(marionetteRows.map((s) => s.id)).toEqual(["3f50c50e8a50", "other"]);
   });
 
   it("project session empty state is stale-while-revalidate (not jobs-gated)", () => {

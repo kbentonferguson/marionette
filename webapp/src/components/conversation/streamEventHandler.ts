@@ -556,7 +556,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
           const root = workspaceRootFromActionResult(d, cardItem.card.goal);
           if (root && root !== "(workspace root)") {
             window.dispatchEvent(new CustomEvent("harness-session-relocated", {
-              detail: { workspace_root: root },
+              detail: {
+                workspace_root: root,
+                session_id: String(d.session_id || "").trim(),
+              },
             }));
           }
         }

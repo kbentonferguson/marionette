@@ -1587,6 +1587,51 @@ def test_dispatch_local_action_open_project_requires_path():
     session._append_action_result.assert_called_once()
 
 
+def test_dispatch_local_action_relocate_empty_id_uses_turn_session(
+    monkeypatch, tmp_path,
+):
+    """Empty relocate session_id must move the turn owner, not store.active.
+
+    Live 54c2d5c1ed2a (Home) called relocate_session with session_id=\"\" while
+    the view had already switched to 3f50c50e8a50 (marionette). The move
+    landed on the other chat and Home vanished from the selected project.
+    """
+    dest = tmp_path / "marionette"
+    dest.mkdir()
+    captured = {}
+
+    def fake_relocate(body):
+        captured.update(body)
+        sid = (body.get("session_id") or "").strip()
+        return 200, {
+            "ok": True,
+            "active": sid or "3f50c50e8a50",
+            "repo": body["workspace_root"],
+        }
+
+    monkeypatch.setattr(
+        "harness.server._handle_session_relocate", fake_relocate,
+    )
+    act = PilotAction(
+        kind="relocate_session",
+        arguments={
+            "workspace_root": str(dest),
+            "session_id": "",
+            "title": "Astra product audit: onboarding, economics, durability",
+        },
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(tmp_path / "home")),
+        harness_session_id="54c2d5c1ed2a",
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-rel", True, []))
+    assert captured.get("session_id") == "54c2d5c1ed2a"
+    assert events[0].data.get("session_id") == "54c2d5c1ed2a"
+    assert "3f50c50e8a50" not in (events[0].data.get("session_id") or "")
+    session._append_action_result.assert_called_once()
+
+
 def test_dispatch_local_action_write_file_requires_repo():
     act = PilotAction(kind="write_file", path="a.py", content="x")
     session = SimpleNamespace(
