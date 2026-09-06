@@ -37,7 +37,7 @@ export default function ShellSurface({ visible, presentation, label, width, onCl
   return <dialog ref={ref} role={presentation === "inline" ? "complementary" : "dialog"} aria-label={label} aria-modal={presentation === "inline" ? undefined : true}
     data-shell-hidden={!visible} data-presentation={presentation}
     className="shell-surface" style={presentation === "inline" ? { width } : undefined}
-    onCancel={(event) => { event.preventDefault(); onClose(); }}
+    onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onClose(); }}
     onClick={(event) => { if (event.target === event.currentTarget && presentation !== "inline") {
       const rect = event.currentTarget.getBoundingClientRect();
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
