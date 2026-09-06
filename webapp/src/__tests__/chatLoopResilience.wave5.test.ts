@@ -253,6 +253,17 @@ describe("Wave 5: interrupted / done framing settle turn chrome", () => {
     })).toBe(false);
   });
 
+  it("does not let later assistant_done paint Done over Stop", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "interrupted", data: { reason: "session interrupted" } });
+    expect(state.turnSettledRef.current).toBe(true);
+    expect(state.status).toBe("idle");
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.status).toBe("idle");
+    expect(state.status).not.toBe("done");
+    expect(state.turnSettledRef.current).toBe(true);
+  });
+
   it("applies framing-only done by settling chrome when not already settled", () => {
     const { state, apply } = makeApplyDeps();
     apply({

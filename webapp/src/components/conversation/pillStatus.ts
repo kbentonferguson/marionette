@@ -66,6 +66,8 @@ export function derivePillStatus(opts: {
   liveInvestigation: boolean;
   turnOpen: boolean;
   status: string;
+  /** Wave-3 lifecycle; interrupted must not paint Done. */
+  turnLifecycle?: string;
   /**
    * Background pause-point (awaiting_swarm, or holdSwarmAwait && !pilotBusy).
    * Wins over liveInvestigation so StatusPill paints Still working….
@@ -82,11 +84,13 @@ export function derivePillStatus(opts: {
     status,
     awaitingSwarm,
     agentLoopOpen,
+    turnLifecycle,
   } = opts;
   if (transcriptStale) return "switching…";
   // Pause-point wins over sticky liveInvestigation (hold-extended agentLoopOpen).
   if (awaitingSwarm) return "awaiting_swarm";
   const loopOpen = agentLoopOpen ?? isAgentLoopOpen(turnOpen, status);
+  if (turnLifecycle === "interrupted" && !loopOpen) return "interrupted";
   // Only early-idle when composerBusy would also be false.
   if (answerChromeIdle && !loopOpen) return "idle";
   // Live tools / Investigation fold: always Investigating chrome — never flash

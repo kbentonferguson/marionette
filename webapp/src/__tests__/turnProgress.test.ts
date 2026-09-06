@@ -862,6 +862,16 @@ describe("latchWaitingPhaseStartedAt", () => {
     expect(latchWaitingPhaseStartedAt(1000, "waiting", 5000, "awaiting_swarm")).toBe(null);
     expect(latchWaitingPhaseStartedAt(null, "waiting", 1000, "thinking")).toBe(1000);
   });
+
+  it("does not keep a wait stamp from before this busy period", () => {
+    // busyNow freezes at the last idle tick. A new send then latches that
+    // stale now on frame 1; frame 2 must not treat it as "waiting 44s".
+    const staleNow = 1_000;
+    const sendAt = 45_000;
+    const first = latchWaitingPhaseStartedAt(null, "waiting", staleNow, "thinking", null);
+    expect(first).toBe(staleNow);
+    expect(latchWaitingPhaseStartedAt(first, "waiting", sendAt, "thinking", sendAt)).toBe(sendAt);
+  });
 });
 
 describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)", () => {

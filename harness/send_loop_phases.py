@@ -87,8 +87,16 @@ STREAM_IDLE_POLL_SEC = 1.0
 STREAM_IDLE_NOTICE_MESSAGE = "Provider still working — stream idle"
 STREAM_IDLE_ESCALATE_MESSAGE = "Provider still idle after 1m — stream has not advanced"
 STREAM_IDLE_STUCK_MESSAGE = (
-    "Provider still idle after 5m — consider Stop if the stream is stuck"
+    "Provider still idle after 5m — stream is stuck"
 )
+
+
+class StreamIdleStuckError(RuntimeError):
+    """Raised when the provider stream produces no frames for STREAM_IDLE_STUCK_SEC.
+
+    Notices at 9s / 1m are informational. At 5m the drain aborts so the turn
+    can settle with Continue/Retry instead of hanging on Waiting on <pilot>.
+    """
 
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
@@ -1411,6 +1419,7 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
             return ConvEvent("notice", {
                 "message": STREAM_IDLE_STUCK_MESSAGE,
                 "kind": "wait",
+                "stream_idle_stuck": True,
             })
         if idle_for >= STREAM_IDLE_ESCALATE_SEC and stream_idle_stage < 2:
             stream_idle_stage = 2
@@ -1602,6 +1611,8 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
             idle_notice = _maybe_emit_stream_idle_notice()
             if idle_notice is not None:
                 yield idle_notice
+                if idle_notice.data.get("stream_idle_stuck"):
+                    raise StreamIdleStuckError(STREAM_IDLE_STUCK_MESSAGE)
             continue
 
         _note_queue_activity()

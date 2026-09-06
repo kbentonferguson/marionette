@@ -1298,7 +1298,18 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(statusPillLabel("idle", "x")).toBe("Ready");
     expect(statusPillLabel("idle")).toBe("Ready");
     expect(statusPillLabel("done")).toBe("Done");
+    expect(statusPillLabel("interrupted")).toBe("Stopped");
     expect(statusPillLabel("error")).toBe("Error");
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: false,
+        turnOpen: false,
+        status: "idle",
+        turnLifecycle: "interrupted",
+      }),
+    ).toBe("interrupted");
     expect(statusPillLabel("error", "Desktop bridge is missing")).toBe("Error");
     expect(statusPillHoverText("error", "Desktop bridge is missing")).toBe("Desktop bridge is missing");
     expect(statusPillHoverText("idle")).toBe("idle");

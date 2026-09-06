@@ -48,6 +48,8 @@ export {
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
+  preferLastGoodSessionList,
+  writeSessionListCache,
 } from "./leftRailSessions";
 
 import {
@@ -70,6 +72,8 @@ import {
   collectUnreadFinishedSessionIds,
   isRailWideSwitching,
   projectSessionsEmptyState,
+  preferLastGoodSessionList,
+  writeSessionListCache,
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
@@ -407,7 +411,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     mutate: mutateSessions,
   } = useStaleWhileRevalidate<Session[]>(
     `sessions:${currentRepo || "__none__"}`,
-    () => api.sessions(currentRepo || undefined),
+    () =>
+      api.sessions(currentRepo || undefined).then((rows) =>
+        preferLastGoodSessionList(currentRepo, rows),
+      ),
     {
       enabled: !!currentRepo,
       onSuccess: (sess) => {
@@ -595,10 +602,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   useEffect(() => {
     const handleConfigChanged = () => {
-      // Background revalidate only -- SWR keeps the last branch list visible
-      // so Branches does not blank for a second on every session switch.
+      // Workspace / branches / jobs follow cfg.repo. Do not refetch every
+      // project's session list here — a mid-switch [] clobbers last-good rows
+      // and paints the empty "New session" CTA. Create/delete/rename refresh
+      // lists on their own paths.
       void revalidateWorkspaces();
-      void refreshSessionsRef.current();
       void revalidateWorkspace();
       void revalidateJobs();
     };
@@ -925,7 +933,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         } catch { /* ignore */ }
         try {
           const rows = await api.sessions(root);
-          writeSWRCache(`sessions:${root}`, Array.isArray(rows) ? rows : []);
+          writeSessionListCache(root, Array.isArray(rows) ? rows : []);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
           setSessionsCacheEpoch((n) => n + 1);
         } catch {
@@ -1144,7 +1152,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       roots.map(async (root) => {
         try {
           const rows = await api.sessions(root);
-          writeSWRCache(`sessions:${root}`, rows);
+          writeSessionListCache(root, rows);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
         } catch {
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
@@ -1169,7 +1177,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         try {
           const rows = await api.sessions(root);
           if (cancelled) return;
-          writeSWRCache(`sessions:${root}`, rows);
+          writeSessionListCache(root, rows);
           setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
           // Active-repo hook already owns promotion; only seed cache here.
         } catch {

@@ -34,8 +34,11 @@ Tune HARNESS_STAGNATION_STREAK_CAP / HARNESS_FAILED_OBJECTIVE_RESUME_CAP as need
 Tiny workspaces tighten the tool cap via HARNESS_TINY_WORKSPACE_TOOL_BUDGET
 (default 12) for the foreground pilot only. Nested native implement workers
 skip that tiny tighten and instead use an edit-first gate
-(HARNESS_EDIT_FIRST_READ_ALLOWANCE, default 2). After a successful implement,
+(HARNESS_EDIT_FIRST_READ_ALLOWANCE, default 2). After an accepted implement,
 remaining tools clamp to HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
+A landed patch without acceptance uses
+HARNESS_POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE (default 12) and refuses another
+paid swarm until the user continues.
 """
 
 import json
@@ -65,6 +68,10 @@ TINY_WORKSPACE_SOURCE_FILE_CAP = 15
 TINY_WORKSPACE_LOC_CAP = 5000
 # Residual tools allowed after a successful implement lands (never raises cap).
 POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT = 4
+# Residual tools after a patch lands without acceptance proof. Larger than the
+# success clamp so the pilot can diagnose red tests instead of being told to
+# stop, then pitch another paid implement (GitHub #323).
+POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE_DEFAULT = 12
 # Nested implement workers may read this many target files before an edit is
 # required; broader exploration (list/search/ipython) is blocked until then.
 EDIT_FIRST_READ_ALLOWANCE_DEFAULT = 2
@@ -375,6 +382,61 @@ def post_implement_tool_allowance() -> int:
     return POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
 
 
+def post_implement_diagnosis_allowance() -> int:
+    """Residual tool calls after a landed patch without acceptance (default 12)."""
+    raw = os.environ.get("HARNESS_POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE_DEFAULT
+
+
+_ACCEPTANCE_PASSED = frozenset({
+    "passed", "pass", "ok", "green", "accepted", "success",
+})
+_ACCEPTANCE_FAILED = frozenset({
+    "failed", "fail", "red", "error", "incomplete",
+})
+
+
+def implement_acceptance_of(res_job: Any) -> str:
+    """Return ``accepted``, ``failed``, or ``unknown`` for an implement result.
+
+    Apply is not acceptance. Unknown means the patch may be in the tree and
+    required proof was never stamped — treat as unverified, not success.
+    """
+    if not isinstance(res_job, dict):
+        return "unknown"
+    raw = str(
+        res_job.get("acceptance") or res_job.get("acceptance_status") or ""
+    ).strip().lower()
+    if raw in _ACCEPTANCE_PASSED:
+        return "accepted"
+    if raw in _ACCEPTANCE_FAILED:
+        return "failed"
+    tests_passed = res_job.get("tests_passed")
+    if tests_passed is True:
+        return "accepted"
+    if tests_passed is False:
+        return "failed"
+    for art in res_job.get("artifacts") or []:
+        if not isinstance(art, dict):
+            continue
+        block = art.get("validation")
+        status = ""
+        if isinstance(block, dict):
+            status = str(block.get("status") or "").strip().lower()
+        if not status:
+            status = str(art.get("validation_status") or "").strip().lower()
+        if status in _ACCEPTANCE_FAILED:
+            return "failed"
+        if status in _ACCEPTANCE_PASSED:
+            return "accepted"
+    return "unknown"
+
+
 def edit_first_read_allowance() -> int:
     """Target-file reads allowed before a nested implement must write."""
     raw = os.environ.get("HARNESS_EDIT_FIRST_READ_ALLOWANCE", "").strip()
@@ -625,6 +687,8 @@ class TurnGuardState:
     last_implement_exhausted: bool = False
     # Set when a completed implement/local job returned real success/patch provenance.
     implement_success_seen: bool = False
+    # Patch is in the worktree but acceptance is red or unproven. Not success.
+    implement_unverified_landed: bool = False
     # Cached at turn start from the effective repo path (scale-aware budget / chrome guard).
     tiny_workspace: bool = False
     # Nested native implement worker (ProviderWorker expects_diff): edit-first policy.
@@ -1445,8 +1509,15 @@ def check_edit_first(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
 
 
 def _iteration_budget_suppress_message(
-    cap: int, *, implement_success: bool = False,
+    cap: int, *, implement_success: bool = False, implement_unverified: bool = False,
 ) -> str:
+    if implement_unverified:
+        return (
+            "(SUPPRESSED: post-implement diagnosis allowance exhausted — "
+            "a worker patch landed and acceptance is red or unproven. "
+            "Report that outcome and stop. Do not dispatch another paid "
+            "worker until the user continues.)"
+        )
     if implement_success:
         return (
             "(SUPPRESSED: post-implement validation allowance exhausted — "
@@ -1635,27 +1706,54 @@ def job_result_shows_implement_success(
             and not res_job.get("has_patch_art")
         ):
             return False
-        if res_job.get("applied"):
+        acceptance = implement_acceptance_of(res_job)
+        if acceptance == "failed":
+            return False
+        # Parked review is a finished handoff, not a live-tree apply.
+        if res_job.get("has_patch_art") and res_job.get("held_for_review"):
             return True
-        if res_job.get("has_patch_art") and (
-            res_job.get("held_for_review") or res_job.get("applied")
-        ):
-            return True
-        if isinstance(provenance, dict) and provenance.get("worktree_diff_empty") is False:
-            return True
+        # Apply without acceptance proof is unverified, not success (#323).
+        if acceptance != "accepted":
+            return False
+        return bool(res_job.get("applied"))
     except Exception:
         return False
     return False
 
 
-def clamp_post_implement_iteration_budget(state: TurnGuardState) -> None:
-    """Clamp remaining tools to the post-implement allowance (never raise cap)."""
+def job_result_shows_implement_unverified_land(
+    res_job: Any, stamped: Any = None,
+) -> bool:
+    """True when a patch is in the worktree and acceptance is red or unknown."""
+    if not isinstance(res_job, dict):
+        return False
+    if job_result_shows_implement_success(res_job, stamped):
+        return False
+    try:
+        provenance = res_job.get("worker_provenance") or {}
+        if isinstance(provenance, dict) and provenance.get(_IMPLEMENT_EXHAUSTED_PROVENANCE_KEY):
+            return False
+        if res_job.get("error"):
+            return False
+        if res_job.get("held_for_review"):
+            return False
+        return bool(res_job.get("applied"))
+    except Exception:
+        return False
+
+
+def clamp_post_implement_iteration_budget(
+    state: TurnGuardState,
+    allowance: Optional[int] = None,
+) -> None:
+    """Clamp remaining tools to an allowance (never raise cap)."""
     budget = state.iteration_budget
     if budget is None:
         return
-    allowance = post_implement_tool_allowance()
+    if allowance is None:
+        allowance = post_implement_tool_allowance()
     # Preserve already-used calls; never raise the existing ceiling.
-    budget.cap = min(budget.cap, budget.used + allowance)
+    budget.cap = min(budget.cap, budget.used + int(allowance))
 
 
 def note_implement_success_from_job_result(
@@ -1663,20 +1761,49 @@ def note_implement_success_from_job_result(
     res_job: Any,
     stamped: Any = None,
 ) -> None:
-    """Mark implement success + clamp residual budget when provenance is real.
+    """Mark accepted success or unverified land; clamp residual budget.
 
-    Idempotent: subsequent calls after ``implement_success_seen`` are no-ops so
-    the allowance is not re-applied.
+    Idempotent: subsequent calls after either flag are no-ops so the
+    allowance is not re-applied.
     """
     try:
-        if state.implement_success_seen:
+        if state.implement_success_seen or state.implement_unverified_landed:
             return
-        if not job_result_shows_implement_success(res_job, stamped):
+        if job_result_shows_implement_success(res_job, stamped):
+            state.implement_success_seen = True
+            clamp_post_implement_iteration_budget(state)
             return
-        state.implement_success_seen = True
-        clamp_post_implement_iteration_budget(state)
+        if job_result_shows_implement_unverified_land(res_job, stamped):
+            state.implement_unverified_landed = True
+            clamp_post_implement_iteration_budget(
+                state, post_implement_diagnosis_allowance(),
+            )
     except Exception:
         pass
+
+
+_UNVERIFIED_IMPLEMENT_RETRY_MESSAGE = (
+    "[suppressed: implement landed without acceptance] A worker patch is "
+    "already in the worktree and acceptance is red or unproven. Report the "
+    "outcome and stop. Do not dispatch another run_implement, run_parallel, "
+    "or run_swarm until the user continues."
+)
+
+
+def check_implement_unverified_retry(
+    state: TurnGuardState, kind: str, act: Any,
+) -> GuardVerdict:
+    """Refuse another paid worker after an unverified land (#323)."""
+    del act
+    if kind not in SWARM_DISPATCH_KINDS:
+        return GuardVerdict(False)
+    if not state.implement_unverified_landed:
+        return GuardVerdict(False)
+    return GuardVerdict(
+        suppress=True,
+        reason="implement_unverified",
+        message=_UNVERIFIED_IMPLEMENT_RETRY_MESSAGE,
+    )
 
 
 def check_implement_exhausted(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
@@ -1871,7 +1998,9 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
         suppress=True,
         reason="budget",
         message=_iteration_budget_suppress_message(
-            budget.cap, implement_success=bool(state.implement_success_seen),
+            budget.cap,
+            implement_success=bool(state.implement_success_seen),
+            implement_unverified=bool(state.implement_unverified_landed),
         ),
     )
 
@@ -1957,6 +2086,10 @@ def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     implement_exhausted_verdict = check_implement_exhausted(state, kind, act)
     if implement_exhausted_verdict.suppress:
         return implement_exhausted_verdict
+
+    unverified_retry = check_implement_unverified_retry(state, kind, act)
+    if unverified_retry.suppress:
+        return unverified_retry
 
     thrash_verdict = check_plumbing_swarm_thrash(state, kind, act)
     if thrash_verdict.suppress:
