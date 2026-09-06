@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { readLiveUpdateMarker } = require("./update-marker.cjs");
-const { isInstallComplete, runBootstrap, reinjectPortableTools } = require("./bootstrap.cjs");
+const { isInstallComplete, runBootstrap, reinjectPortableTools, selectPackagedCheckout, usesDevelopmentCheckout } = require("./bootstrap.cjs");
 const { buildUpdaterEnv, windowsShellEnv } = require("./update-env.cjs");
 const {
   ensurePuppetmasterRuntime,
@@ -441,21 +441,14 @@ let respawnTimes = [];
 // UI. A single in-flight promise guarantees at most one backend launch at a time.
 let startInFlight = null;
 
-// The source checkout the app runs from. Marionette always runs from source
-// (Hermes model): the backend is `harness.cli` under this root, and the updater
-// pulls + rebuilds it in place. Optional MARIONETTE_CHECKOUT / legacy
-// HARNESS_CHECKOUT overrides the checkout path only -- do not use HARNESS_REPO
-// here (that env is the user's open project). Packaged thin shell: checkout at
-// ~/.marionette/marionette; dev: two levels up from webapp/electron/.
-function packagedRepoRoot() {
-  return path.join(os.homedir(), ".marionette", "marionette");
-}
-
+// Freeze the choice before bootstrap yields. Every runtime consumer uses this root.
+let selectedRepoRoot = null;
 function resolveRepoRoot() {
-  const checkout = process.env.MARIONETTE_CHECKOUT || process.env.HARNESS_CHECKOUT;
-  if (checkout) return checkout;
-  if (isPackaged) return packagedRepoRoot();
-  return path.resolve(__dirname, "..", "..");
+  if (selectedRepoRoot) return selectedRepoRoot;
+  selectedRepoRoot = isPackaged
+    ? selectPackagedCheckout({ selfDev: selfDevEnabled(), selfDevCheckout: selfDevCheckout() })
+    : (process.env.MARIONETTE_CHECKOUT || process.env.HARNESS_CHECKOUT || path.resolve(__dirname, "..", ".."));
+  return selectedRepoRoot;
 }
 
 function venvPython(repoRoot) {
@@ -473,6 +466,12 @@ function venvPython(repoRoot) {
 function selfDevConfigPath() {
   return path.join(os.homedir(), ".pmharness", "self-dev.json");
 }
+function selfDevCheckout() {
+  try {
+    const config = JSON.parse(fs.readFileSync(selfDevConfigPath(), "utf8"));
+    return typeof config.checkout === "string" && path.isAbsolute(config.checkout) ? config.checkout : null;
+  } catch { return null; }
+}
 function selfDevEnabled() {
   const env = String(process.env.MARIONETTE_SELF_DEV || "").toLowerCase();
   if (env === "1" || env === "true" || env === "yes") return true;
@@ -485,7 +484,7 @@ function selfDevEnabled() {
 function setSelfDevEnabled(enabled) {
   try {
     fs.mkdirSync(path.dirname(selfDevConfigPath()), { recursive: true });
-    fs.writeFileSync(selfDevConfigPath(), JSON.stringify({ enabled: !!enabled }, null, 2));
+    fs.writeFileSync(selfDevConfigPath(), JSON.stringify({ enabled: !!enabled, checkout: resolveRepoRoot() }, null, 2));
     return true;
   } catch { return false; }
 }
@@ -1293,6 +1292,7 @@ let packagedRuntimeParity = null;
 
 registerUpdateBridge(ipcMain, app, shell, {
   getRepoRoot: resolveRepoRoot,
+  allowSourceUpdates: !isPackaged || usesDevelopmentCheckout() || selfDevEnabled(),
   getRuntimeParity: () => packagedRuntimeParity,
   // A Finder/Dock launch gets a stripped launchd PATH, so npm/uv are not found
   // and the rebuild spawns with ENOENT ("spawn npm ENOENT") -- the source pulls
@@ -1384,9 +1384,7 @@ async function ensurePuppetmasterParity(repoRoot) {
 async function ensurePackagedCheckout() {
   if (!isPackaged) return resolveRepoRoot();
   const repoRoot = resolveRepoRoot();
-  // Do not set HARNESS_REPO to the Marionette checkout. resolveRepoRoot() already
-  // uses packagedRepoRoot() when HARNESS_REPO is unset; HARNESS_REPO is reserved
-  // for the user's open project (restored from workspace.json by the backend).
+  // HARNESS_REPO remains the user's open project, independent of this runtime root.
   if (isInstallComplete(repoRoot)) {
     await ensurePuppetmasterParity(repoRoot);
     return repoRoot;
@@ -1398,6 +1396,7 @@ async function ensurePackagedCheckout() {
   const send = (msg, pct) => sendBootstrapProgress(win, msg, pct);
   try {
     await runBootstrap(repoRoot, send);
+    await ensurePuppetmasterParity(repoRoot);
     return repoRoot;
   } finally {
     try { if (bootstrapWin) bootstrapWin.close(); } catch {}
@@ -1408,6 +1407,8 @@ async function ensurePackagedCheckout() {
 // --- window bounds persistence -------------------------------------------
 // Restore the main window's last size/position/maximized state across runs
 // (like every other desktop app). State lives beside other pmharness state.
+const MIN_WINDOW_WIDTH = 900;
+const MIN_WINDOW_HEIGHT = 600;
 function windowStatePath() {
   return path.join(os.homedir(), ".pmharness", "window-state.json");
 }
@@ -1419,8 +1420,8 @@ function loadWindowState() {
     const { x, y, width, height, maximized } = j;
     if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
     const state = {
-      width: Math.max(640, Math.round(width)),
-      height: Math.max(480, Math.round(height)),
+      width: Math.max(MIN_WINDOW_WIDTH, Math.round(width)),
+      height: Math.max(MIN_WINDOW_HEIGHT, Math.round(height)),
       maximized: !!maximized,
     };
     // Only restore a position that is still (mostly) on a connected display —
@@ -1644,6 +1645,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: saved ? saved.width : 1440,
     height: saved ? saved.height : 900,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     ...(saved && Number.isFinite(saved.x) ? { x: saved.x, y: saved.y } : {}),
     ...translucency.surfaceOptions(),
     titleBarStyle: "hiddenInset",

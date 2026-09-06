@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { execFileSync } = require("node:child_process");
 const git = (dir, ...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
-function fixture(t) {
+function fixture(t, packaged = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bootstrap-revision-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin"); fs.mkdirSync(origin);
@@ -29,7 +29,9 @@ function fixture(t) {
     npm: async (args, opts) => { calls.push(args.join(" ")); if (args[0] === "ci") fs.mkdirSync(path.join(opts.cwd, "node_modules"), { recursive: true }); else { if (failBuild) throw Error("interrupted build"); fs.mkdirSync(path.join(opts.cwd, "dist"), { recursive: true }); fs.writeFileSync(path.join(opts.cwd, "dist/index.html"), "built"); } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "bootstrap.cjs"), "utf8") + '\nhydratePath = () => {}; ensurePortableGit = ensureUv = ensurePortableNode = async () => {}; provisionPython = provision; runNpmAsync = npm;', context);
-  return { origin, dest, revision, calls, packagedDir, api: context.module.exports, fail: () => { failBuild = true; }, recover: () => { failBuild = false; } };
+  if (packaged) vm.runInNewContext(`bootstrapTarget = () => (${JSON.stringify({ mode: "packaged", repo: origin, revision })});`, context);
+  return { origin, dest, revision, calls, packagedDir, api: context.module.exports,
+    retarget: sha => vm.runInNewContext(`bootstrapTarget = () => (${JSON.stringify({ mode: "packaged", repo: origin, revision: sha })});`, context), fail: () => { failBuild = true; }, recover: () => { failBuild = false; } };
 }
 test("bootstrap pins the requested commit even when main has advanced", async t => {
   const f = fixture(t); await f.api.runBootstrap(f.dest);
@@ -155,4 +157,76 @@ test("failed rebuild cannot reuse old dist or a previous success receipt", async
   f.recover(); await f.api.runBootstrap(f.dest);
   assert.equal(f.calls.filter(x => x === "ci").length, 3);
   assert.equal(f.api.isInstallComplete(f.dest), true);
+});
+
+for (const dirty of ['untracked', 'tracked', 'origin']) {
+  test(`production selection preserves legacy ${dirty} and reuses one pinned checkout`, async t => {
+    const f = fixture(t, true);
+    const home = path.dirname(f.dest);
+    const legacy = path.join(home, '.marionette', 'marionette');
+    await f.api.runBootstrap(legacy);
+    const userFile = path.join(legacy, dirty === 'tracked' ? 'pyproject.toml' : 'tests/test_stream_chat_framing_done.py');
+    fs.mkdirSync(path.dirname(userFile), { recursive: true });
+    fs.writeFileSync(userFile, 'user work\n\x00exact bytes');
+    if (dirty === 'origin') git(legacy, 'remote', 'set-url', 'origin', f.origin + '-unrelated');
+    const hash = file => require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const before = hash(userFile), head = git(legacy, 'rev-parse', 'HEAD');
+    const selected = f.api.selectPackagedCheckout({ home, env: {} });
+    assert.notEqual(selected, legacy);
+    f.fail(); await assert.rejects(f.api.runBootstrap(selected), /interrupted build/);
+    assert.equal(f.api.isInstallComplete(selected), false);
+    f.recover(); await f.api.runBootstrap(selected);
+    const calls = f.calls.length;
+    assert.equal(f.api.selectPackagedCheckout({ home, env: {} }), selected);
+    await f.api.runBootstrap(selected);
+    assert.equal(f.calls.length, calls);
+    assert.equal(git(selected, 'rev-parse', 'HEAD'), f.revision);
+    assert.equal(hash(userFile), before);
+    assert.equal(git(legacy, 'rev-parse', 'HEAD'), head);
+    assert.equal(fs.readdirSync(path.dirname(selected)).length, 2);
+  });
+}
+
+test('explicit development choices retain their checkout contract', () => {
+  const { selectPackagedCheckout } = require('./bootstrap.cjs');
+  const home = path.resolve(os.tmpdir(), 'selection-only');
+  for (const key of ['MARIONETTE_CHECKOUT', 'HARNESS_CHECKOUT']) {
+    assert.equal(selectPackagedCheckout({ home, env: { [key]: '/chosen' } }), '/chosen');
+  }
+  for (const env of [{ MARIONETTE_BRANCH: 'dev' }, { MARIONETTE_REVISION: 'a'.repeat(40) },
+    { MARIONETTE_REPO_URL: '/fork' }, { MARIONETTE_SELF_DEV: 'true' }, { PMHARNESS_DEV_SERVER: 'http://localhost:5273' }]) {
+    assert.equal(selectPackagedCheckout({ home, env }), path.join(home, '.marionette', 'marionette'));
+  }
+  assert.equal(selectPackagedCheckout({ home, env: { MARIONETTE_SELF_DEV: 'false' } }),
+    selectPackagedCheckout({ home, env: {} }));
+});
+
+
+test('persisted self-dev honors the legacy root and records the current root for later toggles', () => {
+  const { selectPackagedCheckout } = require('./bootstrap.cjs');
+  const home = path.resolve(os.tmpdir(), 'persisted-self-dev');
+  const release = selectPackagedCheckout({ home, env: {} });
+  assert.equal(selectPackagedCheckout({ home, env: {}, selfDev: true }), path.join(home, '.marionette', 'marionette'));
+  assert.equal(selectPackagedCheckout({ home, env: {}, selfDev: true, selfDevCheckout: release }), release);
+  assert.equal(selectPackagedCheckout({ home, env: { HARNESS_CHECKOUT: '/explicit' }, selfDev: true, selfDevCheckout: release }), '/explicit');
+});
+
+
+test('a replacement installer rebuilds the same production slot at its new pinned revision', async t => {
+  const f = fixture(t, true);
+  const selected = f.api.selectPackagedCheckout({ home: path.dirname(f.dest), env: {} });
+  await f.api.runBootstrap(selected);
+  const next = git(f.origin, 'rev-parse', 'HEAD');
+  f.retarget(next);
+  assert.equal(f.api.isInstallComplete(selected), false);
+  await f.api.runBootstrap(selected);
+  assert.equal(git(selected, 'rev-parse', 'HEAD'), next);
+  await f.api.runBootstrap(selected);
+  assert.equal(f.calls.filter(x => x === 'ci').length, 2);
+  assert.deepEqual(fs.readdirSync(path.dirname(selected)), ['release']);
+  fs.writeFileSync(path.join(selected, 'user-work.txt'), 'preserve even in release slot');
+  f.retarget(f.revision);
+  await assert.rejects(f.api.runBootstrap(selected), /Local changes/);
+  assert.equal(fs.readFileSync(path.join(selected, 'user-work.txt'), 'utf8'), 'preserve even in release slot');
+  assert.equal(git(selected, 'rev-parse', 'HEAD'), next);
 });

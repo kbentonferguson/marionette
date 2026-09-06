@@ -607,3 +607,101 @@ body.is-row-resizing iframe {
 .chat-column [data-testid="composer-chrome"] {
   user-select: none;
 }
+
+/* Live shell panes keep their DOM and subscriptions in both presentations. */
+:root {
+  --shell-drawer-gap: 16px;
+  --shell-drawer-left-width: 336px;
+  --shell-drawer-right-width: 520px;
+  --shell-dialog-width: 480px;
+  --shell-overlay-radius: 12px;
+  --shell-hit-size: 44px;
+}
+.shell-surface {
+  padding: 0;
+  color: inherit;
+  background: var(--shell-overlay);
+  border: 1px solid var(--shell-panel-border);
+  overflow: hidden;
+  min-width: 0;
+}
+.shell-surface:not([open]) { display: none; }
+.shell-surface[open] { display: flex; flex-direction: column; }
+.shell-surface[data-presentation="inline"] {
+  position: static;
+  margin: 0;
+  height: 100%;
+  max-height: none;
+  max-width: none;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+}
+.shell-surface::backdrop { background: rgb(0 0 0 / 48%); }
+.shell-surface[data-presentation="left"],
+.shell-surface[data-presentation="right"] {
+  position: fixed;
+  inset-block: var(--shell-drawer-gap);
+  height: calc(100dvh - 2 * var(--shell-drawer-gap));
+  max-height: calc(100dvh - 2 * var(--shell-drawer-gap));
+  max-width: calc(100vw - 2 * var(--shell-drawer-gap));
+  margin: 0;
+  border-radius: var(--shell-overlay-radius);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 32%);
+}
+.shell-surface[data-presentation="left"] {
+  left: var(--shell-drawer-gap); right: auto;
+  width: var(--shell-drawer-left-width);
+}
+.shell-surface[data-presentation="right"] {
+  right: var(--shell-drawer-gap); left: auto;
+  width: var(--shell-drawer-right-width);
+}
+.shell-surface[data-presentation="modal"] {
+  width: var(--shell-dialog-width);
+  max-width: calc(100vw - 2 * var(--shell-drawer-gap));
+  max-height: calc(100dvh - 2 * var(--shell-drawer-gap));
+  margin: auto;
+  border-radius: var(--shell-overlay-radius);
+}
+.shell-surface-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--shell-panel-border);
+  flex-shrink: 0;
+}
+.shell-surface-header h2 { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.shell-surface-header button { min-height: var(--shell-hit-size); padding-inline: 8px; }
+.shell-surface-content { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.shell-surface[data-presentation="modal"] .shell-surface-content { overflow: auto; padding: 16px; }
+.shell-surface[data-presentation="modal"] section { border: 0; padding: 0; overflow-wrap: anywhere; }
+.shell-surface:not([data-presentation="inline"]) .session-rail-drag { display: none; }
+.session-rail [data-session-row] {
+  min-height: 36px;
+  border-radius: 6px;
+  color: theme('colors.txt');
+  transition-property: background-color, color;
+}
+.session-rail [data-session-row]:hover { background: theme('colors.panel2'); }
+.session-rail [data-session-row][aria-current="true"] { background: theme('colors.panel2'); box-shadow: inset 2px 0 theme('colors.accent'); }
+.session-rail [data-session-row] > .flex { width: 100%; }
+.session-rail [data-session-row] .text-faint { font-family: inherit; color: theme('colors.muted'); }
+.session-context-menu { max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; }
+@media (max-width: 799px) {
+  html { font-size: 14px; }
+  .session-rail [data-session-row], .session-context-menu button { min-height: var(--shell-hit-size); }
+}
+.session-rail [data-session-row] > .flex .truncate { color: theme('colors.txt'); font-size: 13px; font-weight: 500; }
+.shell-surface[data-presentation="modal"] :is(button, select),
+nav[aria-label="Workspace views"] button { min-height: var(--shell-hit-size); }
+.shell-surface[data-presentation="inline"][aria-label="Sessions"] {
+  border-radius: var(--shell-panel-radius);
+  border: 1px solid var(--shell-panel-border);
+  background: var(--shell-panel);
+}
+.shell-dock-slot { display: contents; }
+@media (max-width: 479px) {
+  .shell-dock-slot { display: none; }
+}
+.shell-surface-header h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-surface-header button { flex-shrink: 0; }

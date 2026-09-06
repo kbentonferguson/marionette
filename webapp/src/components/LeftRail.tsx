@@ -84,11 +84,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
 }) {
+  const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
+  const contextTrigger = useRef<HTMLElement | null>(null);
+  const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
+  const [forkOpen, setForkOpen] = useState(false);
   const [swapping, setSwapping] = useState<string | null>(null);
   const operationalDiagnostic = useOperationalDiagnostic();
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
+    session: Pick<Session, "id" | "title" | "forked_from">;
     sessionId: string;
     title: string;
     settled: boolean;
@@ -1100,11 +1105,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     toast(ok ? `Copied transcript ID ${sid}` : "Could not copy transcript ID");
   };
 
-  const handleContextMenu = (e: React.MouseEvent, s: Session, allowSettle: boolean) => {
+  const handleContextMenu = (e: React.MouseEvent, s: Pick<Session, "id" | "title" | "forked_from" | "settled" | "archived">, allowSettle: boolean) => {
     e.preventDefault();
+    if (e.currentTarget instanceof HTMLElement) {
+      contextTrigger.current = e.currentTarget;
+      e.currentTarget.focus();
+    }
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      session: s,
+      x: Math.max(8, Math.min(e.clientX, window.innerWidth - 208)),
+      y: Math.max(8, Math.min(e.clientY, window.innerHeight - 400)),
       sessionId: s.id,
       title: displaySessionListTitle(s.title),
       settled: !!s.settled,
@@ -1408,14 +1418,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   return (
-    <aside ref={railRef} className="bg-transparent flex flex-col h-full overflow-hidden text-[0.8125rem]">
+    <aside ref={railRef} className="session-rail bg-transparent flex flex-col h-full overflow-hidden text-[0.8125rem]">
       <div ref={topChromeRef}>
       {/* Keep the native traffic-light/titlebar area separate from the actions.
           The same draggable region also preserves window movement on other
           desktop platforms. */}
       <div
         aria-hidden="true"
-        className="h-12 shrink-0"
+        className="session-rail-drag h-12 shrink-0"
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       />
 
@@ -1462,25 +1472,28 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         data-slot="left-rail-upper-sections"
         className={`min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}
       >
-      {sessions.filter((session) => session.active).map((session) => (
+      {forkTarget && (
         <SessionFork
-          key={session.id}
-          session={session}
+          key={forkTarget.id}
+          session={forkTarget}
+          open={forkOpen}
+          returnFocus={forkTrigger}
+          onClose={() => setForkOpen(false)}
           sessions={[...sessions, ...bankSessions.filter((row) => !sessions.some((current) => current.id === row.id))]}
-          onSelect={(id) => { void switchSession(id); }}
+          onSelect={(id) => { setForkOpen(false); void switchSession(id); }}
           onCreated={(child) => {
             const root = child.workspace_root || child.repo || "";
             const cached = readSWRCache<Session[]>(`sessions:${root}`) || [];
             writeSessionListCache(root, [...cached.filter((row) => row.id !== child.id), child]);
             if (repoPathsEqual(root, currentRepoRef.current)) {
-              mutateSessions([...sessions.filter((row) => row.id !== child.id), child]);
+              mutateSessions([...cached.filter((row) => row.id !== child.id), child]);
             }
             setSessionsCacheEpoch((epoch) => epoch + 1);
             void revalidateSessions();
             void refreshBankSessions();
           }}
         />
-      ))}
+      )}
       {/* Projects | Sessions toggle */}
       <div className="px-2.5 pt-2 flex items-center gap-0 border-b border-edge/35">
         <button
@@ -1545,6 +1558,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {sessionSearchRows.map((row) => (
                   <button
                     key={row.id}
+                    data-session-row="true"
+                    onContextMenu={(event) => {
+                      const source = [...sessions, ...bankSessions].find((session) => session.id === row.id);
+                      handleContextMenu(event, source || { id: row.id, title: row.title, settled: row.settled }, false);
+                    }}
                     type="button"
                     disabled={!!switchingSessionId || opening}
                     onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
@@ -1607,6 +1625,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       disabled={!!switchingSessionId || opening}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                      data-session-row="true"
+                      aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
                       className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
@@ -1785,6 +1805,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 disabled={!!switchingSessionId || opening}
                                 title={s.preview ? `${displaySessionListTitle(s.title)}\n${s.preview}` : displaySessionListTitle(s.title)}
+                                data-session-row="true"
+                                aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                 onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                 className={`flex-1 min-w-0 h-7 text-left rounded pl-2.5 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
@@ -1888,6 +1910,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 <button
                                   onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                   disabled={!!switchingSessionId || opening}
+                                  data-session-row="true"
+                                  aria-current={s.active ? "true" : undefined}
                                   onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                   onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                   className={`flex-1 min-w-0 h-6 text-left rounded px-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
@@ -1964,6 +1988,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                       disabled={!!switchingSessionId || opening}
+                      data-session-row="true"
+                      aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, true)}
                       className={`w-full h-7 text-left rounded px-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
@@ -2266,10 +2292,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {/* CONTEXT MENU */}
       {contextMenu && (
         <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[150px]"
+          className="session-context-menu fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[150px]"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
+          <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+            onClick={() => {
+              setForkTrigger(contextTrigger.current);
+              setForkTarget(contextMenu.session);
+              setForkOpen(true);
+              setContextMenu(null);
+            }}>Fork session</button>
           {contextMenu.running && (
             <>
               <button

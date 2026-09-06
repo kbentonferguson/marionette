@@ -5,8 +5,9 @@ import { LEFT_MIN_W, MIN_CENTER_W, RAIL_GUTTER_W, RIGHT_MIN_W } from "./railLayo
 const CONTENT_MIN_W = 480;
 const DOCK_W = 68;
 const SHELL_FRAME_W = 4;
-export const COMPACT_SHELL_WIDTH = CONTENT_MIN_W + DOCK_W + LEFT_MIN_W + RIGHT_MIN_W
+export const DUAL_RAIL_SHELL_WIDTH = CONTENT_MIN_W + DOCK_W + LEFT_MIN_W + RIGHT_MIN_W
   + 2 * RAIL_GUTTER_W + SHELL_FRAME_W;
+export const COMPACT_SHELL_WIDTH = 800;
 // railLayout already budgets MIN_CENTER_W and two pixels of frame.
 export const SHELL_EXTRA_CENTER_W = CONTENT_MIN_W + DOCK_W - MIN_CENTER_W + SHELL_FRAME_W - 2;
 export type ShellView = "chat" | "left" | "right";
@@ -45,7 +46,7 @@ export function useResponsiveShell(initialLeft: boolean, initialRight: boolean) 
     });
   }, [compact]);
   return {
-    width, compact, view, setView, desktopLeftOpen, desktopRightOpen,
+    width, compact, rightDrawer: width < DUAL_RAIL_SHELL_WIDTH, view, setView, desktopLeftOpen, desktopRightOpen,
     leftOpen: compact ? view === "left" : desktopLeftOpen,
     rightOpen: compact ? view === "right" : desktopRightOpen,
     setLeftOpen, setRightOpen,

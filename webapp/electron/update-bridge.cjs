@@ -810,7 +810,11 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   // to inherit process.env (dev/CLI runs already have a full env).
   const getEnv = opts.getEnv || (() => process.env);
   const packagedUpdater = opts.packagedUpdater || null;
-  const checkSourceUpdate = opts.checkSourceUpdate || checkForUpdate;
+  // A managed production checkout is pinned by its installer. Pulling a branch
+  // here would build code that the next launch immediately replaces.
+  const checkSourceUpdate = opts.allowSourceUpdates === false
+    ? async () => ({ available: false })
+    : (opts.checkSourceUpdate || checkForUpdate);
   const applySourceUpdate = opts.applySourceUpdate || applyUpdate;
   const readCheckoutVersion = opts.readCheckoutVersion || readCheckoutPackageVersion;
   // Startup Puppetmaster parity result (puppetmaster-runtime.cjs). A stale

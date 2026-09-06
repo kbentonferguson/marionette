@@ -94,3 +94,21 @@ def test_legacy_items_are_not_automatically_imported():
     s = _session(d)
     assert s.list_prompts() == []
     assert json.loads(s.prompt_queue_recovery()[0]["content"]) == payload
+
+
+def test_empty_legacy_queue_does_not_raise_recovery_notice(tmp_path):
+    legacy = tmp_path / "prompt_queue.json"
+    original = b'{ "queue": [] }\n'
+    legacy.write_bytes(original)
+    s = _session(str(tmp_path))
+    assert s.prompt_queue_recovery() == []
+    assert legacy.read_bytes() == original
+
+
+def test_unknown_legacy_fields_remain_recoverable(tmp_path):
+    legacy = tmp_path / "prompt_queue.json"
+    original = '{"queue": [], "draft": "keep this original"}'
+    legacy.write_text(original)
+    s = _session(str(tmp_path))
+    assert s.prompt_queue_recovery()[0]["content"] == original
+    assert legacy.read_text() == original
