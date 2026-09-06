@@ -82,20 +82,35 @@ test("wrong origin and untracked user files are preserved and refused", async t 
   assert.equal(fs.readFileSync(path.join(f.origin, "saved.txt"), "utf8"), "keep");
 });
 
-test("packaging hook embeds actual HEAD even before a version tag exists", t => {
+test("packaging hook embeds actual HEAD through the installed builder callback", async t => {
   const f = fixture(t);
   const appDir = path.join(f.origin, "webapp"); fs.mkdirSync(path.join(appDir, "electron"));
   fs.appendFileSync(path.join(f.origin, ".gitignore"), "webapp/electron/bootstrap-revision.json\n");
   fs.writeFileSync(path.join(appDir, "package.json"), '{"version":"99.0.0"}');
   git(f.origin, "add", "."); git(f.origin, "commit", "-qm", "packaging");
   const hook = require("./write-bootstrap-revision.cjs");
-  const metadata = hook({ appDir });
+  const { PlatformPackager } = require("app-builder-lib");
+  const stopAfterHook = new Error("stop before dependency installation");
+  let metadata;
+  const packager = {
+    packagerOptions: {},
+    info: {
+      appDir,
+      cancellationToken: { cancelled: false },
+      emitBeforePack(context) { metadata = hook(context); },
+      installAppDependencies() { throw stopAfterHook; },
+    },
+  };
+  await assert.rejects(
+    PlatformPackager.prototype.doPack.call(packager, {}),
+    error => error === stopAfterHook,
+  );
   assert.equal(metadata.revision, git(f.origin, "rev-parse", "HEAD"));
   assert.equal(metadata.tree, git(f.origin, "rev-parse", "HEAD^{tree}"));
   assert.equal(metadata.version, "99.0.0");
-  assert.deepEqual(hook({ packager: { appDir } }), metadata);
+  assert.deepEqual(hook({ packager }), metadata);
   fs.writeFileSync(path.join(appDir, "package.json"), '{"version":"dirty"}');
-  assert.throws(() => hook({ appDir }), /dirty checkout/);
+  assert.throws(() => hook({ packager }), /dirty checkout/);
   const config = fs.readFileSync(path.join(__dirname, "../electron-builder.yml"), "utf8");
   assert.match(config, /beforePack: .\/electron\/write-bootstrap-revision.cjs/);
   assert.match(config, /electron\/\*\*\/\*/);

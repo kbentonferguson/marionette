@@ -63,7 +63,7 @@ def resolve_request(method, target, endpoint_id):
     u = urlsplit(target)
     if method != 'GET' or u.path not in ROUTES or u.fragment or u.netloc or u.scheme:
         raise DeviceDenied()
-    qs = parse_qs(u.query, keep_blank_values=True, strict_parsing=True)
+    qs = parse_qs(u.query, keep_blank_values=True, strict_parsing=True) if u.query else {}
     op = ROUTES[u.path]
     allowed = set() if op == 'endpoint.read' else {'session_id'}
     if op == 'session.events.read':

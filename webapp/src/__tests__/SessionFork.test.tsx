@@ -66,7 +66,7 @@ it("keeps one child link after sessions refresh and creates a sibling with fresh
   fireEvent.click(screen.getByRole("button", { name: "Fork session" }));
   fireEvent.click(await screen.findByRole("button", { name: "Create fork" }));
   const another = await screen.findByRole("button", { name: "Create another fork" });
-  expect(document.activeElement).toBe(another);
+  await waitFor(() => expect(document.activeElement).toBe(another));
   expect(screen.getAllByRole("button", { name: "Open Fork of Source" })).toHaveLength(1);
   view.rerender(<SessionFork session={source} sessions={[source, child]} onSelect={onSelect} onCreated={onCreated} />);
   expect(screen.getAllByRole("button", { name: "Open Fork of Source" })).toHaveLength(1);

@@ -138,6 +138,9 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._pin = pin
         super().__init__(*args, **kwargs)
 
+    # Python 3.9 has no 308 dispatch; use the same validated redirect path.
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
     @staticmethod
     def _origin(url):
         parsed = urllib.parse.urlsplit(url)
@@ -163,7 +166,8 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             self._pin.ip = ip
         same_origin = self._origin(req.full_url) == self._origin(newurl)
         newurl = normalize_url_for_request(newurl)
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        compatible_code = 307 if code == 308 and req.get_method() in {"GET", "HEAD"} else code
+        redirected = super().redirect_request(req, fp, compatible_code, msg, headers, newurl)
         # Configured credential names are arbitrary: only transport metadata
         # may cross origins. Host must be regenerated for the destination.
         safe_headers = {"accept", "accept-encoding", "user-agent", "mcp-protocol-version"}

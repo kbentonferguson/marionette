@@ -5,7 +5,7 @@ const { execFileSync } = require("node:child_process");
 
 // beforePack also covers direct electron-builder invocations outside npm scripts.
 function writeBootstrapRevision(context) {
-  const appDir = context.appDir || context.packager.appDir;
+  const appDir = context.packager.info.appDir;
   const git = (...args) => execFileSync("git", ["-C", appDir, ...args], { encoding: "utf8" }).trim();
   if (git("status", "--porcelain", "--untracked-files=all")) {
     throw new Error("Cannot package an exact source revision from a dirty checkout. Commit or move changes, then rebuild.");

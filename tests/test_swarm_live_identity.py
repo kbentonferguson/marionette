@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -105,7 +106,7 @@ def test_merge_preserves_colliding_store_rows(collision, monkeypatch):
     assert len(rows) == 3
     from harness.job_scoping import annotate_jobs_accounting
     tagged = annotate_jobs_accounting(rows, active_session_id='session-a', tasks_by_job=tasks)
-    assert [r['cwd'] for r in tagged[1:]] == [str(primary.root.parent)] * 2
+    assert [Path(r['cwd']) for r in tagged[1:]] == [primary.root.parent] * 2
 
 
 def test_failed_foreign_open_does_not_borrow_primary_cli(collision, monkeypatch):

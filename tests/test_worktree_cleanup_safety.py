@@ -172,7 +172,7 @@ def test_branch_prune_preserves_unmerged_release_tree_before_removal(repo):
     assert tree.is_dir()
     assert git(repo, 'rev-parse', branch) == tip
     assert result['count'] == 0
-    assert result['skipped'][0]['path'] == str(tree)
+    assert Path(result['skipped'][0]['path']) == tree
 
 
 @pytest.mark.parametrize('anchor', ['main', 'feature-durable'])
