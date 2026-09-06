@@ -120,7 +120,7 @@ def test_cumulative_bytes_exceed_cap_without_unbounded_reads(tmp_path, monkeypat
             return self.handle.read(size)
     def checked(path, *args, **kwargs):
         handle = real_open(path, *args, **kwargs)
-        if '.segments/' in str(path) and args and args[0] == 'rb':
+        if Path(path).parent.name.endswith('.segments') and args and args[0] == 'rb':
             return BoundedReader(handle)
         return handle
     monkeypatch.setattr(builtins, 'open', checked)
@@ -137,13 +137,14 @@ def test_abrupt_exit_during_segment_publication(tmp_path, boundary):
     import sys
     script = '''
 import os, sys
+from pathlib import Path
 from harness import compaction_archive as archive
 from harness.history_compaction_journal import commit_compacted_transcript
 state, boundary = sys.argv[1:]
 replace = os.replace
 def crash(src, dst):
     replace(src, dst)
-    if (boundary == 'segment_published' and '.segments/' in str(dst)) or (boundary == 'manifest_published' and str(dst).endswith('.archive.json')):
+    if (boundary == 'segment_published' and Path(dst).parent.name.endswith('.segments')) or (boundary == 'manifest_published' and str(dst).endswith('.archive.json')):
         os._exit(73)
 os.replace = crash
 commit_compacted_transcript(state, 's', {'history': [{'role':'user','content':'unsaved-exact'}]}, {'history': []}, [{'role':'user','content':'unsaved-exact'}])

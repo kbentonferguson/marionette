@@ -1,7 +1,7 @@
 """Real subprocess effects across logical-action replay and journal recovery."""
-import shlex
-import sys
 from unittest.mock import patch
+
+from command_shell_helpers import python_shell_command
 
 from test_command_batches import _Session, _wait_batch_terminal
 from harness.command_batches import start_command_batch
@@ -11,7 +11,7 @@ def effect_command(exit_code=1, pause=False):
     code = "from pathlib import Path; p=Path('effect'); p.open('a').write('x'); raise SystemExit(%d)" % exit_code
     if pause:
         code = code.replace("raise SystemExit", "import time; time.sleep(2); raise SystemExit")
-    return shlex.quote(sys.executable) + " -c " + shlex.quote(code)
+    return python_shell_command(code)
 
 
 def test_timeout_after_effect_same_action_does_not_repeat(tmp_path):

@@ -136,3 +136,42 @@ def test_retry_after_archive_crash_does_not_duplicate_rows(tmp_path):
     from bench.compaction_durable import FACTS
     for fact in FACTS.values():
         assert sum(fact in str(row.get('content', '')) for row in rows) == 1
+
+
+@pytest.mark.parametrize('publication', ['segment', 'transcript'])
+def test_fsync_failure_retains_original_transcript(tmp_path, monkeypatch, publication):
+    import os
+    import stat
+    from harness import compaction_archive as archive
+    from harness.history_compaction_journal import commit_compacted_transcript
+    from harness.sessions import save_transcript
+    state, sid = str(tmp_path), 'fsync_failure'
+    source = {'history': [{'role': 'user', 'content': 'exact original'}]}
+    target = {'history': [{'role': 'assistant', 'content': 'summary'}]}
+    save_transcript(state, sid, source)
+    real_fsync, real_mkstemp = os.fsync, archive.tempfile.mkstemp
+    selected = set()
+
+    def tracked(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        is_segment = str(kwargs.get('dir', '')).endswith('.segments')
+        is_transcript = kwargs.get('prefix') == sid + '.json.'
+        if (publication == 'segment' and is_segment) or (publication == 'transcript' and is_transcript):
+            selected.add(fd)
+        return fd, path
+
+    def fail_once(fd):
+        if fd in selected:
+            selected.remove(fd)
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError('publication fsync failed')
+        return real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(archive.tempfile, 'mkstemp', tracked)
+        patch.setattr(os, 'fsync', fail_once)
+        with pytest.raises(OSError):
+            commit_compacted_transcript(state, sid, source, target, source['history'])
+    assert load_transcript(state, sid) == source
+    assert load_transcript(state, sid) == source
+    assert archive.load_compaction_archive_messages(state, sid) == []

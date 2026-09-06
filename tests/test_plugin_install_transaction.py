@@ -172,3 +172,121 @@ def test_failed_directory_publication_restores_old(plugins_home, tmp_path, monke
         registry.install_from_path(str(source), force=True)
     assert snapshot(registry.plugins_dir()) == before
     assert not list(registry.plugins_dir().glob('.install-*'))
+
+
+@pytest.mark.parametrize('readonly', [False, True])
+def test_prepare_flushes_writable_staged_files_only(plugins_home, tmp_path, monkeypatch, readonly):
+    import os
+    import stat
+    from harness import plugin_recovery
+    source, old = prepared(tmp_path)
+    payload = source / 'plugin.json'
+    if readonly:
+        payload.chmod(stat.S_IREAD)
+    before_source = snapshot(source)
+    source_mode = stat.S_IMODE(payload.stat().st_mode)
+    real_open, real_fsync = Path.open, os.fsync
+    descriptors = {}
+    flushed = []
+
+    def tracked(path, mode='r', *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if 'b' in mode:
+            descriptors[handle.fileno()] = (path, handle)
+        return handle
+
+    def windows_fsync(fd):
+        if fd in descriptors:
+            path, handle = descriptors.pop(fd)
+            if handle.closed:
+                return real_fsync(fd)
+            if not handle.writable():
+                raise OSError(9, 'Windows fsync requires writable descriptor')
+            assert '.install-' in str(path)
+            assert path != payload and Path(old.path) not in path.parents
+            flushed.append(path)
+        return real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'open', tracked)
+        patch.setattr(plugin_recovery.os, 'fsync', windows_fsync)
+        installed = registry.install_from_path(str(source), force=True)
+    assert flushed
+    assert snapshot(source) == before_source
+    assert stat.S_IMODE(payload.stat().st_mode) == source_mode
+    installed_payload = Path(installed.path) / 'plugin.json'
+    assert installed_payload.read_bytes() == payload.read_bytes()
+    assert stat.S_IMODE(installed_payload.stat().st_mode) == source_mode
+
+
+@pytest.mark.parametrize('failure', ['open', 'fsync'])
+def test_staged_flush_failure_restores_readonly_mode(tmp_path, monkeypatch, failure):
+    import os
+    import stat
+    from harness import plugin_recovery
+    path = tmp_path / 'staged'
+    path.write_bytes(b'preserve staged bytes')
+    path.chmod(0o555)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    real_open = Path.open
+
+    def fail(*args, **kwargs):
+        raise OSError('staged flush failure')
+
+    def fail_open(candidate, mode='r', *args, **kwargs):
+        if candidate == path and mode == 'r+b':
+            fail()
+        return real_open(candidate, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure == 'open':
+            patch.setattr(Path, 'open', fail_open)
+        else:
+            patch.setattr(os, 'fsync', fail)
+        with pytest.raises(OSError, match='staged flush failure'):
+            plugin_recovery._sync_staged_file(path)
+    assert path.read_bytes() == b'preserve staged bytes'
+    assert stat.S_IMODE(path.stat().st_mode) == mode
+
+
+@pytest.mark.parametrize('kind', ['directory', 'symlink', 'hardlink'])
+def test_staged_flush_rejects_non_private_regular_files(tmp_path, kind):
+    import os
+    from harness import plugin_recovery
+    original = tmp_path / 'original'
+    original.write_bytes(b'original')
+    path = tmp_path / 'staged'
+    if kind == 'directory':
+        path.mkdir()
+    elif kind == 'symlink':
+        path.symlink_to(original)
+    else:
+        os.link(original, path)
+    before = original.stat().st_mode
+    with pytest.raises(AgentPluginError, match='non-private regular file'):
+        plugin_recovery._sync_staged_file(path)
+    assert original.read_bytes() == b'original'
+    assert original.stat().st_mode == before
+
+
+def test_staged_fsync_failure_keeps_old_plugin(plugins_home, tmp_path, monkeypatch):
+    import os
+    import stat
+    source, old = prepared(tmp_path)
+    before = snapshot(registry.plugins_dir())
+    original_source = snapshot(source)
+    real_fsync = os.fsync
+
+    def fail(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError('staged fsync failed')
+        return real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', fail)
+        with pytest.raises(OSError, match='staged fsync failed'):
+            registry.install_from_path(str(source), force=True)
+    assert snapshot(registry.plugins_dir()) == before
+    assert snapshot(source) == original_source
+    assert registry.verify_integrity_stamp(Path(old.path)) == old.sha256
+    assert registry.discover_plugins()[0].enabled

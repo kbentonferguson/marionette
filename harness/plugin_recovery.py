@@ -100,6 +100,26 @@ def process_lock(root):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+def _sync_staged_file(path):
+    """Flush an owned copy without changing its bytes or published mode."""
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise AgentPluginError(f'plugin recovery refuses non-private regular file: {path}')
+    mode = stat.S_IMODE(info.st_mode)
+    readonly = not mode & stat.S_IWUSR
+    try:
+        if readonly:
+            path.chmod(mode | stat.S_IWUSR)
+        # Windows fsync requires a writable descriptor, even for copied files.
+        with path.open('r+b') as stream:
+            if readonly:
+                path.chmod(mode)
+            os.fsync(stream.fileno())
+    finally:
+        if readonly:
+            path.chmod(mode)
+
+
 def prepare(transaction, dest, verify):
     root = transaction.parent
     plain_tree(transaction)
@@ -114,8 +134,7 @@ def prepare(transaction, dest, verify):
               'state': state_snapshot(root), 'phase': 'pending'}
     for parent, _, files in os.walk(transaction):
         for name in files:
-            with (Path(parent) / name).open('rb') as stream:
-                os.fsync(stream.fileno())
+            _sync_staged_file(Path(parent) / name)
         sync_directory(Path(parent))
     atomic_bytes(transaction / MARKER, json.dumps(marker).encode())
     sync_directory(root)

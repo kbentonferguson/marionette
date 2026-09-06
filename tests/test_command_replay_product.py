@@ -5,6 +5,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+from command_shell_helpers import python_shell_command
+
 import pytest
 
 from test_command_batches import _Session, _wait_batch_terminal
@@ -85,14 +87,12 @@ def test_restart_unknown_is_durable_and_retains_legacy_receipt(tmp_path):
 
 @pytest.mark.parametrize('reload_session', [True, False])
 def test_product_session_fake_driver_replays_unknown_receipt(tmp_path, reload_session):
-    import shlex
     import subprocess
-    import sys
     from harness.config import HarnessConfig
     from harness.conversation import ConversationalSession
     from pmharness.drivers.base import DriverResponse
 
-    command = shlex.quote(sys.executable) + ' -c ' + shlex.quote("from pathlib import Path; Path('effect').open('a').write('x')")
+    command = python_shell_command("from pathlib import Path; Path('effect').open('a').write('x')")
     config = HarnessConfig(driver='stub-oracle-v2', state_dir=str(tmp_path), repo=str(tmp_path))
     session = ConversationalSession(config)
     with patch('harness.command_batches._start_batch_supervisor'):
@@ -178,8 +178,6 @@ def test_product_session_fake_driver_replays_unknown_receipt(tmp_path, reload_se
 
 
 def test_concurrent_replay_bounds_real_processes(tmp_path):
-    import shlex
-    import sys
     session = _Session(str(tmp_path), str(tmp_path))
     commands = []
     for index in range(4):
@@ -188,10 +186,12 @@ def test_concurrent_replay_bounds_real_processes(tmp_path):
             f"p=Path('started-{index}'); p.write_text('started'); "
             "log=Path('events'); "
             f"log.open('a').write('start {index}\\n'); "
-            "\nwhile not Path('release').exists(): time.sleep(.01)\n"
+            "deadline=time.monotonic()+10\n"
+            "while not Path('release').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+            "assert Path('release').exists(), 'release deadline expired'\n"
             f"log.open('a').write('end {index}\\n')"
         )
-        commands.append(shlex.quote(sys.executable) + ' -c ' + shlex.quote(code))
+        commands.append(python_shell_command(code))
     first = start_command_batch(session, commands, 'real-bound', max_concurrency=2)
     try:
         deadline = time.monotonic() + 3

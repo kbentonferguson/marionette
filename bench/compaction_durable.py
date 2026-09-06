@@ -95,7 +95,7 @@ def crash_child(state, boundary, baseline=''):
     replace = os.replace
 
     def replace_at_boundary(src, dst):
-        target = str(dst).endswith('/' + SID + '.json')
+        target = Path(dst).name == SID + '.json'
         if target and boundary == 'before_transcript_replace':
             os._exit(71)
         replace(src, dst)

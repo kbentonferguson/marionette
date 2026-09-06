@@ -1,11 +1,13 @@
 """Command write barriers and real backend-process crash recovery."""
+import base64
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 from unittest.mock import patch
+
+from command_shell_helpers import python_shell_command
 
 import pytest
 
@@ -19,8 +21,11 @@ def session_at(path):
     return ConversationalSession(HarnessConfig(driver='stub-oracle-v2', state_dir=str(path), repo=str(path)))
 
 
+EFFECT_CODE = "from pathlib import Path; Path('effect').open('a').write('x') # private-command-marker"
+
+
 def command():
-    return shlex.quote(sys.executable) + ' -c ' + shlex.quote("from pathlib import Path; Path('effect').open('a').write('x') # private-command-marker")
+    return python_shell_command(EFFECT_CODE)
 
 
 @pytest.mark.parametrize('boundary', ['registration', 'checkpoint'])
@@ -79,6 +84,7 @@ def test_command_evidence_survives_provider_history_cap(tmp_path):
     assert {r['id'] for r in rows if r.get('role') == 'command'} == {'local-cmd-registered', 'local-cmd-unknown', 'local-cmd-completed'}
     assert len([r for r in rows if r.get('role') == 'implement']) == 200
     assert 'private-command-marker' not in Path(session._local_jobs_path).read_text()
+    assert base64.b64encode(EFFECT_CODE.encode()).decode() not in Path(session._local_jobs_path).read_text()
 
 
 # The child dies in the real command worker; no provider is contacted.
@@ -130,6 +136,7 @@ def test_real_backend_crash_same_action_never_repeats(tmp_path, boundary):
             assert replay['terminal_receipt'] is None
             assert replay['children'][0].get('terminal_receipt') is None
         assert 'private-command-marker' not in Path(session._local_jobs_path).read_text()
+        assert base64.b64encode(EFFECT_CODE.encode()).decode() not in Path(session._local_jobs_path).read_text()
     assert ((tmp_path / 'effect').read_text() if (tmp_path / 'effect').exists() else '') == ('' if boundary == 'before_launch' else 'x')
 
 

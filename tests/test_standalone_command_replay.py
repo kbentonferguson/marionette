@@ -2,11 +2,12 @@
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import time
 from unittest.mock import patch
+
+from command_shell_helpers import python_shell_command
 
 import pytest
 
@@ -22,8 +23,8 @@ def session_at(root):
     return s
 
 
-def command():
-    return shlex.quote(sys.executable) + ' -c ' + shlex.quote("from pathlib import Path; Path('effect').open('a').write('x')")
+def command(exit_code=0):
+    return python_shell_command("from pathlib import Path; Path('effect').open('a').write('x'); raise SystemExit(%d)" % exit_code)
 
 
 def dispatch(s, cmd, background, aid='same-action'):
@@ -170,7 +171,7 @@ def test_same_process_concurrent_replay(tmp_path, background):
     from concurrent.futures import ThreadPoolExecutor
     s = session_at(tmp_path)
     # Hold the real child across simultaneous dispatch calls.
-    cmd = shlex.quote(sys.executable) + ' -c ' + shlex.quote("from pathlib import Path; import time; Path('effect').open('a').write('x'); time.sleep(.2)")
+    cmd = python_shell_command("from pathlib import Path; import time; Path('effect').open('a').write('x'); time.sleep(.2)")
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: dispatch(s, cmd, background), range(4)))
     assert len({r['job_id'] for r in results}) == 1
@@ -248,7 +249,7 @@ def test_native_send_receives_unknown_on_two_cold_replays(tmp_path, background):
 
 @pytest.mark.parametrize('background', [False, True])
 def test_failed_exit_replays_failure(tmp_path, background):
-    cmd = command() + '; exit 7'
+    cmd = command(exit_code=7)
     s = session_at(tmp_path)
     first = dispatch(s, cmd, background)
     assert settle(s, first)['status'] == 'failed'
@@ -260,7 +261,7 @@ def test_failed_exit_replays_failure(tmp_path, background):
 
 @pytest.mark.parametrize('background', [False, True])
 def test_replay_output_stays_bounded(tmp_path, background):
-    cmd = shlex.quote(sys.executable) + ' -c ' + shlex.quote("print('x' * 80000)")
+    cmd = python_shell_command("print('x' * 80000)")
     s = session_at(tmp_path)
     first = dispatch(s, cmd, background)
     assert settle(s, first)['status'] == 'completed'
@@ -344,3 +345,34 @@ def test_independent_launch_ownership(tmp_path, same_cwd, failure):
         assert held.get_local_job(held_row['id'])['status'] == 'completed'
     expected = 1 if failure in ('thread_start', 'orphan') else 2
     assert sum(len((root / 'effect').read_text()) for root in roots if (root / 'effect').exists()) == expected
+
+
+@pytest.mark.parametrize('background', [False, True])
+@pytest.mark.parametrize('executable_path', ['current', 'spaces'])
+def test_shell_fixture_quotes_and_executable_paths(tmp_path, background, executable_path):
+    import venv
+
+    executable = sys.executable
+    if executable_path == 'spaces':
+        env_dir = tmp_path / 'python environment with spaces'
+        venv.EnvBuilder(with_pip=False, symlinks=os.name != 'nt').create(env_dir)
+        executable = str(env_dir / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python'))
+    expected = 'single\' double" percent%PATH% bang! caret^ amp& pipe| less< greater> backslash\\\nnext line'
+    code = (
+        'from pathlib import Path\n'
+        f'value = {expected!r}\n'
+        'with Path("quoted effect").open("a", encoding="utf-8") as effect:\n'
+        '    effect.write(value)\n'
+        'raise SystemExit(7)\n'
+    )
+    cmd = python_shell_command(code, executable=executable)
+    s = session_at(tmp_path)
+    first = dispatch(s, cmd, background)
+    settled = settle(s, first)
+    assert settled['status'] == 'failed'
+    assert settled['exit_code'] == 7, settled.get('output')
+    replay = dispatch(session_at(tmp_path), cmd, background)
+    assert replay['job_id'] == first['job_id']
+    assert replay['status'] == 'failed'
+    assert replay['exit_code'] == 7
+    assert (tmp_path / 'quoted effect').read_text(encoding='utf-8') == expected
