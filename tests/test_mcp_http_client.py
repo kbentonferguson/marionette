@@ -145,14 +145,9 @@ def test_redirect_updates_shared_pinned_ip(monkeypatch):
 
     monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
     handler = SafeRedirectHandler(pin=pin)
-    # Avoid actually building a follow-up Request; we only care about pin update.
-    monkeypatch.setattr(
-        urllib.request.HTTPRedirectHandler,
-        "redirect_request",
-        lambda self, *a, **k: None,
-    )
     handler.redirect_request(
-        req=None, fp=None, code=302, msg="Found",
+        req=urllib.request.Request("http://mcp.example.com/rpc"),
+        fp=None, code=302, msg="Found",
         headers={}, newurl="http://other.example.com/rpc",
     )
     assert pin.ip == "10.0.0.99"
@@ -179,3 +174,126 @@ def test_http_mcp_alive_clears_on_unreachable(monkeypatch):
     with pytest.raises(McpError):
         client._post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, timeout=1.0)
     assert client.alive is False
+
+
+@pytest.fixture
+def redirect_handler(monkeypatch):
+    from harness.web_tools import _PinnedIP
+
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    monkeypatch.setattr(
+        "harness.url_safety.socket.getaddrinfo",
+        lambda host, port, *a, **kw: [(2, 1, 6, "", ("10.0.0.99", port or 0))],
+    )
+    return SafeRedirectHandler(pin=_PinnedIP("10.0.0.1"))
+
+
+def _credential_request(url, unredirected=False):
+    req = urllib.request.Request(url, data=b"{}", method="POST")
+    add = req.add_unredirected_header if unredirected else req.add_header
+    for name in (
+        "Authorization", "Mcp-Session-Id", "X-Arbitrary-Credential",
+        "Cookie", "Proxy-Authorization",
+    ):
+        add(name, "test-placeholder")
+    for name, value in {
+        "Accept": "application/json, text/event-stream",
+        "Accept-Encoding": "identity",
+        "User-Agent": "test-client",
+        "MCP-Protocol-Version": "2024-11-05",
+        "Content-Type": "application/json",
+        "Content-Length": "2",
+        "Host": "mcp.example",
+    }.items():
+        add(name, value)
+    return req
+
+
+@pytest.mark.parametrize("unredirected", [False, True])
+@pytest.mark.parametrize("source,target,same_origin", [
+    ("https://mcp.example/rpc", "https://other.example/rpc", False),
+    ("https://mcp.example/rpc", "http://mcp.example/rpc", False),
+    ("https://mcp.example/rpc", "https://mcp.example:444/rpc", False),
+    ("https://mcp.example/rpc", "https://mcp.example/next", True),
+    ("https://MCP.example/rpc", "https://mcp.EXAMPLE:443/next", True),
+    ("http://mcp.example:80/rpc", "http://mcp.example/next", True),
+    ("https://mcp.example:444/rpc", "https://mcp.example:444/next", True),
+    ("https://b\u00fccher.example/rpc", "https://xn--bcher-kva.example/next", True),
+])
+def test_redirect_header_boundary(redirect_handler, source, target, same_origin, unredirected):
+    req = _credential_request(source, unredirected)
+    original_headers = req.header_items()
+    redirected = redirect_handler.redirect_request(req, None, 302, "Found", {}, target)
+    names = {name.lower() for name, _ in redirected.header_items()}
+    safe = {"accept", "accept-encoding", "user-agent", "mcp-protocol-version"}
+    credentials = {
+        "authorization", "mcp-session-id", "x-arbitrary-credential",
+        "cookie", "proxy-authorization",
+    }
+    assert names == safe | (credentials if same_origin else set())
+    assert redirected.get_method() == "GET"
+    assert redirected.data is None
+    assert req.header_items() == original_headers
+    assert redirect_handler._pin.ip == "10.0.0.99"
+
+
+@pytest.mark.parametrize("unredirected", [False, True])
+def test_redirect_chain_never_restores_credentials(redirect_handler, unredirected):
+    req = _credential_request("https://mcp.example/rpc", unredirected)
+    for target in (
+        "https://mcp.example/next", "https://other.example/rpc",
+        "https://other.example/next", "https://mcp.example/back",
+    ):
+        req = redirect_handler.redirect_request(req, None, 302, "Found", {}, target)
+        names = {name.lower() for name, _ in req.header_items()}
+        assert ("authorization" in names) == (target == "https://mcp.example/next")
+        if target != "https://mcp.example/next":
+            assert names == {"accept", "accept-encoding", "user-agent", "mcp-protocol-version"}
+
+
+def test_redirect_metadata_blocked_before_pin_update(redirect_handler):
+    req = _credential_request("https://mcp.example/rpc")
+    with pytest.raises(urllib.error.HTTPError, match="redirect blocked"):
+        redirect_handler.redirect_request(
+            req, None, 302, "Found", {}, "http://169.254.169.254/latest/meta-data/",
+        )
+    assert redirect_handler._pin.ip == "10.0.0.1"
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_redirect_get_statuses_strip_credentials(redirect_handler, code):
+    req = _credential_request("https://mcp.example/rpc")
+    req.data = None
+    req.method = "GET"
+    redirected = redirect_handler.redirect_request(
+        req, None, code, "Redirect", {}, "https://other.example/rpc",
+    )
+    assert {name.lower() for name, _ in redirected.header_items()} == {
+        "accept", "accept-encoding", "user-agent", "mcp-protocol-version",
+    }
+
+
+@pytest.mark.parametrize("code", [307, 308])
+def test_redirect_post_method_rules_unchanged(redirect_handler, code):
+    req = _credential_request("https://mcp.example/rpc")
+    with pytest.raises(urllib.error.HTTPError):
+        redirect_handler.redirect_request(
+            req, None, code, "Redirect", {}, "https://other.example/rpc",
+        )
+
+
+def test_redirect_unredirected_header_precedence(redirect_handler):
+    req = _credential_request("https://mcp.example/rpc")
+    req.add_unredirected_header("Authorization", "test-preferred")
+    req.add_unredirected_header("Accept", "application/json")
+    redirected = redirect_handler.redirect_request(
+        req, None, 302, "Found", {}, "https://mcp.example/next",
+    )
+    # AbstractHTTPHandler.do_open gives unredirected headers precedence.
+    assert redirected.get_header("Authorization") == "test-preferred"
+    assert redirected.get_header("Accept") == "application/json"
+    redirected = redirect_handler.redirect_request(
+        redirected, None, 302, "Found", {}, "https://other.example/next",
+    )
+    assert not redirected.has_header("Authorization")
+    assert redirected.get_header("Accept") == "application/json"

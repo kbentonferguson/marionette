@@ -15,6 +15,7 @@ import re
 import shutil
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -39,6 +40,7 @@ from .plugin_source_urls import (
     git_clone_plugin_source,
     resolve_plugin_source,
 )
+from . import plugin_recovery
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
 
@@ -46,6 +48,14 @@ _ENABLED_FILENAME = "enabled.json"
 _CAPABILITIES_FILENAME = "capabilities.json"
 _INSTALL_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 _lock = threading.RLock()
+
+
+@contextmanager
+def _registry_access():
+    with _lock:
+        with plugin_recovery.process_lock(plugins_dir()):
+            plugin_recovery.recover(plugins_dir(), verify_integrity_stamp)
+            yield
 
 
 def _pmharness_root() -> Path:
@@ -178,7 +188,10 @@ def _write_capability_records(records: Dict[str, Dict[str, Any]]) -> None:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_path, str(path))
+        plugin_recovery.sync_directory(root)
         if not restrict_to_owner(str(path)):
             _diag("secure_files.restrict_failed", msg=str(path))
     except Exception:
@@ -270,7 +283,10 @@ def _write_enabled(enabled: List[str]) -> None:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_path, str(path))
+        plugin_recovery.sync_directory(root)
         if not restrict_to_owner(str(path)):
             _diag("secure_files.restrict_failed", msg=str(path))
     except Exception:
@@ -373,73 +389,87 @@ def _record_from_package(
 
 def discover_plugins() -> List[PluginRecord]:
     """List installed packages under the plugins directory (best-effort)."""
-    root = plugins_dir()
-    if not root.exists():
-        return []
-    enabled = set(_read_enabled())
-    records: List[PluginRecord] = []
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        return []
-    for child in children:
-        if not child.is_dir():
-            continue
-        if child.name.startswith("."):
-            continue
-        plugin_json = child / "plugin.json"
-        if not plugin_json.exists() and not plugin_json.is_symlink():
-            continue
-        plugin_id = child.name
-        namespace = portable_skill_namespace(plugin_id)
+    with _registry_access():
+        root = plugins_dir()
+        if not root.exists():
+            return []
+        enabled = set(_read_enabled())
+        records: List[PluginRecord] = []
         try:
-            package = load_agent_plugin(child, plugin_data_root() / namespace)
-            stamp_error = ""
-            stamp_ok = False
-            digest = package.content_sha256
+            children = sorted(root.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return []
+        for child in children:
+            if not child.is_dir():
+                continue
+            if child.name.startswith("."):
+                continue
+            plugin_json = child / "plugin.json"
+            if not plugin_json.exists() and not plugin_json.is_symlink():
+                continue
+            plugin_id = child.name
+            namespace = portable_skill_namespace(plugin_id)
             try:
-                digest = verify_integrity_stamp(package.root)
-                stamp_ok = True
-            except AgentPluginError as stamp_exc:
-                stamp_error = str(stamp_exc)
-                _diag("agent_plugins.stamp", msg=f"{plugin_id}: {stamp_exc}")
-            extra: Tuple[AgentPluginDiagnostic, ...] = ()
-            if stamp_error:
-                extra = (AgentPluginDiagnostic("integrity", stamp_error),)
-            records.append(
-                _record_from_package(
-                    plugin_id,
-                    package,
-                    enabled=plugin_id in enabled,
-                    extra_diagnostics=extra,
-                    error=stamp_error,
-                    digest=digest,
-                    stamp_ok=stamp_ok,
-                )
-            )
-        except AgentPluginError as exc:
-            try:
-                manifest, diagnostics = read_agent_plugin_manifest(child)
-                perms = [
-                    value
-                    for value in (manifest.get("permissions") or [])
-                    if isinstance(value, str)
-                ]
+                package = load_agent_plugin(child, plugin_data_root() / namespace)
+                stamp_error = ""
+                stamp_ok = False
+                digest = package.content_sha256
+                try:
+                    digest = verify_integrity_stamp(package.root)
+                    stamp_ok = True
+                except AgentPluginError as stamp_exc:
+                    stamp_error = str(stamp_exc)
+                    _diag("agent_plugins.stamp", msg=f"{plugin_id}: {stamp_exc}")
+                extra: Tuple[AgentPluginDiagnostic, ...] = ()
+                if stamp_error:
+                    extra = (AgentPluginDiagnostic("integrity", stamp_error),)
                 records.append(
-                    PluginRecord(
-                        id=plugin_id,
-                        name=str(manifest.get("name") or plugin_id),
-                        version=str(manifest.get("version") or ""),
-                        description=str(manifest.get("description") or ""),
-                        path=str(child.resolve(strict=False)),
+                    _record_from_package(
+                        plugin_id,
+                        package,
                         enabled=plugin_id in enabled,
-                        namespace=namespace,
-                        permissions=perms,
-                        diagnostics=_diag_dicts(diagnostics),
-                        error=str(exc),
+                        extra_diagnostics=extra,
+                        error=stamp_error,
+                        digest=digest,
+                        stamp_ok=stamp_ok,
                     )
                 )
-            except Exception as inner:
+            except AgentPluginError as exc:
+                try:
+                    manifest, diagnostics = read_agent_plugin_manifest(child)
+                    perms = [
+                        value
+                        for value in (manifest.get("permissions") or [])
+                        if isinstance(value, str)
+                    ]
+                    records.append(
+                        PluginRecord(
+                            id=plugin_id,
+                            name=str(manifest.get("name") or plugin_id),
+                            version=str(manifest.get("version") or ""),
+                            description=str(manifest.get("description") or ""),
+                            path=str(child.resolve(strict=False)),
+                            enabled=plugin_id in enabled,
+                            namespace=namespace,
+                            permissions=perms,
+                            diagnostics=_diag_dicts(diagnostics),
+                            error=str(exc),
+                        )
+                    )
+                except Exception as inner:
+                    records.append(
+                        PluginRecord(
+                            id=plugin_id,
+                            name=plugin_id,
+                            version="",
+                            description="",
+                            path=str(child),
+                            enabled=plugin_id in enabled,
+                            namespace=namespace,
+                            error=str(inner) if inner else str(exc),
+                        )
+                    )
+            except Exception as exc:
                 records.append(
                     PluginRecord(
                         id=plugin_id,
@@ -449,23 +479,10 @@ def discover_plugins() -> List[PluginRecord]:
                         path=str(child),
                         enabled=plugin_id in enabled,
                         namespace=namespace,
-                        error=str(inner) if inner else str(exc),
+                        error=str(exc),
                     )
                 )
-        except Exception as exc:
-            records.append(
-                PluginRecord(
-                    id=plugin_id,
-                    name=plugin_id,
-                    version="",
-                    description="",
-                    path=str(child),
-                    enabled=plugin_id in enabled,
-                    namespace=namespace,
-                    error=str(exc),
-                )
-            )
-    return records
+        return records
 
 
 def _clone_resolved_source(resolved: ResolvedPluginSource, dest: Path) -> None:
@@ -506,33 +523,60 @@ def _materialize_source(source: object, *, clone_fn=None) -> Tuple[Path, Optiona
 
 
 def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
-    staging_ns = portable_skill_namespace("_install_probe")
-    package = load_agent_plugin(src, plugin_data_root() / staging_ns)
-    requested = requested_capabilities_from_manifest(package.manifest)
-    install_id = _sanitize_install_id(package.name)
-    dest = plugins_dir() / install_id
-    with _lock:
-        plugins_dir().mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            if not force:
-                raise AgentPluginError(f"plugin already installed: {install_id}")
-            shutil.rmtree(dest)
+    with _registry_access():
+        staging_ns = portable_skill_namespace("_install_probe")
+        package = load_agent_plugin(src, plugin_data_root() / staging_ns)
+        install_id = _sanitize_install_id(package.name)
+        root = plugins_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        dest = root / install_id
+        if dest.exists() and not force:
+            raise AgentPluginError(f"plugin already installed: {install_id}")
+        transaction = Path(tempfile.mkdtemp(dir=str(root), prefix=".install-"))
+        staged = transaction / "new"
+        backup = transaction / "old"
+        cleanup = True
         try:
-            shutil.copytree(str(src), str(dest), symlinks=False)
-        except OSError as exc:
-            raise AgentPluginError(f"failed to install plugin: {exc}") from exc
-        digest = write_integrity_stamp(dest)
-        enabled = [x for x in _read_enabled() if x != install_id]
-        _write_enabled(enabled)
-        _upsert_capability_entry(
-            install_id, requested=requested, reset_consent=True
-        )
-    namespace = portable_skill_namespace(install_id)
-    loaded = load_agent_plugin(dest, plugin_data_root() / namespace)
-    digest = verify_integrity_stamp(dest)
-    return _record_from_package(
-        install_id, loaded, enabled=False, digest=digest, stamp_ok=True
-    )
+            shutil.copytree(str(src), str(staged), symlinks=False)
+            namespace = portable_skill_namespace(install_id)
+            candidate = load_agent_plugin(staged, plugin_data_root() / namespace)
+            if candidate.name != package.name:
+                raise AgentPluginError("plugin name changed during installation")
+            requested = requested_capabilities_from_manifest(candidate.manifest)
+            write_integrity_stamp(staged)
+            verify_integrity_stamp(staged)
+            plugin_recovery.prepare(transaction, dest, verify_integrity_stamp)
+            if dest.exists():
+                os.replace(dest, backup)
+                plugin_recovery.sync_directory(root)
+                plugin_recovery.sync_directory(transaction)
+            os.replace(staged, dest)
+            plugin_recovery.sync_directory(root)
+            plugin_recovery.sync_directory(transaction)
+            # Reload at the final location so PLUGIN_ROOT expansions never retain
+            # the staging directory. Failure here still restores the old package.
+            loaded = load_agent_plugin(dest, plugin_data_root() / namespace)
+            digest = verify_integrity_stamp(dest)
+            _write_enabled([x for x in _read_enabled() if x != install_id])
+            _upsert_capability_entry(
+                install_id, requested=requested, reset_consent=True
+            )
+            record = _record_from_package(
+                install_id, loaded, enabled=False, digest=digest, stamp_ok=True
+            )
+            plugin_recovery.commit(transaction)
+        except BaseException:
+            if (transaction / plugin_recovery.MARKER).exists():
+                cleanup = False
+                plugin_recovery.recover_one(transaction, verify_integrity_stamp)
+            raise
+        finally:
+            if cleanup:
+                if (transaction / plugin_recovery.MARKER).exists():
+                    plugin_recovery.retire(transaction)
+                else:
+                    shutil.rmtree(transaction, ignore_errors=True)
+        return record
 
 
 def install_from_path(source: str, *, clone_fn=None, force: bool = False) -> PluginRecord:
@@ -557,75 +601,44 @@ def install_from_source(source: object, *, clone_fn=None, force: bool = False) -
 
 def enable_plugin(plugin_id: str) -> PluginRecord:
     """Mark an installed plugin enabled."""
-    plugin_id = (plugin_id or "").strip()
-    if not plugin_id:
-        raise AgentPluginError("plugin id is required")
-    path = plugins_dir() / plugin_id
-    if not path.is_dir():
-        raise AgentPluginError(f"plugin not found: {plugin_id}")
-    namespace = portable_skill_namespace(plugin_id)
-    package = load_agent_plugin(path, plugin_data_root() / namespace)
-    digest = verify_integrity_stamp(path)
-    requested = requested_capabilities_from_manifest(package.manifest)
-    with _lock:
-        _upsert_capability_entry(plugin_id, requested=requested)
+    with _registry_access():
+        plugin_id = (plugin_id or "").strip()
+        if not plugin_id:
+            raise AgentPluginError("plugin id is required")
+        path = plugins_dir() / plugin_id
+        if not path.is_dir():
+            raise AgentPluginError(f"plugin not found: {plugin_id}")
+        namespace = portable_skill_namespace(plugin_id)
+        package = load_agent_plugin(path, plugin_data_root() / namespace)
+        digest = verify_integrity_stamp(path)
+        requested = requested_capabilities_from_manifest(package.manifest)
         _require_capability_consent(plugin_id, requested)
         enabled = _read_enabled()
         if plugin_id not in enabled:
             enabled.append(plugin_id)
             _write_enabled(enabled)
-    return _record_from_package(
-        plugin_id, package, enabled=True, digest=digest, stamp_ok=True
-    )
+        return _record_from_package(
+            plugin_id, package, enabled=True, digest=digest, stamp_ok=True
+        )
 
 
 def consent_plugin_capabilities(plugin_id: str, ids: object) -> PluginRecord:
     """Store an explicit consented capability set (hash, not the integrity stamp)."""
-    plugin_id = (plugin_id or "").strip()
-    if not plugin_id:
-        raise AgentPluginError("plugin id is required")
-    path = plugins_dir() / plugin_id
-    if not path.is_dir():
-        raise AgentPluginError(f"plugin not found: {plugin_id}")
-    namespace = portable_skill_namespace(plugin_id)
-    package = load_agent_plugin(path, plugin_data_root() / namespace)
-    requested = requested_capabilities_from_manifest(package.manifest)
-    consented = parse_requested_capabilities(ids)
-    with _lock:
+    with _registry_access():
+        plugin_id = (plugin_id or "").strip()
+        if not plugin_id:
+            raise AgentPluginError("plugin id is required")
+        path = plugins_dir() / plugin_id
+        if not path.is_dir():
+            raise AgentPluginError(f"plugin not found: {plugin_id}")
+        namespace = portable_skill_namespace(plugin_id)
+        package = load_agent_plugin(path, plugin_data_root() / namespace)
+        requested = requested_capabilities_from_manifest(package.manifest)
+        consented = parse_requested_capabilities(ids)
         _upsert_capability_entry(
             plugin_id, requested=requested, consented=consented
         )
-    enabled = plugin_id in set(_read_enabled())
-    digest = read_integrity_stamp(path) or package.content_sha256
-    stamp_ok = False
-    try:
-        digest = verify_integrity_stamp(path)
-        stamp_ok = True
-    except AgentPluginError:
-        pass
-    return _record_from_package(
-        plugin_id, package, enabled=enabled, digest=digest, stamp_ok=stamp_ok
-    )
-
-
-def disable_plugin(plugin_id: str) -> PluginRecord:
-    """Mark an installed plugin disabled."""
-    plugin_id = (plugin_id or "").strip()
-    if not plugin_id:
-        raise AgentPluginError("plugin id is required")
-    path = plugins_dir() / plugin_id
-    namespace = portable_skill_namespace(plugin_id)
-    record_error = ""
-    package: Optional[AgentPluginPackage] = None
-    if path.is_dir():
-        try:
-            package = load_agent_plugin(path, plugin_data_root() / namespace)
-        except Exception as exc:
-            record_error = str(exc)
-    with _lock:
-        enabled = [x for x in _read_enabled() if x != plugin_id]
-        _write_enabled(enabled)
-    if package is not None:
+        enabled = plugin_id in set(_read_enabled())
         digest = read_integrity_stamp(path) or package.content_sha256
         stamp_ok = False
         try:
@@ -634,46 +647,77 @@ def disable_plugin(plugin_id: str) -> PluginRecord:
         except AgentPluginError:
             pass
         return _record_from_package(
-            plugin_id,
-            package,
-            enabled=False,
-            error=record_error,
-            digest=digest,
-            stamp_ok=stamp_ok,
+            plugin_id, package, enabled=enabled, digest=digest, stamp_ok=stamp_ok
         )
-    return PluginRecord(
-        id=plugin_id,
-        name=plugin_id,
-        version="",
-        description="",
-        path=str(path),
-        enabled=False,
-        namespace=namespace,
-        error=record_error or ("plugin not found" if not path.is_dir() else ""),
-    )
+
+
+def disable_plugin(plugin_id: str) -> PluginRecord:
+    """Mark an installed plugin disabled."""
+    with _registry_access():
+        plugin_id = (plugin_id or "").strip()
+        if not plugin_id:
+            raise AgentPluginError("plugin id is required")
+        path = plugins_dir() / plugin_id
+        namespace = portable_skill_namespace(plugin_id)
+        record_error = ""
+        package: Optional[AgentPluginPackage] = None
+        if path.is_dir():
+            try:
+                package = load_agent_plugin(path, plugin_data_root() / namespace)
+            except Exception as exc:
+                record_error = str(exc)
+        enabled = [x for x in _read_enabled() if x != plugin_id]
+        _write_enabled(enabled)
+        if package is not None:
+            digest = read_integrity_stamp(path) or package.content_sha256
+            stamp_ok = False
+            try:
+                digest = verify_integrity_stamp(path)
+                stamp_ok = True
+            except AgentPluginError:
+                pass
+            return _record_from_package(
+                plugin_id,
+                package,
+                enabled=False,
+                error=record_error,
+                digest=digest,
+                stamp_ok=stamp_ok,
+            )
+        return PluginRecord(
+            id=plugin_id,
+            name=plugin_id,
+            version="",
+            description="",
+            path=str(path),
+            enabled=False,
+            namespace=namespace,
+            error=record_error or ("plugin not found" if not path.is_dir() else ""),
+        )
 
 
 def _load_enabled_packages() -> List[Tuple[str, str, AgentPluginPackage]]:
     """Return (plugin_id, namespace, package) for each enabled valid plugin."""
-    enabled = _read_enabled()
-    out: List[Tuple[str, str, AgentPluginPackage]] = []
-    for plugin_id in enabled:
-        path = plugins_dir() / plugin_id
-        if not path.is_dir():
-            continue
-        namespace = portable_skill_namespace(plugin_id)
-        try:
-            package = load_agent_plugin(path, plugin_data_root() / namespace)
-            verify_integrity_stamp(path)
-            _require_capability_consent(
-                plugin_id,
-                requested_capabilities_from_manifest(package.manifest),
-            )
-        except Exception as exc:
-            _diag("agent_plugins.load_enabled", msg=f"{plugin_id}: {exc}")
-            continue
-        out.append((plugin_id, namespace, package))
-    return out
+    with _registry_access():
+        enabled = _read_enabled()
+        out: List[Tuple[str, str, AgentPluginPackage]] = []
+        for plugin_id in enabled:
+            path = plugins_dir() / plugin_id
+            if not path.is_dir():
+                continue
+            namespace = portable_skill_namespace(plugin_id)
+            try:
+                package = load_agent_plugin(path, plugin_data_root() / namespace)
+                verify_integrity_stamp(path)
+                _require_capability_consent(
+                    plugin_id,
+                    requested_capabilities_from_manifest(package.manifest),
+                )
+            except Exception as exc:
+                _diag("agent_plugins.load_enabled", msg=f"{plugin_id}: {exc}")
+                continue
+            out.append((plugin_id, namespace, package))
+        return out
 
 
 def list_enabled_plugin_skills() -> List[PluginSkillRecord]:
@@ -722,19 +766,20 @@ def list_enabled_mcp_servers() -> Dict[str, Dict[str, Any]]:
 
 def namespaced_mcp_ids_for_plugin(plugin_id: str) -> List[str]:
     """Return namespaced MCP server ids for one installed plugin (best-effort)."""
-    plugin_id = (plugin_id or "").strip()
-    if not plugin_id:
-        return []
-    path = plugins_dir() / plugin_id
-    if not path.is_dir():
-        return []
-    namespace = portable_skill_namespace(plugin_id)
-    try:
-        verify_integrity_stamp(path)
-        package = load_agent_plugin(path, plugin_data_root() / namespace)
-    except Exception:
-        return []
-    return [f"{namespace}__{name}" for name in package.mcp_servers]
+    with _registry_access():
+        plugin_id = (plugin_id or "").strip()
+        if not plugin_id:
+            return []
+        path = plugins_dir() / plugin_id
+        if not path.is_dir():
+            return []
+        namespace = portable_skill_namespace(plugin_id)
+        try:
+            verify_integrity_stamp(path)
+            package = load_agent_plugin(path, plugin_data_root() / namespace)
+        except Exception:
+            return []
+        return [f"{namespace}__{name}" for name in package.mcp_servers]
 
 
 def plugin_record_to_dict(record: PluginRecord) -> Dict[str, Any]:

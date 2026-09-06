@@ -153,8 +153,8 @@ def test_peek_history_corrupt_archive_fails_closed(tmp_path, monkeypatch):
     ok, status, text = session._do_peek_history(
         PilotAction(kind="peek_history", arguments={"offset": 0, "limit": 5})
     )
-    assert ok and status == "success"
-    assert "live-residual-ok" in text
+    assert not ok and status == "archive_unavailable"
+    assert "corrupt" in text
 
 
 def test_peek_history_reads_durable_transcript_without_archive(tmp_path, monkeypatch):

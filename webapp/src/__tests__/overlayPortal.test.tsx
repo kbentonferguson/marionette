@@ -37,7 +37,7 @@ describe("overlay portal contract (v0.9.322)", () => {
 
   it("keeps feed scrollport overflow-anchor:auto and scroll-padding-bottom", () => {
     expect(column).toContain("[overflow-anchor:auto]");
-    expect(column).toContain("[scroll-padding-bottom:var(--feed-chrome-clearance");
+    expect(column).toContain("scroll-pb-6");
     expect(column).not.toContain("overflow-anchor:none");
   });
 

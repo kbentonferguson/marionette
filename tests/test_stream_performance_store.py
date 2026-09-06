@@ -235,6 +235,8 @@ def test_remove_session_transcript_clears_performance_sidecar(tmp_path):
 
 
 def test_handle_session_delete_clears_performance(tmp_path):
+    from threading import RLock
+    from harness.session_runners import SessionRunnerRegistry
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     store = SessionStore(str(tmp_path / "harness_sessions.json"))
@@ -245,10 +247,12 @@ def test_handle_session_delete_clears_performance(tmp_path):
     assert path.is_file()
     svc = SimpleNamespace(
         sessions=store,
-        runners=SimpleNamespace(drop=lambda _sid: None),
+        runners=SessionRunnerRegistry(),
+        pilot_swap_lock=RLock(),
         sessions_state_dir=lambda: str(state_dir),
         get_pilot=lambda: SimpleNamespace(load_history=lambda _h: None),
         attach_view=lambda *_a, **_k: None,
+        clear_active_pilot=lambda: None,
         sync_pilot_session_id=lambda: None,
         diag=lambda *_a, **_k: None,
     )

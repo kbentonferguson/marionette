@@ -155,10 +155,11 @@ def test_stream_chat_writes_resume_before_done(monkeypatch):
             yield SimpleNamespace(kind="pilot_resume", data={"ok": True})
 
     monkeypatch.setattr("harness.hooks.run_hooks", lambda *_a, **_k: None)
+    pilot = _Pilot()
     svc = StreamServices(
         cfg=SimpleNamespace(repo=""),
         sessions=SimpleNamespace(active="s-resume", set_title_if_default=lambda *_a: None),
-        get_pilot=lambda: _Pilot(),
+        get_pilot=lambda: pilot,
         get_session=lambda: None,
         ensure_pilot_matches_driver=lambda: None,
         maybe_refresh_codegraph=lambda *_a: None,

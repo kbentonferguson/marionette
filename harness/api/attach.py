@@ -9,7 +9,8 @@ and callers keep importing historical names.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from ..deferred_attach import (
@@ -45,6 +46,15 @@ class AttachServices:
     apply_model_context_window: Callable[[], None]
     freeze_pilot_meters_into_boot_carry: Callable[[Any], None]
     runner_config_snapshot: Callable[[], Any]
+
+
+def _fork_runner_config(session_id: str, svc: AttachServices, config: Any) -> Any:
+    rows = svc.sessions.rows()
+    if any(row.get("id") == session_id and row.get("forked_from") for row in rows):
+        runtime_dir = os.path.join(svc.sessions_state_dir(), "fork_runtimes", session_id)
+        os.makedirs(runtime_dir, exist_ok=True)
+        return replace(config, state_dir=runtime_dir)
+    return config
 
 
 def attach_view(
@@ -87,6 +97,8 @@ def attach_view(
             existing = None
         else:
             with svc.pilot_swap_lock:
+                if isinstance(existing, ConversationalSession):
+                    existing.bind_prompt_queue(svc.sessions_state_dir(), session_id)
                 svc.runners.set_active_view(session_id)
                 svc.set_pilot(existing)
                 try:
@@ -127,10 +139,10 @@ def attach_view(
     transcript_payload = normalize_transcript_payload(history)
 
     if want_defer:
-        config = svc.runner_config_snapshot()
+        config = _fork_runner_config(session_id, svc, svc.runner_config_snapshot())
         placeholder = DeferredPilotPlaceholder(
             session_id=session_id,
-            state_dir=svc.sessions_state_dir(),
+            state_dir=config.state_dir,
             transcript=transcript_payload,
         )
         placeholder._pending_history = history
@@ -158,6 +170,8 @@ def attach_view(
                 # Session ownership must be set before hydrate so pending
                 # command-approval restore can refuse foreign display rows.
                 real.harness_session_id = session_id
+                if isinstance(real, ConversationalSession):
+                    real.bind_prompt_queue(svc.sessions_state_dir(), session_id)
                 reload_goal = getattr(real, "reload_session_goal", None)
                 if callable(reload_goal):
                     reload_goal()
@@ -218,9 +232,14 @@ def attach_view(
 
     def _factory():
         if factory is not None:
-            return factory()
-        # New runners start at zero meters -- boot pill sums carry + live.
-        return svc.build_conversational_pilot()
+            runner = factory()
+        else:
+            # New runners start at zero meters -- boot pill sums carry + live.
+            runner = svc.build_conversational_pilot(
+                config=_fork_runner_config(session_id, svc, svc.runner_config_snapshot()))
+        if isinstance(runner, ConversationalSession):
+            runner.bind_prompt_queue(svc.sessions_state_dir(), session_id)
+        return runner
 
     runner = svc.runners.get_or_create(session_id, _factory)
     with svc.pilot_swap_lock:
@@ -252,6 +271,16 @@ def ensure_active_pilot_ready(svc: AttachServices, *, timeout: float = 120.0) ->
     with svc.pilot_swap_lock:
         pilot = svc.get_pilot()
         session_id = svc.runners.active_view_id
+        if pilot is None or (
+            session_id and svc.runners.get(session_id) is not pilot
+        ):
+            raise RuntimeError("active session has no matching pilot")
+        if isinstance(pilot, ConversationalSession):
+            owner_id = session_id or svc.sessions.active
+            if owner_id:
+                pilot.bind_prompt_queue(svc.sessions_state_dir(), owner_id)
+            elif getattr(pilot, "_prompt_queue_owner", None) is not None:
+                raise RuntimeError("active session is missing for bound pilot")
     if not is_deferred_placeholder(pilot):
         return pilot
     real = pilot.ensure_ready(timeout=timeout)
@@ -322,67 +351,59 @@ def rebuild_pilot_and_session(svc: AttachServices) -> None:
     session-switch. We roll back to the previous working driver and surface the
     error to the caller to show, instead of taking down the process.
     """
-    # Finish any deferred cold build before touching _history / meters.
-    ensure_active_pilot_ready(svc)
-    active_id = svc.sessions.active or svc.runners.active_view_id
-    if active_id:
-        existing = svc.runners.get(active_id)
-        if existing is not None:
-            busy = getattr(existing, "_busy", None)
-            locked = getattr(busy, "locked", None) if busy is not None else None
-            if callable(locked) and locked():
-                raise RuntimeError("pilot busy -- finish or stop the current turn before rebuilding")
+    from ..pilot_replacement import LivePilotReplacement, prepare_replacement
 
-    attempted_driver = svc.cfg.driver
-    running_driver = getattr(getattr(svc.get_pilot(), "config", None), "driver", None)
-    if not isinstance(running_driver, str) or not running_driver.strip():
-        running_driver = attempted_driver
-    try:
-        svc.apply_model_context_window()
-        # Tracker Session may share the view config; the runner gets a frozen copy.
-        new_session = Session(svc.cfg)
-        new_pilot = ConversationalSession(svc.runner_config_snapshot())
-    except Exception as e:
-        # Roll back to the last driver that built successfully.
-        svc.cfg.driver = running_driver
+    ensure_active_pilot_ready(svc)
+    with svc.pilot_swap_lock:
+        old_pilot = ensure_active_pilot_ready(svc)
+        active_id = svc.runners.active_view_id or svc.sessions.active
+        busy = getattr(old_pilot, "_busy", None)
+        if busy is not None and busy.locked():
+            raise RuntimeError("pilot busy -- finish or stop the current turn before rebuilding")
+        attempted_driver = svc.cfg.driver
+        running_driver = getattr(getattr(old_pilot, "config", None), "driver", None)
+        if not isinstance(running_driver, str) or not running_driver.strip():
+            running_driver = attempted_driver
         try:
             svc.apply_model_context_window()
-        except Exception as rollback_err:
-            svc.diag("server.rebuild_context_rollback", rollback_err)
-        raise RuntimeError(
-            f"could not load model {attempted_driver!r}: {e}. Reverted to the "
-            f"previous pilot."
-        ) from e
-    # Keep the tracker/jobs reads pointed at the store the pilot writes to (see
-    # the pin at initial construction) across workspace/driver switches too.
-    new_session.state_dir = new_pilot.state_dir
-    with svc.pilot_swap_lock:
-        old_history = svc.get_pilot()._history
-        old_auto_distill = getattr(svc.get_pilot(), "_auto_distill", False)
-        old_pilot = svc.get_pilot()
-        # Freeze at the OLD runner's bound rates (``_cfg.driver`` may already
-        # point at the new model). Replacement starts with zero cost meters.
+            new_session = Session(svc.cfg)
+            new_pilot = ConversationalSession(
+                _fork_runner_config(active_id or "", svc, svc.runner_config_snapshot()))
+            new_session.state_dir = new_pilot.state_dir
+            if ((svc.runners.active_view_id or svc.sessions.active) != active_id
+                    or svc.get_pilot() is not old_pilot):
+                raise RuntimeError("active session changed while rebuilding pilot")
+            with LivePilotReplacement(old_pilot) as replacement:
+                svc.bind_pilot_services(new_pilot)
+                prepare_replacement(old_pilot, new_pilot, active_id or "",
+                                    svc.sessions_state_dir(), old_pilot._history,
+                                    actions_snapshot=replacement.actions_snapshot)
+                if ((svc.runners.active_view_id or svc.sessions.active) != active_id
+                        or svc.get_pilot() is not old_pilot
+                        or (active_id and svc.runners.get(active_id) is not old_pilot)):
+                    raise RuntimeError("active session changed while rebuilding pilot")
+                if active_id:
+                    svc.runners.replace(active_id, new_pilot, notify=False)
+                svc.set_session(new_session)
+                svc.set_pilot(new_pilot)
+                replacement.commit()
+        except Exception as e:
+            svc.cfg.driver = running_driver
+            try:
+                svc.apply_model_context_window()
+            except Exception as rollback_err:
+                svc.diag("server.rebuild_context_rollback", rollback_err)
+            raise RuntimeError(
+                f"could not load model {attempted_driver!r}: {e}. Reverted to the "
+                f"previous pilot."
+            ) from e
         try:
             svc.freeze_pilot_meters_into_boot_carry(old_pilot)
         except Exception:
             pass
-        # S3: rebuild owns the outgoing warm ACP — close before pointer swap
-        # so Windows cannot orphan agent acp children (drop also releases).
         try:
             release = getattr(old_pilot, "release_warm_acp", None)
             if callable(release):
                 release(reason="session_switch")
         except Exception as e:
             svc.diag("server.rebuild_warm_acp_close", e)
-        svc.set_session(new_session)
-        svc.set_pilot(new_pilot)
-        svc.get_pilot()._history = old_history
-        svc.get_pilot()._auto_distill = old_auto_distill
-        svc.bind_pilot_services(svc.get_pilot())
-        svc.sync_pilot_session_id()
-        if active_id:
-            # Replace only this view's registry entry; leave other runners alone.
-            # notify=False: meters already frozen above; drop must not re-fold.
-            svc.runners.drop(active_id, notify=False)
-            svc.runners.get_or_create(active_id, lambda: svc.get_pilot())
-            svc.runners.set_active_view(active_id)

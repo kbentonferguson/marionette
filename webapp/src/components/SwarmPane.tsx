@@ -1,4 +1,7 @@
+import { jobControlKey, selectJobControl } from "../lib/jobControl";
+import { fetchJobArtifacts, jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import { useCallback, useEffect, useRef, useState } from "react";
+import JobEvidence from "./JobEvidence";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X, AlertTriangle } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
@@ -10,7 +13,7 @@ import {
   peekPendingSwarmOpenJob,
 } from "../lib/pendingSwarmOpenJob";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
-import { filterJobsByScope, jobOwnedForScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
+import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
 import { isTrackerJob } from "../lib/jobClassification";
 import { jobHeadlineTotal } from "./EconomicsDurable";
 
@@ -155,8 +158,7 @@ function taskState(t: Task): "running" | "done" | "fail" | "idle" {
 // still recallable there. Persisted per active repo so clearing the tracker in
 // one project does not hide jobs when viewing another. Soft-capped per repo so
 // a very long-lived install can't grow it unbounded.
-const DISMISS_KEY_V1 = "swarm.dismissed.v1";
-const DISMISS_KEY = "swarm.dismissed.v2";
+const DISMISS_KEY = "swarm.dismissed.v3";
 const DISMISS_CAP = 2000;
 
 type DismissStore = Record<string, string[]>;
@@ -175,31 +177,9 @@ function readDismissStore(): DismissStore {
       }
     }
   } catch {
-    // Fall through to v1 migration / empty store.
+    // Unscoped legacy ids cannot identify a selected store.
   }
-  return migrateDismissV1();
-}
-
-/** One-time import of the pre-Wave-4 global blob into the unscoped default view. */
-function migrateDismissV1(): DismissStore {
-  try {
-    const raw = localStorage.getItem(DISMISS_KEY_V1);
-    if (!raw) return {};
-    const arr = JSON.parse(raw);
-    const ids = Array.isArray(arr)
-      ? arr.filter((id): id is string => typeof id === "string")
-      : [];
-    const store: DismissStore = ids.length > 0 ? { [repoDismissKey()]: ids } : {};
-    try {
-      if (ids.length > 0) localStorage.setItem(DISMISS_KEY, JSON.stringify(store));
-      localStorage.removeItem(DISMISS_KEY_V1);
-    } catch {
-      // localStorage full/unavailable -- in-memory dismiss still works.
-    }
-    return store;
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 function loadDismissed(repo?: string): Set<string> {
@@ -221,7 +201,7 @@ function saveDismissed(repo: string | undefined, ids: Set<string>): void {
 // Outer job-card expand/collapse is view state, scoped per repo like dismiss.
 // Missing keys stay closed (live and terminal). Explicit true/false is remembered
 // across remount. Soft-capped per repo.
-const EXPAND_KEY = "swarm.expanded.v1";
+const EXPAND_KEY = "swarm.expanded.v2";
 const EXPAND_CAP = DISMISS_CAP;
 
 type ExpandStore = Record<string, Record<string, boolean>>;
@@ -283,8 +263,8 @@ function swarmSignature(res: SwarmLive | null): string {
       `:${(j.cache_saved_usd ?? 0).toFixed(4)}` +
       `:${j.swarm_cache_savings_basis ?? ""}:${j.swarm_cache_unpriced_tokens ?? 0}` +
       `:${(j.tool_output_savings_usd ?? 0).toFixed(4)}` +
-      `:${j.source ?? "harness"}` +
-      `:${j.artifacts_complete ?? ""}` +
+      `:${j.source ?? "harness"}:${j.job_ref?.job_id ?? ""}:${j.job_ref?.state_id ?? ""}:${j.cwd ?? ""}:${j.cross_project ?? false}` +
+      `:${j.artifacts_complete ?? ""}:${j.read_status ?? ""}:${j.unavailable_fields?.join(",") ?? ""}` +
       `:${j.outcome?.quality ?? ""}:${j.outcome?.trustworthy ?? ""}` +
       `:${(j.outcome?.reasons || []).join("|")}:${j.updated_at ?? ""}`,
     );
@@ -313,7 +293,7 @@ function swarmSignature(res: SwarmLive | null): string {
   const s = res.session;
   if (s) {
     parts.push(
-      `S:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}` +
+      `S:${s.read_status ?? ""}:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}` +
       `:${(s.routing_saved_usd ?? 0).toFixed(4)}` +
       `:${(s.cache_saved_usd_swarm ?? 0).toFixed(4)}` +
       `:${s.swarm_cache_savings_basis ?? ""}:${s.swarm_cache_unpriced_tokens ?? 0}` +
@@ -667,12 +647,20 @@ function terminalWorkerCount(tasks: Task[]): number {
 /** Merge a fresh /swarm/live poll into cached state without wiping expanded full artifacts. */
 function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): SwarmLive {
   if (!prev?.jobs?.length) return next;
-  const prevById = new Map(prev.jobs.map((j) => [j.id, j]));
+  const rowKey = (j: Job) => JSON.stringify([j.id, j.job_ref?.state_id, j.source, j.session_id, j.cwd]);
+  const prevById = new Map(prev.jobs.map((j) => [rowKey(j), j]));
   return {
     ...next,
     jobs: (next.jobs || []).map((j) => {
-      const old = prevById.get(j.id);
+      const old = prevById.get(rowKey(j));
       if (!old) return j;
+      if (j.read_status === "unavailable") {
+        return {
+          ...j,
+          artifacts: j.unavailable_fields?.includes("artifacts") ? old.artifacts : j.artifacts,
+          tasks: j.unavailable_fields?.includes("tasks") ? old.tasks : j.tasks,
+        };
+      }
       // Keep hydrated artifacts only while the fresh row remains healthy. A
       // failed or non-trustworthy terminal poll is authoritative and must not
       // retain stale success evidence from an earlier expansion of the same job.
@@ -1137,17 +1125,19 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   const [activeSessionId, setActiveSessionId] = useState("");
   const [requestOwner, setRequestOwner] = useState({ repo: scopedRepo, sessionId: "" });
   const requestSessionId = requestOwner.repo === scopedRepo ? requestOwner.sessionId : "";
+  const controlKey = (job: Job) => jobControlKey(job, scopedRepo || "", requestSessionId);
   useEffect(() => {
     const onScope = () => setJobScope(loadJobScope());
     window.addEventListener("harness-job-scope-changed", onScope);
     return () => window.removeEventListener("harness-job-scope-changed", onScope);
   }, []);
-  // Job ids we have asked the backend to cancel. Held in local view state so the
-  // row can show a subtle 'cancelling...' affordance immediately, before the next
-  // poll reflects the terminal 'cancelled' status from /api/swarm/live.
+  // Pending requests and accepted local events are keyed by the full selection.
   const [cancelling, setCancelling] = useState<Set<string>>(new Set());
-  // Job ids currently fetching full artifacts after expand (slim live payload).
-  const [loadingArts, setLoadingArts] = useState<Set<string>>(new Set());
+  const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({});
+  const controlEpoch = useRef(0);
+  // Transient reads are keyed by the full selected artifact identity.
+  const [artifactReads, setArtifactReads] = useState<Record<string, { kind: "loading" } | { kind: "error" }>>({});
+  const pendingArtifactReads = useRef(new Set<string>());
   // Bumped every second so relative "last activity" times re-render while a job
   // runs, making a live worker visibly move rather than freeze between polls.
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -1169,6 +1159,9 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
       if (!detail || typeof detail !== "object" || !("sessionId" in detail)) return;
       const id = typeof detail.sessionId === "string" ? detail.sessionId : "";
       cancelled = true;
+      controlEpoch.current += 1;
+      setCancelling(new Set());
+      setCancelErrors({});
       setActiveSessionId(id);
       setRequestOwner({ repo: scopedRepo, sessionId: id });
     };
@@ -1195,6 +1188,9 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
       if (typeof path === "string") {
+        controlEpoch.current += 1;
+        setCancelling(new Set());
+        setCancelErrors({});
         setSelectedProjectRoot(path);
         setActiveSessionId("");
         setRequestOwner({ repo: path || undefined, sessionId: "" });
@@ -1214,6 +1210,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   const {
     data,
     isValidating,
+    error: readError,
     isTransitioning,
     isShowingStale,
     revalidate,
@@ -1222,6 +1219,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     swarmCacheKey,
     async () => {
       const res = await api.swarmLive(scopedRepo);
+      if (res.read_status === "unavailable") throw new Error("Swarm data unavailable");
       const previous = dataScopeRef.current === swarmCacheKey ? dataRef.current : undefined;
       if (previous && swarmSignature(previous) === swarmSignature(res)) return previous;
       return mergeSwarmLive(previous ?? undefined, res);
@@ -1231,52 +1229,55 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   dataRef.current = data;
   dataScopeRef.current = isShowingStale ? "" : swarmCacheKey;
   const currentScopeRef = useRef(swarmCacheKey);
+  const artifactEpoch = useRef(0);
+  if (currentScopeRef.current !== swarmCacheKey) artifactEpoch.current += 1;
   currentScopeRef.current = swarmCacheKey;
+  useEffect(() => { setArtifactReads({}); }, [swarmCacheKey]);
+  useEffect(() => () => { artifactEpoch.current += 1; controlEpoch.current += 1; }, []);
 
-  const loadingArtsRef = useRef(loadingArts);
-  loadingArtsRef.current = loadingArts;
-
-  // Hydrate full artifacts when a slim finished card expands.
+  // The cache owns loaded artifacts; this map owns only in-flight/error UI.
   const ensureFullArtifacts = useCallback((job: Job) => {
-    if (job.artifacts_complete !== false) return;
-    if (loadingArtsRef.current.has(job.id)) return;
-    setLoadingArts((prev) => new Set(prev).add(job.id));
+    if (job.read_status === "unavailable" || job.artifacts_complete !== false || dataScopeRef.current !== swarmCacheKey) return;
+    const selection = selectJobRef(job, scopedRepo || "", requestSessionId);
+    if (!selection) return;
     const requestScope = swarmCacheKey;
-    api.artifacts(job.id)
-      .then((arts) => {
-        if (currentScopeRef.current !== requestScope || dataScopeRef.current !== requestScope) return;
-        const prev = dataRef.current;
-        if (!prev) return;
-        const incoming = Array.isArray(arts) ? arts : [];
-        mutate({
-          ...prev,
-          jobs: (prev.jobs || []).map((j) => {
-            if (j.id !== job.id) return j;
-            // Owned cross-project slim rows keep live artifacts when expand
-            // resolves empty (sibling-store miss must not wipe the row).
-            if (
-              incoming.length === 0
-              && jobArtifactList(j).length > 0
-              && j.cross_project
-              && jobOwnedForScope(j)
-            ) {
-              return j;
-            }
-            return { ...j, artifacts: incoming, artifacts_complete: true };
-          }),
-        });
-      })
-      .catch(() => {
-        // Leave slim payload; user can collapse/re-expand to retry.
-      })
-      .finally(() => {
-        setLoadingArts((prev) => {
-          const next = new Set(prev);
-          next.delete(job.id);
-          return next;
-        });
+    const epoch = artifactEpoch.current;
+    const key = jobArtifactKey(selection);
+    const pendingKey = JSON.stringify([requestScope, epoch, key]);
+    if (pendingArtifactReads.current.has(pendingKey)) return;
+    pendingArtifactReads.current.add(pendingKey);
+    setArtifactReads(prev => ({ ...prev, [key]: { kind: "loading" } }));
+    const current = () => artifactEpoch.current === epoch && currentScopeRef.current === requestScope && dataScopeRef.current === requestScope;
+    void fetchJobArtifacts(selection).then(artifacts => {
+      if (!current()) return;
+      const prev = dataRef.current;
+      if (!prev) return;
+      const updated = { ...prev, jobs: prev.jobs.map(j => {
+        const ref = selectJobRef(j, selection.repo, selection.session_id);
+        return ref && jobArtifactKey(ref) === key
+          ? { ...j, artifacts, artifacts_complete: true } : j;
+      }) };
+      dataRef.current = updated;
+      mutate(updated);
+      setArtifactReads(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
       });
-  }, [mutate, swarmCacheKey]);
+    }).catch(() => {
+      if (current()) setArtifactReads(prev => ({ ...prev, [key]: { kind: "error" } }));
+    }).finally(() => { pendingArtifactReads.current.delete(pendingKey); });
+  }, [mutate, swarmCacheKey, scopedRepo, requestSessionId]);
+
+  useEffect(() => {
+    if (isShowingStale) return;
+    for (const job of data?.jobs || []) {
+      const selection = selectJobRef(job, scopedRepo || "", requestSessionId);
+      if (expandedJobs[controlKey(job)] && selection && !artifactReads[jobArtifactKey(selection)]) {
+        ensureFullArtifacts(job);
+      }
+    }
+  }, [data, expandedJobs, artifactReads, ensureFullArtifacts, isShowingStale, scopedRepo, requestSessionId]);
 
   // Transcript chrome (job_id chips / ActionCard KV) deep-links here: undismiss,
   // expand, hydrate artifacts, scroll the row into view. Also drains any job id
@@ -1286,24 +1287,27 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     const artifact = (artifactId || "").trim();
     if (!id) return;
     pendingOpenRef.current = { jobId: id, ...(artifact ? { artifactId: artifact } : {}) };
+    const matches = dataRef.current?.jobs?.filter(j => j.id === id) || [];
+    if (matches.length !== 1) return;
+    const job = matches[0];
+    const key = jobControlKey(job, scopedRepo || "", requestSessionId);
     setDismissed((prev) => {
-      if (!prev.has(id)) return prev;
+      if (!prev.has(key)) return prev;
       const next = new Set(prev);
-      next.delete(id);
+      next.delete(key);
       return next;
     });
     setExpandedJobs((prev) => {
-      const updated = { ...prev, [id]: true };
+      const updated = { ...prev, [key]: true };
       saveExpanded(scopedRepoRef.current, updated);
       return updated;
     });
     setFinishedOpen(true);
     setJobFilter("all");
     if (artifact) {
-      setFindingsOpen((prev) => ({ ...prev, [id]: true }));
+      setFindingsOpen((prev) => ({ ...prev, [key]: true }));
     }
-    const job = dataRef.current?.jobs?.find((j) => j.id === id);
-    if (job) ensureFullArtifacts(job);
+    ensureFullArtifacts(job);
     const scrollToTarget = () => {
       const escape =
         typeof CSS !== "undefined" && typeof CSS.escape === "function"
@@ -1317,7 +1321,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
         if (finding) {
           const findingId = finding.dataset.findingId;
           if (findingId) {
-            setExpandedFindings((prev) => ({ ...prev, [findingId]: true }));
+            setExpandedFindings((prev) => ({ ...prev, [JSON.stringify([key, findingId])]: true }));
           }
           finding.scrollIntoView({ block: "center" });
           pendingOpenRef.current = null;
@@ -1339,7 +1343,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
       window.setTimeout(scrollToTarget, 250);
       window.setTimeout(scrollToTarget, 600);
     }
-  }, [ensureFullArtifacts]);
+  }, [ensureFullArtifacts, scopedRepo, requestSessionId]);
 
   useEffect(() => {
     const pending = pendingOpenRef.current;
@@ -1390,28 +1394,31 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [hasLiveJob]);
 
-  // Fire-and-refetch cancel. Best-effort on the backend (a provider call in a
-  // Python thread cannot be force-killed), so the row shows 'cancelling...' until
-  // the next poll surfaces the terminal 'cancelled' state.
-  const cancelJob = async (id: string) => {
-    setCancelling((prev) => new Set(prev).add(id));
+  // Refusals restore the control and explain that the worker was not stopped.
+  const cancelJob = async (job: Job) => {
+    const selection = selectJobControl(job, scopedRepo || "", requestSessionId);
+    if (!selection || isShowingStale || projectSwitching) return;
+    const key = controlKey(job);
+    const epoch = controlEpoch.current;
+    const scope = swarmCacheKey;
+    const current = () => controlEpoch.current === epoch && currentScopeRef.current === scope;
+    setCancelling(prev => new Set(prev).add(key));
+    setCancelErrors(prev => { const next = { ...prev }; delete next[key]; return next; });
     let accepted = false;
+    let error = "Cancel failed: the worker was not stopped. The job remains running.";
     try {
-      const res = await api.swarmCancel(id);
+      const res = await api.swarmCancel(selection);
       accepted = !!res.ok;
+      if (res.error) error = res.error;
     } catch {
-      // Fall through -- treated as not accepted below.
+      // Transport errors do not confirm that a worker stopped.
     }
+    if (!current()) return;
     if (!accepted) {
-      // Restore the Kill button so the user can retry. Leaving the id in the
-      // set rendered a permanent 'cancelling...' with no affordance to retry.
-      setCancelling((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      setCancelErrors(prev => ({ ...prev, [key]: error }));
+      setCancelling(prev => { const next = new Set(prev); next.delete(key); return next; });
     }
-    try {
-      await revalidate(true);
-    } catch {
-      // Ignore; the poll loop will refetch shortly.
-    }
+    try { await revalidate(true); } catch { /* The poll loop retries. */ }
   };
 
   // Drop cancel markers once their job leaves in_progress, so the set cannot
@@ -1419,7 +1426,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   useEffect(() => {
     const live = data?.jobs;
     if (!live || cancelling.size === 0) return;
-    const stillRunning = new Set(live.filter((j) => jobStatus(j) === "in_progress").map((j) => j.id));
+    const stillRunning = new Set(live.filter((j) => jobStatus(j) === "in_progress").map((j) => controlKey(j)));
     const survivors = [...cancelling].filter((id) => stillRunning.has(id));
     if (survivors.length !== cancelling.size) setCancelling(new Set(survivors));
   }, [data]);
@@ -1488,7 +1495,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   // If a dismissed id reappears as live, drop it from the dismiss set so its
   // later terminal transition does not vanish again into "Show N hidden".
   useEffect(() => {
-    const liveIds = allJobs.filter((j) => !isTerminal(j)).map((j) => j.id);
+    const liveIds = allJobs.filter((j) => !isTerminal(j)).map((j) => controlKey(j));
     if (liveIds.length === 0) return;
     setDismissed((prev) => {
       let changed = false;
@@ -1500,7 +1507,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     });
   }, [allJobs]);
 
-  const undismissedJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(j.id));
+  const undismissedJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(controlKey(j)));
   const matchesJobFilter = (j: Job) => {
     const status = jobStatus(j);
     if (jobFilter === "active") return status === "pending" || status === "in_progress";
@@ -1535,35 +1542,34 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
 
-  const dismissJob = (id: string) =>
-    setDismissed((prev) => {
-      const target = allJobs.find((j) => j.id === id);
-      if (target && !isTerminal(target)) return prev;
-      return new Set(prev).add(id);
-    });
+  const dismissJob = (job: Job) =>
+    setDismissed(prev => isTerminal(job) ? new Set(prev).add(controlKey(job)) : prev);
   const clearFinished = () =>
     setDismissed((prev) => {
       const next = new Set(prev);
       for (const j of undismissedJobs) {
-        if (isTerminal(j)) next.add(j.id);
+        if (isTerminal(j)) next.add(controlKey(j));
       }
       return next;
     });
   const restoreDismissed = () => setDismissed(new Set());
-  const hiddenCount = allJobs.filter((j) => isTerminal(j) && dismissed.has(j.id)).length;
+  const hiddenCount = allJobs.filter((j) => isTerminal(j) && dismissed.has(controlKey(j))).length;
 
 
   // One card renderer, reused by both the running list and the Finished
   // accordion. Defined in-scope so it closes over the expand/dismiss state
   // instead of threading a dozen props.
   const renderJob = (j: Job) => {
+    const key = controlKey(j);
     const st = jobStatus(j);
     const degradedWorkers = jobDegradedWorkerCount(j);
     const outcomeWarning = st === "completed" && (j.outcome?.trustworthy === false || degradedWorkers > 0);
-    const manualExpanded = expandedJobs[j.id];
+    const manualExpanded = expandedJobs[key];
     const isExpanded = manualExpanded === true;
     const phase = jobPhase(j);
 
+    const artifactSelection = selectJobRef(j, scopedRepo || "", requestSessionId);
+    const artifactRead = artifactSelection ? artifactReads[jobArtifactKey(artifactSelection)] : undefined;
     const artifacts = jobArtifactList(j);
     const routingArts = dedupeRouting(
       artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING"),
@@ -1598,15 +1604,15 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
     const spendSplit = jobSpendSplit(j);
     const showJobCost = hasMeaningfulJobCost(j) || spendSplit.headline != null;
     const showJobSavings = savings.total > 0;
-    const hasHeaderMeters = showJobTokens || showJobCompactTokens || showJobCost || showJobSavings;
-    const costExpanded = !!expandedJobCost[j.id];
-    const savingsExpanded = !!expandedJobSavings[j.id];
+    const hasHeaderMeters = j.read_status !== "unavailable" && (showJobTokens || showJobCompactTokens || showJobCost || showJobSavings);
+    const costExpanded = !!expandedJobCost[key];
+    const savingsExpanded = !!expandedJobSavings[key];
     const finishedWorkers = terminalWorkerCount(tasks);
 
     const toggle = () => {
       const next = !isExpanded;
       setExpandedJobs((prev) => {
-        const updated = { ...prev, [j.id]: next };
+        const updated = { ...prev, [key]: next };
         saveExpanded(scopedRepoRef.current, updated);
         return updated;
       });
@@ -1618,7 +1624,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
 
     return (
       <div
-        key={j.id}
+        key={key}
         data-job-id={j.id}
         // shrink-0 is load-bearing: as a flex child of the flex-col scroll list,
         // an overflow-hidden card is allowed to shrink BELOW its content, so it
@@ -1709,13 +1715,14 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
           </span>
           <div className="flex items-center gap-1 shrink-0 text-[10px]">
             {st === "in_progress" && (
-              cancelling.has(j.id) ? (
+              cancelling.has(key) ? (
                 <span className="text-[9px] text-risk/70 italic tabular-nums">cancelling...</span>
               ) : (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); void cancelJob(j.id); }}
+                  onClick={(e) => { e.stopPropagation(); void cancelJob(j); }}
                   onKeyDown={(e) => e.stopPropagation()}
+                  disabled={!selectJobControl(j, scopedRepo || "", requestSessionId) || isShowingStale || projectSwitching}
                   title="Cancel this job"
                   aria-label="Cancel this job"
                   className={`text-faint/50 hover:text-risk transition-colors ${DISCLOSURE_FOCUS}`}
@@ -1727,7 +1734,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
             {terminal && (
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); dismissJob(j.id); }}
+                onClick={(e) => { e.stopPropagation(); dismissJob(j); }}
                 onKeyDown={(e) => e.stopPropagation()}
                 title="Dismiss from tracker (stays in Puppetmaster history)"
                 aria-label="Dismiss from tracker (stays in Puppetmaster history)"
@@ -1739,9 +1746,19 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
           </div>
         </div>
 
+        {j.read_status === "unavailable" && (
+          <div role="alert" className="px-2 pb-2 text-xs text-risk">
+            Job data could not be read. Usage and results may be incomplete.
+            <button type="button" className="ml-2 text-txt" disabled={isValidating || isShowingStale}
+              onClick={() => void revalidate(true)}>Retry job data</button>
+          </div>
+        )}
+        {cancelErrors[key] && <div role="alert" className="px-2 pb-2 text-xs text-risk">{cancelErrors[key]}</div>}
+
         {/* Expanded details */}
         {isExpanded && (
           <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
+            <JobEvidence stateId={artifactSelection?.job_ref.state_id} jobId={j.id} sessionId={requestSessionId} repo={scopedRepo || ""} source={artifactSelection?.source || "unsupported"} />
             <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
               <button
                 type="button"
@@ -1783,7 +1800,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                             title={namedSpend(j.est_cost_usd, spendBasisFor(j))}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setExpandedJobCost((prev) => ({ ...prev, [j.id]: !costExpanded }));
+                              setExpandedJobCost((prev) => ({ ...prev, [key]: !costExpanded }));
                             }}
                             onKeyDown={(e) => e.stopPropagation()}
                             className={`${SWARM_METER_PILL} font-mono text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
@@ -1814,7 +1831,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                             title={savingsDetail(savings)}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setExpandedJobSavings((prev) => ({ ...prev, [j.id]: !savingsExpanded }));
+                              setExpandedJobSavings((prev) => ({ ...prev, [key]: !savingsExpanded }));
                             }}
                             onKeyDown={(e) => e.stopPropagation()}
                             className={`${SWARM_METER_PILL} font-sans text-good/85 tabular-nums hover:border-good/30 transition-colors ${DISCLOSURE_FOCUS}`}
@@ -1916,7 +1933,8 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                 </div>
                 <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
                   {tasks.map((task) => {
-                    const tExpanded = !!expandedTasks[task.id];
+                    const taskKey = JSON.stringify([key, task.id]);
+                    const tExpanded = !!expandedTasks[taskKey];
                     const routing = routingForTask.get(task.id);
                     const view = workerModelView(task, routing);
                     const failureArtifact = failureForTask.get(task.id);
@@ -1926,13 +1944,13 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                     const provider = (routing?.provider || "").trim();
                     const createdBy = routing?.created_by || "";
                     const hasRejected = !!(routing?.rejected && routing.rejected.length > 0);
-                    const altKey = `${j.id}:${task.id}`;
+                    const altKey = taskKey;
                     const altsExpanded = !!expandedAlts[altKey];
                     const spend = workerSpend(task, j);
                     const costValue = spend?.cost;
                     const costEstimated = spend?.estimated ?? true;
                     const showTokens = (task.tokens ?? 0) > 0;
-                    const showCost = spend != null && (
+                    const showCost = j.read_status !== "unavailable" && spend != null && (
                       isKnownPositiveCost(costValue)
                       || isProviderAttestedExactZero(costValue, costEstimated)
                     );
@@ -1955,8 +1973,8 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                           aria-expanded={tExpanded}
                           aria-controls={detailsId}
                           aria-label={ariaBits.join(", ")}
-                          onClick={() => toggleTask(task.id)}
-                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } }}
+                          onClick={() => toggleTask(taskKey)}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(taskKey); } }}
                           className={`group flex items-start gap-2 min-w-0 px-1 py-0.5 cursor-pointer hover:bg-panel2/25 transition-colors ${DISCLOSURE_FOCUS}`}
                         >
                           <span className="shrink-0 mt-0.5">
@@ -2005,7 +2023,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                                 </span>
                               )}
                               {showSpend && (() => {
-                                const usageOpen = !!expandedWorkerUsage[task.id];
+                                const usageOpen = !!expandedWorkerUsage[taskKey];
                                 return (
                                   <div className="inline-flex flex-col gap-0.5 min-w-0">
                                     <button
@@ -2015,7 +2033,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                                       className={`${SWARM_METER_PILL} ${DISCLOSURE_FOCUS} font-mono text-muted tabular-nums hover:border-edge transition-colors`}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setExpandedWorkerUsage((prev) => ({ ...prev, [task.id]: !usageOpen }));
+                                        setExpandedWorkerUsage((prev) => ({ ...prev, [taskKey]: !usageOpen }));
                                       }}
                                       onKeyDown={(e) => e.stopPropagation()}
                                     >
@@ -2132,7 +2150,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                 so a long finished swarm does not force a wall of rows. */}
             {streamArts.length > 0 && (() => {
               const findingRows = dedupeFindings(streamArts);
-              const sectionOpen = findingsOpen[j.id] !== false;
+              const sectionOpen = findingsOpen[key] !== false;
               const countLabel = `${findingRows.length}`;
               return (
               <div className="border-t border-edge/20 pt-1.5 flex flex-col">
@@ -2140,7 +2158,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setFindingsOpen((prev) => ({ ...prev, [j.id]: !sectionOpen }));
+                    setFindingsOpen((prev) => ({ ...prev, [key]: !sectionOpen }));
                   }}
                   className="w-full flex items-center gap-1 text-[9px] uppercase tracking-wider text-faint font-medium mb-1 hover:text-muted focus:outline-none"
                   title={sectionOpen ? "Collapse findings" : "Expand findings"}
@@ -2152,7 +2170,8 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                 <div className="pr-1 flex flex-col gap-1">
                   {findingRows.map(({ art, count, artifactIds }, idx: number) => {
                     const fid = art.id || `f${idx}`;
-                    const fExpanded = !!expandedFindings[fid];
+                    const findingKey = JSON.stringify([key, fid]);
+                    const fExpanded = !!expandedFindings[findingKey];
                     const echoWarn = (art.type || "").toUpperCase() === "FINDING"
                       && looksLikePromptEcho(art.headline || "");
                     const detailStr = art.detail == null
@@ -2189,8 +2208,8 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
                       <div
                         role="button"
                         tabIndex={0}
-                        onClick={() => toggleFinding(fid)}
-                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleFinding(fid); } }}
+                        onClick={() => toggleFinding(findingKey)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleFinding(findingKey); } }}
                         className="flex items-start gap-1 text-txt break-words leading-relaxed cursor-pointer hover:text-white focus:outline-none"
                       >
                         <span className="mt-0.5 shrink-0 text-faint">
@@ -2216,11 +2235,19 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
               );
             })()}
 
-            {tasks.length === 0 && streamArts.length === 0 && !showUnmatched && (
+            {j.read_status !== "unavailable" && j.artifacts_complete === false && (
+              <div className="text-xs text-muted" role="status">
+                {!artifactSelection ? "Artifact preview is unavailable for this job in the active workspace and session."
+                  : artifactRead?.kind !== "error" ? "Loading artifacts..."
+                  : "Artifacts could not be loaded."}
+                {artifactSelection && artifactRead?.kind === "error" && (
+                  <button type="button" className="text-txt py-2" onClick={() => ensureFullArtifacts(j)}>Retry artifacts</button>
+                )}
+              </div>
+            )}
+            {j.read_status !== "unavailable" && j.artifacts_complete !== false && tasks.length === 0 && streamArts.length === 0 && !showUnmatched && (
               <div className="text-[9.5px] text-faint italic px-1 py-0.5">
-                {loadingArts.has(j.id) || (j.artifacts_complete === false)
-                  ? "Loading artifacts..."
-                  : st === "in_progress"
+                {st === "in_progress"
                     ? "Worker running -- artifacts will stream in as they land."
                     : "No artifacts recorded."}
               </div>
@@ -2272,6 +2299,20 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
         </div>
       </div>
 
+      {data?.session?.read_status === "unavailable" && (
+        <div role="status" className="px-2 py-1 text-xs text-risk">
+          Swarm totals are partial / unavailable.
+          <button type="button" className="ml-2 text-txt" disabled={isValidating}
+            onClick={() => void revalidate(true)}>Retry swarm totals</button>
+        </div>
+      )}
+      {!!readError && (
+        <div role="alert" className="px-2 py-1 text-xs text-risk">
+          Swarm data could not be read. Displayed data may be out of date.
+          <button type="button" className="ml-2 text-txt" disabled={isValidating}
+            onClick={() => void revalidate(true)}>Retry swarm data</button>
+        </div>
+      )}
       <div className="shrink-0 grid grid-cols-2 gap-1.5 px-2 py-1.5 border-b border-[var(--shell-panel-border)] bg-panel2/10">
         <select
           aria-label="Filter swarms"
@@ -2324,7 +2365,7 @@ export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />
             <span className="text-[12px] text-muted font-medium">
-              {isValidating && !data
+              {readError ? "Swarm data unavailable" : isValidating && !data
                 ? "Loading swarm jobs..."
                 : undismissedJobs.length > 0
                   ? "No swarm jobs match this filter"

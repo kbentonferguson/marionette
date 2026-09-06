@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api, type Config, type SessionGoal, type SessionState } from "../lib/api";
-import { useProcessUsage } from "../lib/processUsage";
+import { refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
 import {
   subscribeTaskProfile,
   taskProfileTitle,
@@ -225,7 +225,8 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
-  const usage = useProcessUsage({ busy: usageBusy }).session;
+  const processUsage = useProcessUsage({ busy: usageBusy });
+  const usage = processUsage.session;
 
   useEffect(() => {
     const onSessionChanged = (event: Event) => {
@@ -384,6 +385,11 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           </button>
         </span>
       )}
+      {processUsage.readStatus === "unavailable" && (
+        <button type="button" className="text-risk" onClick={() => void refreshProcessUsage()}>
+          App-run usage partial / unavailable. Retry
+        </button>
+      )}
       {showUsage && usage && (
         <>
           <span className="w-px h-3 bg-edge/40 shrink-0" />
@@ -456,7 +462,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
             >
               {spendIsEstimated(usage) ? "~" : ""}
-              {formatCost(usage.est_cost_usd)}
+              {usage.read_status === "unavailable"
+                ? usage.est_cost_usd > 0 ? `${formatCost(usage.est_cost_usd)} known subtotal` : "Spend unavailable"
+                : formatCost(usage.est_cost_usd)}
             </button>
             <span className="text-faint/70 normal-case font-sans tracking-normal">this open</span>
           </span>

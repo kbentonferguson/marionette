@@ -683,7 +683,7 @@ def get_file_raw(
     return 200, data, ctype
 
 
-def get_image(req_path: str, upload_dir: str) -> tuple[int, bytes | dict, str]:
+def get_image(req_path: str, upload_dir: str, *, session=None) -> tuple[int, bytes | dict, str]:
     """GET /api/image — serve an uploaded image confined to ``upload_dir``."""
     # Serve an uploaded image back to the browser so SENT message
     # thumbnails have a durable src (the composer's blob: preview URL
@@ -692,6 +692,23 @@ def get_image(req_path: str, upload_dir: str) -> tuple[int, bytes | dict, str]:
     # become an arbitrary-file-read endpoint.
     if not req_path:
         return 400, {"error": "Missing path parameter"}, "application/json"
+    if req_path.startswith('input:'):
+        from ..input_receipts import session_input_store, InputReceiptError
+        if session is None:
+            return 403, {'error': 'A bound session is required for retained images.'}, 'application/json'
+        try:
+            store = session_input_store(session)
+            attachments = [a for r in store.list() for a in r['attachments']]
+            item = next((a for a in attachments if a['ref'] == req_path and a['kind'] == 'image'), None)
+            if item is None:
+                return 403, {'error': 'Image is not owned by this session.'}, 'application/json'
+            content_types = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+            content_type = content_types.get(os.path.splitext(item['name'])[1].lower())
+            if content_type is None:
+                return 403, {'error': 'Not a supported image.'}, 'application/json'
+            return 200, store.attachment(req_path), content_type
+        except InputReceiptError as exc:
+            return 503, exc.payload(), 'application/json'
     upload_real = os.path.realpath(upload_dir)
     file_real = os.path.realpath(req_path)
     try:

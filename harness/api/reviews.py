@@ -26,7 +26,13 @@ def post_reviews_apply(body: dict, svc: ReviewServices) -> tuple[int, JsonPayloa
     decisions = body.get("decisions", {})
     if not review_id:
         return 400, {"error": "Missing review id"}
-    res = svc.get_pilot().apply_review(review_id, decisions)
+    scope = body.get("scope", "review")
+    if scope not in ("review", "selected"):
+        return 400, {"error": "Invalid review scope"}
+    if scope == "selected":
+        res = svc.get_pilot().apply_review(review_id, decisions, scope=scope)
+    else:
+        res = svc.get_pilot().apply_review(review_id, decisions)
     return 200, res
 
 

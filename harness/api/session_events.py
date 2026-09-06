@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Optional, Tuple, Union
@@ -50,6 +51,7 @@ class SessionEventStore:
         self._lock = threading.Lock()
         self._sessions: Dict[str, Deque[Tuple[int, dict]]] = {}
         self._cursors: Dict[str, int] = {}
+        self._stream_ids: Dict[str, str] = {}
         self._mirrored_ring_cursor: Dict[str, int] = {}
         self._mirrored_ring_generation: Dict[str, int] = {}
         self._state_fp: Dict[str, str] = {}
@@ -63,6 +65,7 @@ class SessionEventStore:
         with self._lock:
             self._sessions.pop(sid, None)
             self._cursors.pop(sid, None)
+            self._stream_ids.pop(sid, None)
             self._mirrored_ring_cursor.pop(sid, None)
             self._mirrored_ring_generation.pop(sid, None)
             self._state_fp.pop(sid, None)
@@ -86,6 +89,8 @@ class SessionEventStore:
         self._evict_if_needed_unlocked(sid)
         nxt = int(self._cursors.get(sid, 0) or 0) + 1
         self._cursors[sid] = nxt
+        if sid not in self._stream_ids:
+            self._stream_ids[sid] = str(uuid.uuid4())
         ev = {
             "id": nxt,
             "kind": str(kind or "event"),
@@ -111,6 +116,7 @@ class SessionEventStore:
                 break
             self._sessions.pop(victim, None)
             self._cursors.pop(victim, None)
+            self._stream_ids.pop(victim, None)
             self._mirrored_ring_cursor.pop(victim, None)
             self._mirrored_ring_generation.pop(victim, None)
             self._state_fp.pop(victim, None)
@@ -144,7 +150,7 @@ class SessionEventStore:
                 "started_at": getattr(rec, "started_at", ""),
             })
 
-    def since(self, session_id: str, cursor: int = 0) -> dict:
+    def since(self, session_id: str, cursor: int = 0, *, stream_id=None) -> dict:
         """Return events with id > ``cursor`` plus the high-water cursor.
 
         When ``since > 0`` and cap-eviction left a hole (oldest retained id >
@@ -159,6 +165,12 @@ class SessionEventStore:
         with self._lock:
             bucket = self._sessions.get(sid) or deque()
             high = int(self._cursors.get(sid, 0) or 0)
+            current_stream = self._stream_ids.get(sid)
+            code = None
+            if stream_id is not None and stream_id != current_stream:
+                code = "stream_mismatch"
+            elif since_c > high:
+                code = "future_cursor"
             gap = False
             if since_c > 0:
                 if not bucket:
@@ -168,10 +180,12 @@ class SessionEventStore:
                     oldest = bucket[0][0]
                     if oldest > since_c + 1:
                         gap = True
-            events = [] if gap else [ev for eid, ev in bucket if eid > since_c]
+            events = [] if gap or code else [ev for eid, ev in bucket if eid > since_c]
             return {
                 "session_id": sid,
                 "cursor": high,
+                "stream_id": current_stream,
+                "code": code,
                 "events": events,
                 "gap": gap,
             }
@@ -390,6 +404,7 @@ def read_events_since(
     session_control_svc: SessionControlServices,
     store: Optional[SessionEventStore] = None,
     generation: Optional[int] = None,
+    stream_id: Optional[str] = None,
 ) -> tuple[int, JsonPayload]:
     """Return store events after ``cursor`` and the new high-water cursor.
 
@@ -413,6 +428,10 @@ def read_events_since(
             "events": [],
         }
 
+    before = store.since(sid, since_c, stream_id=stream_id)
+    if before.get("code"):
+        return 409, {**before, "ok": False, "error": "Reset replay from since=0."}
+
     try:
         store.maybe_stamp_host_lifecycle(sid)
     except Exception:
@@ -420,7 +439,9 @@ def read_events_since(
     _mirror_ring_into_store(store, sse_svc, sid, generation)
     _sample_runners_into_store(store, session_control_svc, sid)
 
-    batch = store.since(sid, since_c)
+    batch = store.since(sid, since_c, stream_id=stream_id)
+    if batch.get("code"):
+        return 409, {**batch, "ok": False, "error": "Reset replay from since=0."}
     events = batch.get("events") if isinstance(batch.get("events"), list) else []
     gap = bool(batch.get("gap"))
     if gap:
@@ -444,6 +465,7 @@ def read_events_since(
         "ok": True,
         "session_id": sid,
         "cursor": int(batch.get("cursor") or 0),
+        "stream_id": batch.get("stream_id"),
         "events": events,
         "gap": gap,
     }
@@ -452,15 +474,22 @@ def read_events_since(
 def read_events_since_http(
     qs: dict,
     svc: SessionEventsServices,
+    *,
+    versioned: bool = False,
 ) -> tuple[int, JsonPayload]:
     """GET /api/session/events — query: session, since, generation."""
     qs = qs or {}
     session = (qs.get("session", [""])[0] or qs.get("session_id", [""])[0] or "").strip()
+    if versioned and not session:
+        return 400, {"ok": False, "error": "Versioned replay requires an explicit session."}
     since_raw = qs.get("since", ["0"])[0]
     try:
         since_c = int(since_raw or 0)
     except (TypeError, ValueError):
         since_c = 0
+    if versioned and (str(since_c) != str(since_raw) or since_c < 0):
+        return 400, {"ok": False, "error": "since must be a nonnegative integer"}
+    stream_id = qs.get("stream_id", [""])[0] if versioned and since_c > 0 else None
     gen_raw = qs.get("generation", [""])[0]
     generation = None
     if gen_raw not in ("", None):
@@ -479,4 +508,5 @@ def read_events_since_http(
         session_control_svc=sc_svc,
         store=store,
         generation=generation,
+        stream_id=stream_id,
     )

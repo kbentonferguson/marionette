@@ -18,6 +18,7 @@ Method Resolution Order keeps behavior identical: ``is_turn_busy``,
 """
 
 import os
+from contextlib import nullcontext
 from typing import Iterator
 
 from harness.diag import note as _diag_note
@@ -88,7 +89,7 @@ class BusyControlMixin:
             "(cooperative quarantine)",
         )
 
-    def interrupt(self) -> None:
+    def interrupt(self, *, preserve_input_id=None) -> None:
         """Hard Stop: cancel the turn + owned tool procs, then report idle.
 
         Python threads are never force-killed. Owned ``run_cancellable`` process
@@ -97,22 +98,26 @@ class BusyControlMixin:
         A turn blocked in run_command or a local implement thread may keep
         ``_busy`` locked, so /api/session/state would still report
         runners=running and the UI would re-arm "thinking" after Stop. We:
-        1. set the cancel flag,
+        1. publish cancel + interrupt_requested together so a follow-up send
+           can force-recover the lock,
         2. cancel every in-process local job (cooperative Event + terminal mark),
         3. hard-cancel Marionette-owned foreground/command process groups,
         4. trip PM cancel flags + dual-store mark for session-dispatched jobs
            (harness and CLI durable stores — same seam as /api/swarm/cancel),
         5. hold an idle status surface until the next user send (only after
            owned work is cancelled, or with an orphan notice if a kill stalls),
-        6. mark interrupt_requested so a follow-up send can force-recover the lock,
-        7. drop any queued steers with a durable/streamed notice (S2 boundary —
+        6. drop any queued steers with a durable/streamed notice (S2 boundary —
            never inject into the abandoned generator or a later unrelated send).
 
         Cooperative quarantine: steps 1–2 arm cancel Events checked by
         write/edit/hash_edit and late patch-apply before further disk writes.
         """
+        # Publish Stop atomically with deadline expiry/cleanup. Keep cancel
+        # hooks and process/child teardown outside the non-reentrant lock.
+        with getattr(self, "_busy_meta", None) or nullcontext():
+            self._interrupt_requested = True
+            self._cancel.set()
         self.cancel()
-        self._interrupt_requested = True
         # Only an actually abandoned generation (busy still held) should force
         # acquire-time steer drops. Idle-session Stop must not wipe later
         # ready-session steers on the next legitimate send.
@@ -179,6 +184,16 @@ class BusyControlMixin:
                     record(dropped)
         except Exception:
             pass
+        self._input_stop_error = None
+        try:
+            retire_inputs = getattr(self, 'retire_input_receipts_after_stop', None)
+            if callable(retire_inputs):
+                retire_inputs(preserve_input_id)
+        except Exception as exc:
+            payload = getattr(exc, 'payload', None)
+            self._input_stop_error = payload() if callable(payload) else {
+                'ok': False, 'code': 'input_stop_uncertain',
+                'error': 'Stop completed, but input outcomes could not be saved.'}
         # S3 Windows hygiene: reap the owned warm ACP child so a Stop cannot
         # leave orphan ``agent acp`` processes after a blocked prompt.
         try:
@@ -440,10 +455,9 @@ class BusyControlMixin:
             except RuntimeError:
                 return False
             self._busy_since = 0.0
-        try:
+            # Publish idle before another owner can finish admission under
+            # _busy_meta; a late reaper must not overwrite its streaming state.
             self._state = "idle"
-        except Exception:
-            pass
         _diag_note(
             "busy_control.reap_wedged",
             msg=f"_busy held {held:.0f}s past {deadline:.0f}s deadline",

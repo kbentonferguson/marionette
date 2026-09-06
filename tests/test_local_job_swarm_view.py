@@ -1,6 +1,9 @@
 """Read-model projection for local jobs at /api/swarm/live merge boundary."""
 from __future__ import annotations
 
+from tests.test_session_queue_durability import factory
+from harness.session_runners import SessionRunnerRegistry
+
 import json
 import shutil
 import tempfile
@@ -555,7 +558,7 @@ def test_swarm_live_session_savings_exclude_external_cli_jobs(tmp_path, monkeypa
         httpd.shutdown()
 
 
-def test_swarm_live_session_savings_include_local_only_jobs(monkeypatch):
+def test_swarm_live_session_savings_include_local_only_jobs(monkeypatch, factory):
     tmp_dir = tempfile.mkdtemp()
     try:
         httpd, port, srv = _server(tmp_dir)
@@ -567,7 +570,9 @@ def test_swarm_live_session_savings_include_local_only_jobs(monkeypatch):
                 srv._sessions.create(
                     "local savings", repo=workspace, workspace_root=workspace,
                 )
-            srv._sync_pilot_session_id()
+            monkeypatch.setattr(srv, '_runners', SessionRunnerRegistry())
+            monkeypatch.setattr(srv, '_pilot', factory(''))
+            srv._attach_view(srv._sessions.active, factory=lambda: srv._pilot)
             monkeypatch.setattr(
                 "harness.local_job_routing.preview_agentic_route",
                 lambda goal, role="implement": {

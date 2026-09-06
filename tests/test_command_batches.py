@@ -273,9 +273,10 @@ def test_duplicate_replay_reuses_completed_children(session):
     keep_runs = [c for c in calls if c == "echo keep"]
     assert len(keep_runs) == 1
     assert keep_runs == [c for c in calls_after_first if c == "echo keep"]
-    # Failed fingerprint was restarted and can complete.
+    # Failed outcomes remain authoritative for the same logical action.
     fail_child = lookup_command_job(sess, batch["child_job_ids"][1])
-    assert fail_child["status"] == "completed"
+    assert fail_child["status"] == "failed"
+    assert calls.count("echo fail-once") == 1
     assert fail_child["command_fingerprint"] == command_fingerprint("echo fail-once")
 
 

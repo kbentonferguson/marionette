@@ -60,10 +60,30 @@ def _run_gui(argv) -> int:
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--force", action="store_true", help="Bypass the single-backend reuse check")
+    ap.add_argument("--lifetime-receipt", help="Publish an external-owner receipt; run foreground under your supervisor")
     args = ap.parse_args(argv)
-    from .server import serve
+    if args.lifetime_receipt and (args.host != "127.0.0.1" or args.force):
+        ap.error("--lifetime-receipt requires loopback and cannot be combined with --force")
+    from pathlib import Path
+    from .backend_lifetime import exclusive_startup
+    state = os.environ.get("HARNESS_STATE_DIR", "")
+    if args.lifetime_receipt and (not state or not Path(state).is_absolute()):
+        ap.error("--lifetime-receipt requires an explicit absolute HARNESS_STATE_DIR")
+    if not state:
+        root = Path.home() / ".pmharness"
+        durable = root / "state"
+        # Match server._state_home after its stable-state anchor: a custom
+        # config state_dir leaves app files in the existing durable/legacy home.
+        # Do not create durable here merely to select it for the lease.
+        configured_state = HarnessConfig.from_env().state_dir
+        state = str(durable if durable.is_dir() or not configured_state else root)
+    ownership = exclusive_startup(Path(state), Path(args.lifetime_receipt) if args.lifetime_receipt else None)
     try:
-        serve(host=args.host, port=args.port, force=args.force)
+        with ownership:
+            from .server import serve
+            serve(host=args.host, port=args.port, force=args.force, lifetime_receipt=args.lifetime_receipt)
+    except RuntimeError as exc:
+        ap.error(str(exc))
     except KeyboardInterrupt:
         return 0
     return 0
@@ -136,6 +156,9 @@ def main(argv=None) -> int:
         print(f"harness {__version__}")
         return 0
     # Subcommand dispatch. Default (no subcommand) = run a task.
+    if raw and raw[0] == "artifact-bundle":
+        from .artifact_bundle_cli import main as bundle_main
+        return bundle_main(raw[1:])
     if raw and raw[0] == "pm-exec":
         from puppetmaster.cli import main as _pm_main
         return _pm_main(raw[1:])

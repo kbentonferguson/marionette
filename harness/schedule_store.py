@@ -180,6 +180,10 @@ def _validate_ceilings(values: dict) -> None:
             raise ValueError(f"{field} must be non-negative")
 
 
+class ScheduleConflict(ValueError):
+    """A concurrent editor changed the schedule."""
+
+
 class ScheduleStore:
     def __init__(self, path: Optional[str] = None) -> None:
         if path is not None:
@@ -223,6 +227,7 @@ class ScheduleStore:
                 claim_run_id TEXT NOT NULL DEFAULT '',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 timezone TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 0,
                 missed_policy TEXT NOT NULL DEFAULT 'once',
                 continuity_digest TEXT NOT NULL DEFAULT '',
                 notepad TEXT NOT NULL DEFAULT '',
@@ -283,6 +288,7 @@ class ScheduleStore:
             ("claim_run_id", "TEXT NOT NULL DEFAULT ''"),
             ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
             ("timezone", "TEXT NOT NULL DEFAULT ''"),
+            ("revision", "INTEGER NOT NULL DEFAULT 0"),
             ("delivery_mode", "TEXT NOT NULL DEFAULT ''"),
             ("missed_policy", "TEXT NOT NULL DEFAULT 'once'"),
             ("continuity_digest", "TEXT NOT NULL DEFAULT ''"),
@@ -325,7 +331,6 @@ class ScheduleStore:
 
         _validate_ceilings(schedule.to_row())
         CronExpr.parse(schedule.cron)  # validate; raises ValueError
-        # IANA deferred: persist empty timezone; evaluation is always host-local.
         schedule.timezone = validate_timezone(schedule.timezone or "")
         schedule.missed_policy = parse_missed_policy(schedule.missed_policy)
         schedule.failure_deliver = parse_failure_deliver(schedule.failure_deliver)
@@ -459,31 +464,26 @@ class ScheduleStore:
                     pass
                 raise
 
-    def set_enabled(self, schedule_id: str, enabled: bool) -> bool:
+    def set_enabled(self, schedule_id: str, enabled: bool,
+                    expected_revision: Optional[int] = None) -> bool:
         with self._lock:
-            if not enabled:
-                self._conn.execute(
-                    """
-                    UPDATE schedules SET cancel_requested = 1
-                    WHERE id = ? AND claim_owner != ''
-                    """,
-                    (schedule_id,),
-                )
-            now = time.time()
-            if enabled:
-                cur = self._conn.execute(
-                    "UPDATE schedules SET enabled = 1, enabled_at = ? WHERE id = ?",
-                    (now, schedule_id),
-                )
-            else:
-                cur = self._conn.execute(
-                    "UPDATE schedules SET enabled = 0 WHERE id = ?",
-                    (schedule_id,),
-                )
+            where = "id = ?"
+            args = [int(enabled), int(enabled), time.time(), int(enabled), schedule_id]
+            if expected_revision is not None:
+                where += " AND revision = ?"
+                args.append(expected_revision)
+            cur = self._conn.execute(
+                "UPDATE schedules SET enabled = ?, "
+                "enabled_at = CASE WHEN ? = 1 AND enabled = 0 THEN ? ELSE enabled_at END, "
+                "cancel_requested = CASE WHEN ? = 0 AND claim_owner != '' THEN 1 ELSE cancel_requested END, "
+                "revision = revision + 1 WHERE " + where, args,
+            )
             self._conn.commit()
+            if cur.rowcount == 0 and self.get(schedule_id) is not None:
+                raise ScheduleConflict("Schedule changed; reload before saving again")
             return cur.rowcount > 0
 
-    def update_fields(self, schedule_id: str, **fields) -> Optional[Schedule]:
+    def update_fields(self, schedule_id: str, *, expected_revision: Optional[int] = None, **fields) -> Optional[Schedule]:
         """Update editable schedule fields. Returns the row, or None if missing."""
         from .schedule_core import CronExpr, validate_timezone
 
@@ -506,7 +506,6 @@ class ScheduleStore:
         if "cron" in updates:
             CronExpr.parse(str(updates["cron"]))  # validate; raises ValueError
         if "timezone" in updates:
-            # IANA deferred: only empty (host-local) is accepted.
             updates["timezone"] = validate_timezone(str(updates["timezone"]))
         if "missed_policy" in updates:
             updates["missed_policy"] = parse_missed_policy(updates["missed_policy"])
@@ -518,14 +517,20 @@ class ScheduleStore:
             updates["failure_deliver"] = parse_failure_deliver(
                 updates["failure_deliver"]
             )
-        cols = ", ".join(f"{k} = ?" for k in updates)
+        cols = ", ".join(f"{k} = ?" for k in updates) + ", revision = revision + 1"
         vals = list(updates.values()) + [schedule_id]
+        where = "id = ?"
+        if expected_revision is not None:
+            where += " AND revision = ?"
+            vals.append(expected_revision)
         with self._lock:
             cur = self._conn.execute(
-                f"UPDATE schedules SET {cols} WHERE id = ?", vals
+                f"UPDATE schedules SET {cols} WHERE {where}", vals
             )
             self._conn.commit()
             if cur.rowcount <= 0:
+                if self.get(schedule_id) is not None:
+                    raise ScheduleConflict("Schedule changed; reload before saving again")
                 return None
             row = self._conn.execute(
                 "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
@@ -589,6 +594,7 @@ class ScheduleStore:
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         now: Optional[float] = None,
         force: bool = False,
+        expected_revision: Optional[int] = None,
     ) -> Optional[dict]:
         """Transactionally claim a schedule before run_auto.
 
@@ -610,6 +616,11 @@ class ScheduleStore:
                     self._conn.execute("ROLLBACK")
                     return None
                 sched = Schedule.from_row(dict(row))
+                if (not force and not sched.enabled) or (
+                    expected_revision is not None and sched.revision != expected_revision
+                ):
+                    self._conn.execute("ROLLBACK")
+                    return None
 
                 if (
                     not force

@@ -131,6 +131,27 @@ describe("RightPane collapse placement", () => {
     expect(onOpenTab).toHaveBeenCalledWith("economics");
   });
 
+  it("keeps dock shortcuts mounted and usable across panel visibility changes", () => {
+    const onOpenTab = vi.fn();
+    const onExpand = vi.fn();
+    const onCollapse = vi.fn();
+    const { rerender } = render(
+      <RightDock panelsOpen={false} onOpenTab={onOpenTab} onExpand={onExpand} onCollapse={onCollapse} />,
+    );
+    const dock = screen.getByRole("complementary", { name: "Floating panel shortcuts" });
+    fireEvent.click(within(dock).getByRole("button", { name: "Show panels" }));
+    expect(onExpand).toHaveBeenCalledOnce();
+    fireEvent.click(within(dock).getByTitle("In-app browser"));
+    expect(onOpenTab).toHaveBeenLastCalledWith("browser");
+
+    rerender(<RightDock panelsOpen onOpenTab={onOpenTab} onExpand={onExpand} onCollapse={onCollapse} />);
+    expect(screen.getByRole("complementary", { name: "Floating panel shortcuts" })).toBe(dock);
+    fireEvent.click(within(dock).getByRole("button", { name: "Hide panels" }));
+    expect(onCollapse).toHaveBeenCalledOnce();
+    fireEvent.click(within(dock).getByTitle("Economics"));
+    expect(onOpenTab).toHaveBeenLastCalledWith("economics");
+  });
+
   it("preserves the mounted Economics selection when another panel opens", () => {
     seedBoardTabOrder(["economics"]);
     render(<RightPane {...baseProps} />);

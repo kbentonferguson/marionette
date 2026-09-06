@@ -118,8 +118,8 @@ def _add_due(store, tmp_path, name="due", cron="* * * * *", **kw):
 def test_only_due_enabled_run(tmp_path):
     store = _store(tmp_path)
     due = _add_due(store, tmp_path, "due")
-    # A never-firing schedule (Feb 30 does not exist) is not due.
-    not_due = _add_due(store, tmp_path, "nd", cron="0 0 30 2 *")
+    # A future leap-day schedule is valid but not due today.
+    not_due = _add_due(store, tmp_path, "nd", cron="0 0 29 2 *")
     notifier = _CountingNotifier()
 
     runs = run_due(store, _now(), notifier=notifier,

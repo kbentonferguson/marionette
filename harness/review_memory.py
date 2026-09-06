@@ -27,100 +27,112 @@ class ReviewMemoryMixin:
     instance state of its own.
     """
 
-    def apply_review(self, review_id: str, decisions: dict) -> dict:
-        with self._pending_reviews_lock:
-            review = self._pending_reviews.get(review_id)
-            if not review:
-                return {
-                    "ok": False,
-                    "applied_files": [],
-                    "rejected_hunks": [],
-                    "checkpoint_id": None,
-                    "message": "Pending review not found"
-                }
+    def apply_review(self, review_id: str, decisions: dict, scope: str = "review") -> dict:
+        """Apply a whole review, or only explicit stable IDs in selected scope."""
+        from copy import deepcopy
+        import re
+        from .diffreview import decision_for_hunk, reconstruct_diff, resolve_hunk_decision_id
 
-        rejected_hunks = []
-        all_hunks = []
-        from .diffreview import decision_for_hunk, reconstruct_diff
-        fingerprint_counts: dict[str, int] = {}
-        for f in review["files"]:
-            path = str(f.get("path") or "")
-            for h in f["hunks"]:
-                h_id = h["id"]
-                all_hunks.append(h_id)
-                dec = decision_for_hunk(decisions, h, path, fingerprint_counts)
-                if dec == "reject":
-                    rejected_hunks.append(h_id)
+        def failure(message):
+            return {"ok": False, "applied_files": [], "rejected_hunks": [],
+                    "checkpoint_id": None, "message": message}
 
-        # Reconstruct the accepted subset diff
-        accepted_diff = reconstruct_diff(review["files"], decisions)
+        if scope not in ("review", "selected"):
+            return failure("Invalid review scope")
+        if not isinstance(decisions, dict):
+            return failure("Invalid review decisions")
 
-        applied_files = []
-        fingerprint_counts = {}
-        for f in review["files"]:
-            path = str(f.get("path") or "")
-            file_accepted = False
-            for h in f["hunks"]:
-                if decision_for_hunk(decisions, h, path, fingerprint_counts) == "accept":
-                    file_accepted = True
-            if file_accepted:
-                applied_files.append(f["path"])
-
-        # If ALL hunks are rejected, do not apply anything, just remove the review
-        if len(rejected_hunks) == len(all_hunks):
-            with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": True,
-                "applied_files": [],
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": None,
-                "message": "All hunks were rejected. No changes applied."
-            }
-
-        mock_artifacts = [
-            {
-                "type": "patch",
-                "payload": {
-                    "files": applied_files,
-                    "unified_diff": accepted_diff
-                }
-            }
-        ]
-
+        # Serialize selection, repository application, and queue replacement so
+        # concurrent clicks cannot replay a stale snapshot of the review.
         with self._apply_lock:
-            applied, files_changed, apply_msg = self._apply_worker_patch(
-                mock_artifacts,
-                review.get("job_id", ""),
-                repo=review.get("target_repo", ""),
-            )
-            cp_id = getattr(self, "_last_checkpoint_id", None)
-
-        if applied:
             with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": True,
-                "applied_files": files_changed,
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": cp_id,
-                "message": f"Successfully applied: {apply_msg}"
-            }
+                original = self._pending_reviews.get(review_id)
+                if not original:
+                    return failure("Pending review not found")
+                review = deepcopy(original)
 
-        # Keep the pending review on apply failure so the user can retry or
-        # reject remaining hunks. Surface the error on the review payload.
-        err_msg = f"Failed to apply: {apply_msg}"
-        with self._pending_reviews_lock:
-            still = self._pending_reviews.get(review_id)
-            if still is not None:
-                still["error"] = err_msg
-        return {
-            "ok": False,
-            "applied_files": [],
-            "rejected_hunks": rejected_hunks,
-            "checkpoint_id": cp_id,
-            "message": err_msg,
-        }
+            counts: dict[str, int] = {}
+            known = set()
+            for f in review["files"]:
+                for h in f["hunks"]:
+                    did = resolve_hunk_decision_id(h, f["path"], counts)
+                    h["decision_id"] = did
+                    known.add(did)
+            if scope == "selected" and (
+                not decisions or not set(decisions).issubset(known)
+                or any(value not in ("accept", "reject") for value in decisions.values())
+            ):
+                return failure("Select pending hunks by stable decision ID with accept/reject decisions")
+
+            selected = {}
+            rejected_hunks = []
+            applied_files = []
+            remaining_files = []
+            header_pattern = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+            for f in review["files"]:
+                pending = []
+                accepted_shift = 0
+                rejected_shift = 0
+                for h in f["hunks"]:
+                    did = h["decision_id"]
+                    match = header_pattern.match(h["header"])
+                    if scope == "selected" and did not in decisions:
+                        remaining = dict(h)
+                        if match and (accepted_shift or rejected_shift):
+                            old_start, old_count, new_start, new_count = match.groups()
+                            remaining["header"] = (
+                                f"@@ -{int(old_start) + accepted_shift},{old_count or '1'} "
+                                f"+{int(new_start) - rejected_shift},{new_count or '1'} @@"
+                                + h["header"][match.end():]
+                            )
+                        pending.append(remaining)
+                        continue
+                    decision = decision_for_hunk(decisions, h, f["path"])
+                    selected[did] = decision
+                    delta = int(match.group(4) or 1) - int(match.group(2) or 1) if match else 0
+                    if decision == "accept":
+                        if f["path"] not in applied_files:
+                            applied_files.append(f["path"])
+                        accepted_shift += delta
+                    else:
+                        rejected_hunks.append(h["id"])
+                        rejected_shift += delta
+                if pending:
+                    remaining_files.append({**f, "hunks": pending})
+
+            accepted_diff = reconstruct_diff(review["files"], selected)
+            cp_id = None
+            files_changed = []
+            apply_msg = "Selected hunks were rejected. No changes applied."
+            if applied_files:
+                applied, files_changed, apply_msg = self._apply_worker_patch(
+                    [{"type": "patch", "payload": {
+                        "files": applied_files, "unified_diff": accepted_diff,
+                    }}],
+                    review.get("job_id", ""), repo=review.get("target_repo", ""),
+                )
+                cp_id = getattr(self, "_last_checkpoint_id", None)
+                if not applied:
+                    err_msg = f"Failed to apply: {apply_msg}"
+                    with self._pending_reviews_lock:
+                        still = self._pending_reviews.get(review_id)
+                        if still is not None:
+                            still["error"] = err_msg
+                    return {"ok": False, "applied_files": [], "rejected_hunks": rejected_hunks,
+                            "checkpoint_id": cp_id, "message": err_msg}
+                apply_msg = f"Successfully applied: {apply_msg}"
+
+            with self._pending_reviews_lock:
+                if review_id in self._pending_reviews:
+                    if remaining_files:
+                        review["files"] = remaining_files
+                        review.pop("error", None)
+                        self._pending_reviews[review_id] = review
+                    else:
+                        self._pending_reviews.pop(review_id, None)
+            return {"ok": True, "applied_files": files_changed,
+                    "rejected_hunks": rejected_hunks, "checkpoint_id": cp_id,
+                    "message": apply_msg}
 
     def dismiss_review(self, review_id: str) -> bool:
         with self._pending_reviews_lock:

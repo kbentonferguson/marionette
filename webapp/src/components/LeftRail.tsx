@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
+import { fetchJobArtifacts, jobArtifactKey, selectJobRef, type ArtifactLoad, type SelectedJobRef } from "../lib/jobArtifacts";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -16,6 +17,7 @@ import {
   transcriptIdOf,
 } from "../lib/sessionExport";
 import { writeTranscriptCache } from "./Conversation";
+import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import { filterJobsByScope, loadJobScope, saveJobScope, type JobScope } from "../lib/jobScope";
@@ -80,7 +82,7 @@ import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
-  onSessionChange?: (id: string) => void;
+  onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
 }) {
   const [swapping, setSwapping] = useState<string | null>(null);
   const operationalDiagnostic = useOperationalDiagnostic();
@@ -131,9 +133,32 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
   const [branchesHeight, setBranchesHeight] = useState(loadBranchesHeight);
   const [pruningBranches, setPruningBranches] = useState(false);
-  // /api/jobs only carries an artifact COUNT per job; the full artifact list is
-  // fetched lazily the first time a card is expanded and cached here.
-  const [artifactsByJob, setArtifactsByJob] = useState<Record<string, Artifact[]>>({});
+  const pruningBranchesRef = useRef(false);
+  const pruneEpoch = useRef(0);
+  useEffect(() => {
+    const invalidate = () => { pruneEpoch.current += 1; };
+    const events = ["harness-project-switching", "harness-project-selected", "harness-session-changed", "harness-config-changed"];
+    events.forEach(event => window.addEventListener(event, invalidate));
+    return () => {
+      invalidate();
+      events.forEach(event => window.removeEventListener(event, invalidate));
+    };
+  }, []);
+  const [artifactsByJob, setArtifactsByJob] = useState<Record<string, ArtifactLoad>>({});
+  const artifactEpoch = useRef(0);
+  useEffect(() => {
+    const invalidate = () => {
+      artifactEpoch.current += 1;
+      setArtifactsByJob({});
+      setExpandedJobs({});
+    };
+    const events = ["harness-project-switching", "harness-project-selected", "harness-session-changed", "harness-config-changed"];
+    events.forEach(event => window.addEventListener(event, invalidate));
+    return () => {
+      artifactEpoch.current += 1;
+      events.forEach(event => window.removeEventListener(event, invalidate));
+    };
+  }, []);
 
   const railRef = useRef<HTMLElement>(null);
   const topChromeRef = useRef<HTMLDivElement>(null);
@@ -244,14 +269,25 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     branchesResizeCleanupRef.current?.();
   }, []);
 
-  const toggleJobCard = (j: Job) => {
-    const opening = !expandedJobs[j.id];
-    setExpandedJobs((p) => ({ ...p, [j.id]: opening }));
-    if (opening && artifactsByJob[j.id] === undefined) {
-      api.artifacts(j.id)
-        .then((arts) => setArtifactsByJob((p) => ({ ...p, [j.id]: Array.isArray(arts) ? arts : [] })))
-        .catch(() => setArtifactsByJob((p) => ({ ...p, [j.id]: [] })));
-    }
+  const loadJobArtifacts = (selection: SelectedJobRef) => {
+    const key = `${artifactEpoch.current}:${jobArtifactKey(selection)}`;
+    const epoch = artifactEpoch.current;
+    setArtifactsByJob(previous => ({ ...previous, [key]: { kind: "loading" } }));
+    fetchJobArtifacts(selection).then(artifacts => {
+      if (epoch !== artifactEpoch.current) return;
+      setArtifactsByJob(previous => ({ ...previous, [key]: { kind: "loaded", artifacts } }));
+    }).catch(() => {
+      if (epoch !== artifactEpoch.current) return;
+      setArtifactsByJob(previous => ({ ...previous, [key]: {
+        kind: "error", message: "Artifacts could not be loaded.",
+      } }));
+    });
+  };
+
+  const toggleJobCard = (key: string, selection: SelectedJobRef | null) => {
+    const opening = !expandedJobs[key];
+    setExpandedJobs(previous => ({ ...previous, [key]: opening }));
+    if (opening && selection && artifactsByJob[key] === undefined) loadJobArtifacts(selection);
   };
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
@@ -390,6 +426,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   );
 
   const currentRepo = workspaceInfo?.repo || "";
+  if (currentRepoRef.current !== currentRepo) pruneEpoch.current += 1;
   currentRepoRef.current = currentRepo;
 
   // Branches list: SWR keyed by repo so the first fetch stays warm across
@@ -762,22 +799,37 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const pruneEditBranches = async () => {
-    if (pruningBranches) return;
+    if (pruningBranchesRef.current || !currentRepo || workspaceTransitioning || workspaceStale) return;
+    const repo = currentRepo;
+    const generation = pruneEpoch.current;
+    pruningBranchesRef.current = true;
     const proceed = window.confirm(
-      "Delete unused local edit/worker branches (pmedit-*, pmworker-*) and leftover release/v0.9.* branches that origin already dropped? Active checkout and live worktree-attached branches are kept.",
+      `Prune unused local edit/worker and leftover branches in ${repo}? Eligible clean release worktrees may be removed. Dirty, locked, active, and other attached worktrees are kept.`,
     );
-    if (!proceed) return;
+    if (!proceed || generation !== pruneEpoch.current) {
+      pruningBranchesRef.current = false;
+      return;
+    }
     setPruningBranches(true);
     try {
-      const res = await api.pruneEditBranches();
+      const res = await api.pruneEditBranches(repo);
+      if (generation !== pruneEpoch.current) return;
       await revalidateWorkspaces();
-      const count = typeof res.count === "number" ? res.count : (res.deleted?.length ?? 0);
-      toast(count > 0
+      if (generation !== pruneEpoch.current) return;
+      const count = res.count;
+      const skipped = res.skipped?.length
+        ? `; kept ${res.skipped.length}: ${res.skipped.map(item => `${item.path || item.branch} (${item.reason})`).join("; ")}` : "";
+      toast((count > 0
         ? `Pruned ${count} unused branch${count === 1 ? "" : "es"}`
-        : "No unused edit or leftover release branches to prune");
-    } catch (err: any) {
-      toast(err?.error || err?.message || "Could not prune edit branches");
+        : "No unused edit or leftover release branches to prune") + skipped);
+    } catch (err: unknown) {
+      if (generation !== pruneEpoch.current) return;
+      const message = err instanceof Error ? err.message
+        : err && typeof err === "object" && "error" in err ? String(err.error)
+        : "Could not prune edit branches";
+      toast(message);
     } finally {
+      pruningBranchesRef.current = false;
       setPruningBranches(false);
     }
   };
@@ -1001,11 +1053,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       await refreshSessionsRef.current();
       if (res.active) {
         await switchSession(res.active);
+      } else {
+        onSessionChange?.(null, id);
       }
     } catch (err) {
-      // Restore caches from the server if delete failed after the optimistic purge.
       await refreshSessionsRef.current();
-      console.error(err);
+      if (typeof err === "object" && err !== null
+        && "deleted" in err && err.deleted === id
+        && "code" in err && err.code === "lease_exhausted") {
+        const message = "Session deleted. The next session could not open because all session slots are busy. Stop another turn, then select a session.";
+        setSessionActivationNotice(message);
+        toast(message);
+      } else {
+        toast(err instanceof Error ? err.message : "Could not delete session.");
+      }
     }
   };
 
@@ -1295,6 +1356,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const activeSessionId = sessions.find((session) => session.active)?.id || "";
+  const artifactContext = JSON.stringify([currentRepo, selectedProjectPath, activeSessionId]);
+  const artifactContextRef = useRef(artifactContext);
+  if (artifactContextRef.current !== artifactContext) {
+    artifactContextRef.current = artifactContext;
+    artifactEpoch.current += 1;
+  }
   const sortedJobs = filterJobsByScope(jobs.slice().reverse(), "session", activeSessionId);
   const visibleJobs = sortedJobs.filter(
     (j) => !hiddenJobIds.has(j.id) || !isTerminalJob(j),
@@ -1395,6 +1462,25 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         data-slot="left-rail-upper-sections"
         className={`min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}
       >
+      {sessions.filter((session) => session.active).map((session) => (
+        <SessionFork
+          key={session.id}
+          session={session}
+          sessions={[...sessions, ...bankSessions.filter((row) => !sessions.some((current) => current.id === row.id))]}
+          onSelect={(id) => { void switchSession(id); }}
+          onCreated={(child) => {
+            const root = child.workspace_root || child.repo || "";
+            const cached = readSWRCache<Session[]>(`sessions:${root}`) || [];
+            writeSessionListCache(root, [...cached.filter((row) => row.id !== child.id), child]);
+            if (repoPathsEqual(root, currentRepoRef.current)) {
+              mutateSessions([...sessions.filter((row) => row.id !== child.id), child]);
+            }
+            setSessionsCacheEpoch((epoch) => epoch + 1);
+            void revalidateSessions();
+            void refreshBankSessions();
+          }}
+        />
+      ))}
       {/* Projects | Sessions toggle */}
       <div className="px-2.5 pt-2 flex items-center gap-0 border-b border-edge/35">
         <button
@@ -1907,7 +1993,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <IconBtn
                 onClick={() => { void pruneEditBranches(); }}
                 title="Prune unused edit/worker and leftover release branches"
-                disabled={pruningBranches}
+                disabled={pruningBranches || !currentRepo || workspaceTransitioning || workspaceStale}
               >
                 {pruningBranches ? <Loader2 size={13} className="animate-spin" /> : <Brush size={13} />}
               </IconBtn>
@@ -2074,15 +2160,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <>
                 {displayedJobs.map((j) => {
                   const st = jobStatus(j);
-                  const isOpen = !!expandedJobs[j.id];
+                  const selection = selectJobRef(j, selectedProjectPath, activeSessionId);
+                  const key = selection ? `${artifactEpoch.current}:${jobArtifactKey(selection)}`
+                    : JSON.stringify([j.id, j.source, selectedProjectPath, activeSessionId]);
+                  const isOpen = !!expandedJobs[key];
                   const detail = jobDetailBits(j);
-                  const loadedArts = artifactsByJob[j.id];
-                  const arts = (loadedArts || []).filter((a) => a && a.headline);
-                  const diff = jobDiffstat(loadedArts || []);
+                  const load = artifactsByJob[key];
+                  const loadedArts = load?.kind === "loaded" ? load.artifacts : [];
+                  const arts = loadedArts.filter(a => a.headline?.trim());
+                  const summarylessCount = loadedArts.length - arts.length;
+                  const diff = jobDiffstat(loadedArts);
                   return (
-                    <div key={j.id} className="border-b border-edge/35 overflow-hidden min-w-0">
+                    <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
-                        onClick={() => toggleJobCard(j)}
+                        onClick={() => toggleJobCard(key, selection)}
                         className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
                       >
                         <JobStatusIcon status={st} />
@@ -2131,11 +2222,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 </div>
                               ))}
                             </div>
-                          ) : loadedArts === undefined ? (
+                          ) : null}
+                          {!selection ? (
+                            <div className="text-[10px] text-faint">Artifacts unavailable for this job in the selected workspace and session.</div>
+                          ) : load?.kind === "error" ? (
+                            <div role="alert" className="text-[10px] text-faint">
+                              {load.message} <button onClick={() => loadJobArtifacts(selection)} className="text-accent underline">Retry</button>
+                            </div>
+                          ) : !load || load.kind === "loading" ? (
                             <div className="text-[10px] text-faint italic">Loading artifacts...</div>
-                          ) : (
+                          ) : loadedArts.length === 0 ? (
                             <div className="text-[10px] text-faint italic">No artifacts recorded</div>
-                          )}
+                          ) : summarylessCount > 0 ? (
+                            <div className="text-[10px] text-faint">{summarylessCount} artifact{summarylessCount === 1 ? "" : "s"} recorded without a summary</div>
+                          ) : null}
                         </div>
                       )}
                     </div>

@@ -155,7 +155,7 @@ def _job_access_owned(job_id: str, svc: JobServices) -> bool | None:
     )
 
 
-def _inspect_sibling_job(job_id: str) -> tuple[bool | None, Any]:
+def _inspect_sibling_job(job_id: str, *, strict: bool = False) -> tuple[bool | None, Any]:
     """Inspect sibling-store ownership after a primary miss.
 
     Returns ``(owned, durable)``. ``owned`` is True/False when the job is in
@@ -172,13 +172,19 @@ def _inspect_sibling_job(job_id: str) -> tuple[bool | None, Any]:
 
         state_dir = find_state_dir_for_job(job_id)
     except Exception:
+        if strict:
+            raise
         state_dir = None
     if state_dir is None:
         return None, None
     durable = open_cli_durable_at(str(state_dir))
     store = getattr(durable, "store", None) if durable is not None else None
     if store is None:
+        if strict:
+            raise OSError("Sibling artifact store is unavailable")
         return None, None
+    if strict:
+        return _artifact_job_owned(durable, job_id, "cli", []), durable
     owned = inspect_store_job_ownership(
         store,
         job_id,
@@ -245,16 +251,6 @@ def _inspect_local_job_ownership(job_id: str, svc: JobServices) -> bool | None:
     return False
 
 
-def _trip_owned_cancel(job_id: str, svc: JobServices) -> None:
-    """Trip the in-process kill switch only after positive ownership."""
-    try:
-        from puppetmaster.cancellation import request_cancel
-
-        request_cancel(job_id)
-    except Exception as e:
-        svc.diag("server.swarm_cancel_flag", e)
-
-
 def _unknown_job_refusal(job_id: str) -> tuple[int, dict]:
     return 404, {"ok": False, "error": "unknown job_id", "job_id": job_id}
 
@@ -282,84 +278,179 @@ def _artifacts_from_durable(durable: Any, job_id: str, svc: JobServices, state_o
     return []
 
 
+def _legacy_cancel_selection(job_id: str, svc: JobServices) -> dict | None:
+    """Resolve an id only when exactly one known local/primary store contains it."""
+    from puppetmaster.state import state_identity
+    from ..cli_job_merge import resolve_cli_state_dir
+    from puppetmaster.store_factory import create_store
+
+    repo = svc.cfg.repo or ""
+    sid = getattr(svc.sessions, "active", None)
+    if not repo or not sid:
+        return None
+    candidates = []
+    pilot = svc.get_pilot()
+    getter = getattr(pilot, "get_local_job", None)
+    if callable(getter) and getter(job_id) is not None:
+        candidates.append({"source": "local", "job_ref": {"job_id": job_id, "state_id": None}})
+    primary = svc.get_session().state()
+    cli_root = resolve_cli_state_dir(repo)
+    cli_store = create_store("sqlite", cli_root, mode="attach") if cli_root else None
+    seen = set()
+    for source, store in (("harness", primary.store), ("cli", cli_store)):
+        if store is None:
+            continue
+        state_id = state_identity(store.root)
+        if state_id in seen:
+            continue
+        seen.add(state_id)
+        attach = getattr(store, "attach", None)
+        if callable(attach):
+            attach()
+        try:
+            job = store.get_job(job_id)
+        except (KeyError, FileNotFoundError):
+            continue
+        if job is not None:
+            candidates.append({"source": source, "job_ref": {"job_id": job_id, "state_id": state_id}})
+    if len(candidates) != 1:
+        return None
+    return {"version": 1, "repo": repo, "session_id": sid, **candidates[0]}
+
+
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
-    """Cooperative cancel for a swarm job. Best-effort and never raises.
+    """Cancel one versioned selection without using PM's global job-id flag.
 
-    Local (provider-worker) jobs are cancelled via the per-job Event on the
-    conversation; durable store jobs are marked cancelled in the store where
-    possible. Shape: ``{ok, job_id}`` or ``{ok:false, error}``.
+    PM 1.23.0 request_cancel has no state identity. Running durable jobs
+    require a scoped kernel cancellation API and must remain unchanged.
+    Local workers have a pilot-owned per-job event.
     """
-    job_id = (body.get("job_id") or "").strip()
-    if not job_id:
+    from puppetmaster.state import state_identity
+    from ..cli_job_merge import resolve_cli_state_dir
+    from ..job_scoping import job_owned_by_marionette, parse_job_session_id
+    from ..paths import same_workspace_path
+    from puppetmaster.store_factory import create_store
+
+    refused = (409, {"ok": False, "code": "job_cancel_unavailable",
+                     "error": "Cancel is unavailable for this job selection."})
+    if not isinstance(body, dict):
+        return refused
+    if "selection" not in body and not body.get("job_id"):
         return 400, {"ok": False, "error": "missing job_id"}
-
-    local_owned = _inspect_local_job_ownership(job_id, svc)
-    if local_owned is False:
-        return _unknown_job_refusal(job_id)
-    if local_owned is True:
-        _trip_owned_cancel(job_id, svc)
+    selection = body.get("selection")
+    if "selection" not in body and isinstance(body.get("job_id"), str) and body["job_id"].strip():
         try:
-            pilot = svc.get_pilot()
-            if hasattr(pilot, "cancel_local_job") and pilot.cancel_local_job(job_id):
-                return 200, {"ok": True, "job_id": job_id}
-        except Exception as e:
-            svc.diag("server.swarm_cancel_local", e)
-
-    owned = _job_access_owned(job_id, svc)
-    sibling_durable = None
-    if owned is False:
-        return _unknown_job_refusal(job_id)
-    if owned is None:
-        sibling_owned, sibling_durable = _inspect_sibling_job(job_id)
-        if sibling_owned is not True:
-            return _unknown_job_refusal(job_id)
-
-    _trip_owned_cancel(job_id, svc)
-
-    if sibling_durable is not None:
-        try:
-            from ..job_cancel import mark_store_job_cancelled
-
-            store = getattr(sibling_durable, "store", None)
-            return 200, {
-                "ok": True,
-                "job_id": job_id,
-                "durable": True,
-                "marked": mark_store_job_cancelled(store, job_id),
-            }
-        except Exception as e:
-            svc.diag("server.swarm_cancel_sibling", e)
-            return _unknown_job_refusal(job_id)
-
-    # Durable Puppetmaster store job — harness then primary CLI only.
+            selection = _legacy_cancel_selection(body["job_id"], svc)
+        except Exception as exc:
+            svc.diag("server.swarm_cancel_resolve", exc)
+            return 503, {"ok": False, "error": "Job selection could not be resolved."}
+    if not isinstance(selection, dict) or type(selection.get("version")) is not int or selection["version"] != 1:
+        return refused
+    ref = selection.get("job_ref")
+    if not isinstance(ref, dict) or "state_id" not in ref:
+        return refused
+    jid, state_id = ref.get("job_id"), ref.get("state_id")
+    sid, repo, source = (selection.get(k) for k in ("session_id", "repo", "source"))
+    if (not all(isinstance(v, str) and v.strip() for v in (jid, sid, repo))
+            or source not in ("harness", "cli", "local")
+            or ("job_id" in body and body["job_id"] != jid)):
+        return refused
+    captured_repo = svc.cfg.repo or ""
+    captured_sid = getattr(svc.sessions, "active", None)
+    if sid != captured_sid or not same_workspace_path(repo, captured_repo):
+        return refused
     try:
-        from ..job_cancel import cancel_job_dual_store
+        pilot = svc.get_pilot()
 
-        harness_store = None
-        harness_list_jobs = None
+        def context_matches() -> bool:
+            return (getattr(svc.sessions, "active", None) == captured_sid
+                    and same_workspace_path(svc.cfg.repo or "", captured_repo)
+                    and (source != "local" or svc.get_pilot() is pilot))
+
+        if source == "local":
+            if state_id is not None or not jid.startswith("local-"):
+                return refused
+            job = pilot.get_local_job(jid)
+            if (not isinstance(job, dict) or job.get("id") != jid
+                    or job.get("session_id") != sid
+                    or not job.get("cwd") or not same_workspace_path(job["cwd"], repo)
+                    or getattr(pilot, "harness_session_id", None) != sid
+                    or not context_matches()):
+                return refused
+            accepted = pilot.cancel_local_job(jid)
+            if not accepted:
+                return refused
+            return 200, {"ok": True, "job_id": jid, "selection": selection,
+                         "cancellation": "local_event"}
+
+        if not isinstance(state_id, str) or not state_id or jid.startswith("local-"):
+            return refused
+        if source == "harness":
+            store = svc.get_session().state().store
+        else:
+            root = resolve_cli_state_dir(captured_repo)
+            if not root:
+                return 503, {"ok": False, "error": "Job store is unavailable."}
+            if state_identity(root) != state_id:
+                return refused
+            store = create_store("sqlite", root, mode="attach")
+        if state_identity(store.root) != state_id:
+            return refused
+        attach = getattr(store, "attach", None)
+        if callable(attach):
+            attach()
         try:
-            state_obj = svc.get_session().state()
-            harness_store = getattr(state_obj, "store", None)
-            harness_list_jobs = getattr(state_obj, "list_jobs", None)
-        except Exception as e:
-            svc.diag("server.swarm_cancel_harness_store", e)
-
-        result = cancel_job_dual_store(
-            job_id,
-            harness_store=harness_store,
-            harness_list_jobs=harness_list_jobs,
-            repo_root=svc.cfg.repo or "",
-        )
-        if result is not None:
-            return 200, result
-    except Exception as e:
-        svc.diag("server.swarm_cancel_durable", e)
-    return _unknown_job_refusal(job_id)
+            job = store.get_job(jid)
+        except (KeyError, FileNotFoundError):
+            return refused
+        if (job is None or parse_job_session_id(job.label, []) != sid
+                or not job_owned_by_marionette(label=job.label, job_id=jid,
+                    source=source, registered_job_ids=[])):
+            return refused
+        tasks = store.list_tasks(jid)
+        if not tasks or any(
+            task.payload.get("session_id") != sid or not task.payload.get("cwd")
+            or not same_workspace_path(task.payload["cwd"], repo) for task in tasks
+        ):
+            return refused
+        if (not context_matches()
+                or (source == "harness" and svc.get_session().state().store is not store)):
+            return refused
+        if str(job.status) in ("completed", "complete", "failed", "cancelled"):
+            return 200, {"ok": True, "job_id": jid, "selection": selection,
+                         "durable": True, "marked": False, "cancellation": "already_terminal"}
+        return 409, {"ok": False, "code": "scoped_kernel_cancellation_required",
+                     "error": "Cancel is unavailable: the worker was not stopped. "
+                              "Scoped kernel cancellation is required; the job remains running."}
+    except Exception as exc:
+        svc.diag("server.swarm_cancel_scoped", exc)
+        return 503, {"ok": False, "error": "Job cancellation could not be completed."}
 
 
 def get_jobs(repo_override: str | None, svc: JobServices) -> tuple[int, list]:
     """GET /api/jobs — Marionette-owned job list (harness + owned CLI merge)."""
-    return 200, svc.scoped_jobs_snapshot(repo_root=repo_override or None)
+    from puppetmaster.models import JobRef
+    from puppetmaster.state import state_identity
+
+    try:
+        harness_root = svc.get_session().state().store.root
+    except Exception:
+        harness_root = None
+    rows = svc.scoped_jobs_snapshot(repo_root=repo_override or None)
+    result = []
+    for job in rows:
+        row = dict(job)
+        try:
+            source = row.get("source", "harness")
+            root = (row.get("cli_state_dir") if source == "cli"
+                    else harness_root if source == "harness" else None)
+            if root and not str(row.get("id", "")).startswith("local-"):
+                row["job_ref"] = JobRef(job_id=row["id"], state_id=state_identity(root)).as_dict()
+        except Exception:
+            # A list row without a reference cannot authorize a scoped read.
+            row.pop("job_ref", None)
+        result.append(row)
+    return 200, result
 
 
 def get_job_events(qs: dict, svc: JobServices) -> tuple[int, Any]:
@@ -401,46 +492,126 @@ def get_job_events(qs: dict, svc: JobServices) -> tuple[int, Any]:
     return 200, payload
 
 
-def get_artifacts(job_id: str | None, svc: JobServices) -> tuple[int, Any]:
-    """GET /api/artifacts — owned dual-store resolve (harness, then CLI durable).
+def get_scoped_artifacts(qs: dict, svc: JobServices) -> tuple[int, Any]:
+    """Read one captured JobRef in the active workspace/session; never discover stores."""
+    from puppetmaster.models import JobRef
+    from puppetmaster.state import state_identity
+    from ..cli_job_merge import resolve_cli_state_dir
+    from ..job_scoping import job_owned_by_marionette, parse_job_session_id
+    from ..paths import same_workspace_path
+    from ..state import DurableState
 
-    A primary miss inspects the sibling store and reads it only when owned.
-    Unknown or unowned ids return empty without reading by id.
-    """
+    jid, sid, repo, source, state_id = (
+        (qs.get(key) or [""])[0]
+        for key in ("job_id", "session_id", "repo", "source", "state_id")
+    )
+    unavailable = (409, {"code": "job_artifacts_unavailable",
+                         "error": "Artifacts are unavailable for this job in the selected workspace and session."})
+    captured_repo = svc.cfg.repo or ""
+    captured_session = getattr(svc.sessions, "active", None)
+    if (not all((jid, sid, repo, state_id)) or source not in ("harness", "cli")
+            or sid != captured_session or not same_workspace_path(repo, captured_repo)):
+        return unavailable
+    try:
+        if source == "harness":
+            durable = svc.get_session().state()
+        else:
+            root = resolve_cli_state_dir(captured_repo)
+            if not root:
+                return 503, {"error": "Artifact store is unavailable."}
+            if state_identity(root) != state_id:
+                return unavailable
+            durable = DurableState(root)
+        store = durable.store
+        selected_ref = JobRef(job_id=jid, state_id=state_identity(store.root))
+        if selected_ref.state_id != state_id:
+            return unavailable
+        try:
+            job = store.get_job(jid)
+        except (KeyError, FileNotFoundError):
+            return unavailable
+        if job is None:
+            return unavailable
+        registered = getattr(svc.get_pilot(), "_session_job_ids", []) or []
+        # Authorize the label before reading task payloads; legacy task-only rows
+        # cannot prove scope for this endpoint and remain unavailable.
+        if (parse_job_session_id(job.label, []) != sid
+                or not job_owned_by_marionette(label=job.label, job_id=jid,
+                    source=source, registered_job_ids=registered)):
+            return unavailable
+        tasks = svc.retry_on_locked(lambda: store.list_tasks(jid))
+        if not tasks or any(
+            task.payload.get("session_id") != sid
+            or not task.payload.get("cwd")
+            or not same_workspace_path(task.payload["cwd"], repo)
+            for task in tasks
+        ):
+            return unavailable
+        artifacts = svc.retry_on_locked(lambda: durable.job_artifacts(jid))
+        if (getattr(svc.sessions, "active", None) != captured_session
+                or not same_workspace_path(svc.cfg.repo or "", captured_repo)):
+            return unavailable
+        return 200, {"job_ref": selected_ref.as_dict(), "source": source,
+                     "repo": repo, "session_id": sid, "artifacts": artifacts}
+    except Exception:
+        return 503, {"error": "Artifact records could not be read."}
+
+
+def _artifact_job_owned(durable: Any, jid: str, source: str, registered: list) -> bool | None:
+    from ..job_scoping import job_owned_by_marionette
+
+    if durable is None:
+        return None
+    store = durable.store
+    getter = getattr(store, "get_job", None)
+    try:
+        job = getter(jid) if callable(getter) else next(
+            (row for row in store.list_jobs() if row.get("id") == jid), None)
+    except (KeyError, FileNotFoundError):
+        return None
+    if job is None:
+        return None
+    label = job.get("label") if isinstance(job, dict) else job.label
+    tasks = store.list_tasks(jid)
+    return job_owned_by_marionette(label=label, tasks=tasks, job_id=jid,
+        source=source, registered_job_ids=registered)
+
+
+def get_artifacts(job_id: str | None, svc: JobServices) -> tuple[int, Any]:
+    """Legacy id-only read. Ambiguous primary IDs require the scoped endpoint."""
+    from ..cli_job_merge import open_cli_durable_state
+
     jid = (job_id or "").strip()
     if not jid:
         return 400, {"error": "missing job id"}
-    owned = _job_access_owned(jid, svc)
-    artifacts: list = []
-    state_obj = None
     try:
         state_obj = svc.get_session().state()
-    except Exception:
-        state_obj = None
-    if owned is False:
-        return 200, []
-    if owned is None:
-        sibling_owned, sibling_durable = _inspect_sibling_job(jid)
-        if sibling_owned is not True:
+        registered = getattr(svc.get_pilot(), "_session_job_ids", []) or []
+        primary_owned = _artifact_job_owned(state_obj, jid, "harness", registered)
+        if primary_owned is False:
             return 200, []
-        try:
-            artifacts = _artifacts_from_durable(sibling_durable, jid, svc, state_obj)
-        except Exception:
-            artifacts = []
-    else:
-        try:
-            if state_obj is not None:
-                artifacts = svc.retry_on_locked(lambda: state_obj.job_artifacts(jid))
-        except Exception:
-            artifacts = []
-        if not artifacts:
-            try:
-                from ..cli_job_merge import open_cli_durable_state
+        cli_state = open_cli_durable_state(svc.cfg.repo or "")
+        cli_owned = _artifact_job_owned(cli_state, jid, "cli", [])
+        if primary_owned is True and cli_owned is not None:
+            from puppetmaster.state import state_identity
 
-                cli_state = open_cli_durable_state(svc.cfg.repo or "")
-                artifacts = _artifacts_from_durable(cli_state, jid, svc, state_obj)
-            except Exception:
-                pass
+            primary_root = getattr(state_obj.store, "root", None)
+            cli_root = getattr(cli_state.store, "root", None)
+            if not primary_root or not cli_root or state_identity(primary_root) != state_identity(cli_root):
+                return 409, {"code": "job_artifacts_unavailable", "error": "Select a scoped job reference to read artifacts."}
+        if primary_owned is True:
+            artifacts = svc.retry_on_locked(lambda: state_obj.job_artifacts(jid))
+        elif cli_owned is True:
+            artifacts = _artifacts_from_durable(cli_state, jid, svc, state_obj)
+        elif cli_owned is False:
+            return 200, []
+        else:
+            sibling_owned, sibling_durable = _inspect_sibling_job(jid, strict=True)
+            if sibling_owned is not True:
+                return 200, []
+            artifacts = _artifacts_from_durable(sibling_durable, jid, svc, state_obj)
+    except Exception:
+        return 503, {"error": "Artifact records could not be read."}
     try:
         from ..session_fts import best_effort_index_job_artifacts
 
@@ -469,12 +640,13 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     from ..cli_job_merge import (
         bulk_load_store_artifacts,
         bulk_load_store_tasks,
-        cli_stores_by_job,
-        partition_jobs_by_store,
+        job_read_key,
+        job_stores_for_read,
     )
 
     scoped_repo = (repo_override or "").strip() or (svc.cfg.repo or "")
     res_jobs: list = []
+    read_unavailable = False
     try:
         from pmharness.registry import resolve_price, price_with_source
         from .cost_accounting import PRICE_SOURCE_UNKNOWN, _normalize_price_source
@@ -501,44 +673,35 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         registry = svc.swarm_registry()
         jobs, store, cli_store = svc.scoped_jobs_with_stores(repo_root=repo_override or None)
 
-        harness_jids, cli_jids = partition_jobs_by_store(jobs)
-        foreign_cli = cli_stores_by_job(jobs)
-        # Batch all three per-job reads (the old N+1 read artifacts TWICE
-        # plus tasks, per job): one bulk artifacts read + one bulk tasks
-        # read, regrouped by job_id. Foreign CLI stores (sibling MCP cwd)
-        # are loaded per job so tracker cost/savings are not blank.
+        stores_by_key = job_stores_for_read(jobs, store, cli_store)
+        ids_by_store: dict = {}
+        for key, job_store in stores_by_key.items():
+            if job_store is not None:
+                ids_by_store.setdefault((key[0], key[1]), []).append(key[2])
         arts_by_job: dict = {}
         tasks_by_job: dict = {}
-        try:
-            harness_arts = bulk_load_store_artifacts(store, harness_jids)
-            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
-            cli_arts = bulk_load_store_artifacts(cli_store, primary_cli_jids)
-            arts_by_job = {**harness_arts, **cli_arts}
-            for jid, fstore in foreign_cli.items():
-                arts_by_job.update(bulk_load_store_artifacts(fstore, [jid]))
-        except Exception:
-            arts_by_job = None
-        try:
-            harness_tasks = bulk_load_store_tasks(store, harness_jids)
-            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
-            cli_tasks = bulk_load_store_tasks(cli_store, primary_cli_jids)
-            tasks_by_job = {**harness_tasks, **cli_tasks}
-            for jid, fstore in foreign_cli.items():
-                tasks_by_job.update(bulk_load_store_tasks(fstore, [jid]))
-        except Exception:
-            tasks_by_job = None
+        unavailable_by_key: dict = {}
+        for (state_id, source), jids in ids_by_store.items():
+            job_store = stores_by_key[(state_id, source, jids[0])]
+            failed_arts, failed_tasks = set(), set()
+            loaded_arts = bulk_load_store_artifacts(job_store, jids, unavailable=failed_arts)
+            loaded_tasks = bulk_load_store_tasks(job_store, jids, unavailable=failed_tasks)
+            for jid in jids:
+                key = (state_id, source, jid)
+                unavailable_by_key[key] = (["artifacts"] if jid in failed_arts else []) + (["tasks"] if jid in failed_tasks else [])
+                arts_by_job[key] = loaded_arts.get(jid, [])
+                tasks_by_job[key] = loaded_tasks.get(jid, [])
 
         for j in jobs:
             jid = j.get("id")
             if not jid:
                 continue
 
-            if j.get("source") == "cli":
-                job_store = foreign_cli.get(jid) or cli_store or store
-            else:
-                job_store = store
-            raw_arts = (arts_by_job.get(jid, []) if arts_by_job is not None
-                        else svc.retry_on_locked(lambda: job_store.list_artifacts(jid)))
+            default_store = cli_store if j.get("source") == "cli" else store
+            key = job_read_key(j) if j.get("cli_state_dir") else job_read_key(j, default_store)
+            job_store = stores_by_key.get(key)
+            raw_arts = arts_by_job.get(key, [])
+            raw_tasks = tasks_by_job.get(key, [])
             # Live poll always ships slim artifacts (routing + verdicts).
             # Full FINDING/RISK streams land on expand via /api/artifacts
             # -- same for in-progress and terminal so StatusBar/SwarmPane
@@ -713,18 +876,12 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 job_tokens_in = 0
             job_model = resolve_job_model(
                 raw_arts,
-                (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
+                raw_tasks,
                 j.get("adapter", ""),
             )
             outcome = canonical_job_outcome(raw_arts)
 
             tasks_list = []
-            raw_tasks = []
-            try:
-                raw_tasks = (tasks_by_job.get(jid, []) if tasks_by_job is not None
-                             else svc.retry_on_locked(lambda: job_store.list_tasks(jid)))
-            except Exception:
-                raw_tasks = []
             job_cwd = job_repo_cwd(raw_tasks)
             try:
                 for t in raw_tasks:
@@ -764,15 +921,24 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             except Exception:
                 pass
 
-            savings_fields = (
-                svc.job_savings_fields(jid)
-                if j.get("accounting_owned")
-                else {
-                    "tool_output_tokens_saved": 0,
-                    "tool_output_savings_usd": 0.0,
-                    "tool_output_compactions": 0,
+            savings_fields = {
+                "tool_output_tokens_saved": 0,
+                "tool_output_savings_usd": 0.0,
+                "tool_output_compactions": 0,
+            }
+            if j.get("accounting_owned") and getattr(job_store, "root", None):
+                from ..tool_output_savings import merged_savings_summary, savings_usd
+
+                summary = merged_savings_summary(
+                    "" if j.get("source") == "cli" else str(job_store.root),
+                    cli_state_dirs=[str(job_store.root)] if j.get("source") == "cli" else None,
+                    job_id=jid,
+                )
+                savings_fields = {
+                    "tool_output_tokens_saved": summary.tokens_saved,
+                    "tool_output_savings_usd": round(savings_usd(summary.tokens_saved, price_in), 6),
+                    "tool_output_compactions": summary.record_count,
                 }
-            )
             row = {
                 "id": jid,
                 "goal": j.get("goal", ""),
@@ -812,6 +978,17 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "cross_project": bool(j.get("cross_project")),
                 **savings_fields,
             }
+            # Identity comes from the row's actual store, never a CLI-to-harness fallback.
+            identity_store = job_store
+            if identity_store is not None and getattr(identity_store, "root", None):
+                from puppetmaster.models import JobRef
+                from puppetmaster.state import state_identity
+
+                row["job_ref"] = JobRef(job_id=jid, state_id=state_identity(identity_store.root)).as_dict()
+            unavailable_fields = unavailable_by_key.get(key, []) if job_store is not None else ["artifacts", "tasks"]
+            if unavailable_fields:
+                row["read_status"] = "unavailable"
+                row["unavailable_fields"] = unavailable_fields
             if j.get("cli_state_dir"):
                 row["cli_state_dir"] = j.get("cli_state_dir")
             if job_cwd:
@@ -833,7 +1010,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                         persistable_pm_receipt,
                     )
                     try:
-                        raw_report = load_pm_cost_report(job_store, jid, registry=registry)
+                        raw_report = load_pm_cost_report(job_store, jid, registry=registry) if job_store is not None else {}
                     except Exception:
                         raw_report = {}
                     receipt = persistable_pm_receipt(raw_report)
@@ -874,8 +1051,17 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                             task.pop("est_cost_usd", None)
                 except Exception:
                     pass
+            if "artifacts" in unavailable_fields:
+                for field in ("tokens", "tokens_in", "tokens_cached", "est_cost_usd", "routing_saved_usd",
+                              "delegation_saved_usd", "cache_saved_usd", "outcome"):
+                    row.pop(field, None)
+                row["cost_provenance"] = "unknown"
+                row["estimated"] = True
+                from harness.financial_receipt import persistable_pm_receipt
+                row["financial_receipt"] = persistable_pm_receipt({})
             res_jobs.append(apply_job_economics_policy(row))
     except Exception as e:
+        read_unavailable = True
         svc.diag("server.jobs_list_aggregate", e)
 
     # Merge in-process provider-native worker jobs (job_id "local-*").
@@ -1140,7 +1326,9 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     else:
         session_measured += pilot_portion
     return 200, {
+        **({"read_status": "unavailable"} if read_unavailable else {}),
         "session": {
+            **({"read_status": "unavailable"} if any(j.get("read_status") == "unavailable" for j in res_jobs) else {}),
             "tokens_used": tokens_used,
             "est_cost_usd": round(est_session_cost, 6),
             "measured_cost_usd": round(session_measured, 6),

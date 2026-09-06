@@ -1,3 +1,4 @@
+import { withEndpointDiscovery } from "./endpointFixture";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -11,11 +12,8 @@ describe("memory propose + wiki status client", () => {
   });
 
   it("memoryProposeAccept/Dismiss POST the proposal id", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", withEndpointDiscovery(fetchMock));
     const { api } = await import("../lib/api");
     await api.memoryProposeAccept("memprop_abc");
     await api.memoryProposeDismiss("memprop_xyz");
@@ -35,17 +33,14 @@ describe("memory propose + wiki status client", () => {
   });
 
   it("getWikiStatus hits /api/wiki/status and returns counts", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json({
         configured: true,
         status: "ok",
         page_count: 12,
         link_count: 34,
         base_url: "http://127.0.0.1:8000",
-      }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    }));
+    vi.stubGlobal("fetch", withEndpointDiscovery(fetchMock));
     const { api } = await import("../lib/api");
     const res = await api.getWikiStatus();
     expect(String(fetchMock.mock.calls[0][0])).toContain("/api/wiki/status");

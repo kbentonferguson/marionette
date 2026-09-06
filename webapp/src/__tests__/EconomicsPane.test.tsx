@@ -634,3 +634,20 @@ describe("EconomicsPane", () => {
 
 
 });
+
+it("keeps healthy app-run spend when only the session total is unavailable", async () => {
+  _resetProcessUsageForTests();
+  clearSWRCache();
+  mockGetEconomics.mockResolvedValue({ available: false, repo: "/repo-a", scope: "conversation", counterfactual: null });
+  mockGetUsage.mockResolvedValue({ ...emptyUsage, session: { ...emptyUsage.session, est_cost_usd: 4, tokens_used: 100 },
+    session_total: { ...emptyUsage.session_total, read_status: "unavailable" } });
+  dispatchProjectSelected("/repo-a");
+  render(<EconomicsPane />);
+  await chooseScope("conversation");
+  const retry = await screen.findByRole("button", { name: "Session total partial / unavailable. Retry" });
+  expect(screen.getAllByText("~$4.00").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument();
+  mockGetUsage.mockResolvedValue(emptyUsage);
+  fireEvent.click(retry);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Session total partial / unavailable. Retry" })).not.toBeInTheDocument());
+});

@@ -32,6 +32,13 @@ class MockDriverResponse:
 
 
 class MockPilot:
+    def fork_for_compaction(self, *, model):
+        from copy import copy
+        local = copy(self)
+        if model:
+            local.model = model
+        return local
+
     name = "mock"
     def __init__(self, return_text=_GOOD_SUMMARY):
         self.return_text = return_text
@@ -163,6 +170,13 @@ def test_fallback_truncation_on_pilot_failure():
     
     # Mock pilot that returns error
     class ErrorPilot:
+        def fork_for_compaction(self, *, model):
+            from copy import copy
+            local = copy(self)
+            if model:
+                local.model = model
+            return local
+
         name = "mock"
         def chat(self, messages, tools=None, system=None):
             return MockDriverResponse(error="Simulated LLM error")
@@ -298,6 +312,13 @@ def test_fallback_bounds_few_huge_messages(monkeypatch):
     s = ConversationalSession(cfg)
 
     class ErrorPilot:
+        def fork_for_compaction(self, *, model):
+            from copy import copy
+            local = copy(self)
+            if model:
+                local.model = model
+            return local
+
         name = "mock"
         def chat(self, messages, tools=None, system=None):
             return MockDriverResponse(error="boom")
@@ -803,6 +824,13 @@ def test_fallback_uses_pruned_middle_not_raw_tool_flood(monkeypatch, tmp_path):
     session.harness_session_id = "sess-fb"
 
     class ErrorPilot:
+        def fork_for_compaction(self, *, model):
+            from copy import copy
+            local = copy(self)
+            if model:
+                local.model = model
+            return local
+
         name = "mock"
         def chat(self, messages, tools=None, system=None):
             return MockDriverResponse(error="boom")

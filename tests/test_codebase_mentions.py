@@ -138,12 +138,12 @@ def test_expand_codebase_mention_failure_honesty():
         assert "cg boom" in block
 
 
-def test_at_codebase_resolution_on_send_success():
+def test_at_codebase_resolution_on_send_success(owned_server):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -165,10 +165,9 @@ def test_at_codebase_resolution_on_send_success():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
-                msg = "Explain @codebase:Auth"
+                msg = "  Explain @codebase:Auth\n\t"
                 res = _get(
                     port,
                     "/api/chat?message=" + urllib.parse.quote(msg),
@@ -181,6 +180,10 @@ def test_at_codebase_resolution_on_send_success():
 
                 mock_pilot.send.assert_called_once()
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == msg
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced codebase:" in sent_msg
                 assert "--- Codebase: @codebase:Auth ---" in sent_msg
                 assert "Shared CodeGraph context" in sent_msg
@@ -191,12 +194,12 @@ def test_at_codebase_resolution_on_send_success():
                 httpd.shutdown()
 
 
-def test_at_codebase_resolution_on_send_skip_unavailable():
+def test_at_codebase_resolution_on_send_skip_unavailable(owned_server):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -210,8 +213,7 @@ def test_at_codebase_resolution_on_send_skip_unavailable():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(
                     port,
@@ -224,6 +226,10 @@ def test_at_codebase_resolution_on_send_skip_unavailable():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == "use @codebase"
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced codebase:" in sent_msg
                 assert "--- Codebase: @codebase ---" in sent_msg
                 assert "skipped" in sent_msg

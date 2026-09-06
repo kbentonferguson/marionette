@@ -30,7 +30,7 @@ Claim lease / at-least-once delivery:
   Successor fencing remains intact: a late complete_claim from a superseded
   owner is a no-op.
 
-This subsystem is CLI-daemon-only: there is no HTTP/UI/SSE schedule surface.
+The daemon and synchronous HTTP run-now share this execution path.
 """
 
 import os
@@ -217,8 +217,7 @@ def _default_session_factory(schedule: Schedule):
     from .conversation import ConversationalSession
 
     cfg = HarnessConfig.from_env()
-    if schedule.repo:
-        cfg.repo = schedule.repo
+    cfg.repo = schedule.repo
     if schedule.swarm_adapter:
         cfg.swarm_adapter = schedule.swarm_adapter
     if schedule.driver:
@@ -238,13 +237,8 @@ def _claim_owner() -> str:
 
 def resolve_schedule_repo(schedule: Schedule) -> str:
     """Effective workspace for an unattended schedule dispatch."""
-    if (schedule.repo or "").strip():
-        return schedule.repo.strip()
-    try:
-        from .config import HarnessConfig
-        return (HarnessConfig.from_env().repo or "").strip()
-    except Exception:
-        return ""
+    repo = (schedule.repo or "").strip()
+    return repo if os.path.isabs(repo) else ""
 
 
 def check_schedule_workspace(repo: str) -> Optional[str]:
@@ -451,6 +445,7 @@ def run_one_now(
     session_factory: Optional[Callable[[Schedule], object]] = None,
     budget_factory: Optional[Callable[[Schedule], object]] = None,
     owner: Optional[str] = None,
+    expected_revision: Optional[int] = None,
     active_schedule_holder: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single named schedule immediately, bypassing the due check (used by
@@ -458,6 +453,9 @@ def run_one_now(
     schedule = store.get(schedule_id)
     if schedule is None:
         return None
+    if expected_revision is not None and schedule.revision != expected_revision:
+        return {"schedule_id": schedule.id, "status": "blocked", "run_id": "",
+                "halt_reason": "Schedule changed; reload before running"}
     notifier = notifier or LogNotifier()
     session_factory = session_factory or _default_session_factory
     budget_factory = budget_factory or _default_budget_factory
@@ -497,6 +495,7 @@ def _run_one(
         owner,
         lease_seconds=lease_seconds,
         force=force_claim,
+        expected_revision=schedule.revision,
     )
     if claim is None:
         # Overlap with another daemon / run-now, or fire already completed.

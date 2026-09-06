@@ -198,6 +198,7 @@ class SessionActionStore:
         delivery: Optional[Any] = None,
         wake: Optional[Any] = None,
         expected_turn_id: Optional[str] = None,
+        input_id: Optional[str] = None,
     ) -> SessionAction:
         if self._closed:
             raise SessionActionIllegalTransition(
@@ -229,7 +230,7 @@ class SessionActionStore:
             else _coerce_enum(wake, WakePolicy, field_name="wake")
         )
         action = SessionAction(
-            id=uuid.uuid4().hex,
+            id=input_id or uuid.uuid4().hex,
             kind=resolved,
             text=str(text or ""),
             images=_json_images(images),
@@ -238,8 +239,14 @@ class SessionActionStore:
             expected_turn_id=expected,
             created_at=time.time(),
         )
+        retain = getattr(self, 'retain_input', None)
+        if callable(retain) and input_id is None:
+            retain(action)
         if resolved is ActionKind.START and not self._current_turn_id:
             self._current_turn_id = expected or action.id
+        existing = next((row for row in self._actions if row.id == action.id), None)
+        if existing is not None:
+            return existing
         self._actions.append(action)
         return action
 
@@ -253,6 +260,7 @@ class SessionActionStore:
         images: Optional[Iterable[Any]] = None,
         delivery: Optional[Any] = None,
         wake: Optional[Any] = None,
+        input_id: Optional[str] = None,
     ) -> SessionAction:
         if isinstance(mode, TurnInputMode):
             resolved_mode = mode
@@ -282,6 +290,7 @@ class SessionActionStore:
             delivery=delivery,
             wake=wake,
             expected_turn_id=expected_turn_id,
+            input_id=input_id,
         )
 
     def drain_ready(

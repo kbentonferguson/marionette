@@ -9,6 +9,7 @@
 import type { UsageData } from "../lib/api";
 
 export type CostBreakdownData = {
+  read_status?: "unavailable";
   tokens_used: number;
   est_cost_usd: number;
   cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
@@ -52,6 +53,7 @@ export function usageToCostBreakdownData(
   session: UsageData["session"],
 ): CostBreakdownData {
   return {
+    read_status: session.read_status,
     tokens_used: session.tokens_used,
     est_cost_usd: session.est_cost_usd,
     cost_source: session.cost_source,
@@ -392,6 +394,12 @@ export default function CostBreakdown({
   data: CostBreakdownData;
   hero?: boolean;
 }) {
+  if (data.read_status === "unavailable") {
+    return <div role="status" className="px-3 py-3 text-[11px] text-muted">
+      App-run usage is partial / unavailable.
+      {data.est_cost_usd > 0 ? ` Known spend subtotal: ${fmtCost(data.est_cost_usd)}.` : " Spend total unavailable."}
+    </div>;
+  }
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const estimated = spendIsEstimated(data);
   const spendPrefix = estimated ? "~" : "";

@@ -53,7 +53,8 @@ def test_check_never_raises_into_the_turn():
         raise RuntimeError("elide failed")
 
     session._elide_stale_reads = _boom
-    assert check_outbound_reconstruction(session, [], "sys") is True
+    assert check_outbound_reconstruction(session, [], "sys") is False
+    assert session._last_log_reconstruction["status"] == "error"
 
 
 def test_stub_without_history_does_not_call_messages_for_provider():
@@ -69,5 +70,6 @@ def test_stub_without_history_does_not_call_messages_for_provider():
 
     session = _Session()
     outbound = [{"role": "user", "content": "hi"}]
-    assert check_outbound_reconstruction(session, outbound, "sys") is True
+    assert check_outbound_reconstruction(session, outbound, "sys") is False
+    assert session._last_log_reconstruction["status"] == "skipped"
     assert seen["n"] == 0

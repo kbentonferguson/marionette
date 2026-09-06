@@ -1,5 +1,6 @@
 appId: com.marionette.app
 productName: Marionette
+beforePack: ./electron/write-bootstrap-revision.cjs
 directories:
   output: release
   buildResources: build

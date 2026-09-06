@@ -73,7 +73,7 @@ describe("RegistryWizard first-run connect", () => {
     render(<RegistryWizard onClose={vi.fn()} />);
     expect(await screen.findByText(/set up with Marionette/i)).toBeTruthy();
     expect(screen.getByText(/one key runs chat and swarms/i)).toBeTruthy();
-    const openrouter = screen.getByRole("option", { name: /OpenRouter/i });
+    const openrouter = await screen.findByRole("option", { name: /OpenRouter/i });
     expect(openrouter.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText(/Hosts hundreds of models/i)).toBeTruthy();
     expect(screen.queryByText(/Cursor CLI/i)).toBeNull();
@@ -82,7 +82,7 @@ describe("RegistryWizard first-run connect", () => {
   it("switches copy when another provider is selected", async () => {
     render(<RegistryWizard onClose={vi.fn()} />);
     await screen.findByText(/set up with Marionette/i);
-    fireEvent.click(screen.getByRole("option", { name: /Anthropic/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Anthropic/i }));
     expect(screen.getByText(/Direct Anthropic API/i)).toBeTruthy();
     expect(screen.getByRole("option", { name: /Anthropic/i }).getAttribute("aria-selected")).toBe("true");
   });
@@ -91,7 +91,7 @@ describe("RegistryWizard first-run connect", () => {
     const onClose = vi.fn();
     render(<RegistryWizard onClose={onClose} />);
     await screen.findByText(/set up with Marionette/i);
-    fireEvent.change(screen.getByPlaceholderText("OPENROUTER_API_KEY"), {
+    fireEvent.change(await screen.findByPlaceholderText("OPENROUTER_API_KEY"), {
       target: { value: "sk-or-test" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Connect/i }));

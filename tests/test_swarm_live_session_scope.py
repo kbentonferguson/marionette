@@ -4,6 +4,9 @@ Python 3.9 safe. Hermetic HTTP against harness.server.Handler.
 """
 from __future__ import annotations
 
+from tests.test_session_queue_durability import factory
+from harness.session_runners import SessionRunnerRegistry
+
 import json
 import shutil
 import tempfile
@@ -48,7 +51,7 @@ def _post(port, path, body, headers=None):
     return urllib.request.urlopen(req, timeout=10)
 
 
-def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
+def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch, factory):
     """?repo=A must not fold the active pilot's global meters into session spend
     when the pilot is attached to a different workspace."""
     tmp_dir = tempfile.mkdtemp()
@@ -64,7 +67,9 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
                 srv._sessions.create(
                     "pilot on B", repo=repo_b, workspace_root=repo_b
                 )
-            srv._sync_pilot_session_id()
+            monkeypatch.setattr(srv, '_runners', SessionRunnerRegistry())
+            monkeypatch.setattr(srv, '_pilot', factory(''))
+            srv._attach_view(srv._sessions.active, factory=lambda: srv._pilot)
             srv._pilot._tokens_used = 500_000
             srv._pilot._tokens_in = 400_000
             srv._pilot._tokens_out = 100_000

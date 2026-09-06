@@ -28,6 +28,7 @@ const {
   probeActiveLoopbackAliasesForPort,
 } = require("./resource-auth.cjs");
 const { wireStreamResponse, sanitizedStreamConnError } = require("./stream-bridge.cjs");
+const { attachBackend } = require("./backend-attach.cjs");
 const { waitForAuthenticatedBackend } = require("./backend-probe.cjs");
 const {
   currentBackendIdentity,
@@ -131,6 +132,7 @@ function reinjectBackendIntoRenderer() {
  * adopt it so IPC retries stop hammering the dead port.
  */
 function tryRefreshBackendPortFromMarker() {
+  if (process.env.MARIONETTE_BACKEND_RECEIPT) return false;
   const decision = decideBackendPortRefresh(
     readPmHarnessStateFile("backend.json"),
     backendPort,
@@ -664,48 +666,17 @@ function markerPath() {
   return path.join(dir, "backend.json");
 }
 
-function unlinkMarker() {
+function unlinkMarkerIfOwned(childPid, owned) {
+  if (!shouldUnlinkBackendMarker(owned) || !Number.isSafeInteger(childPid) || childPid <= 0) return;
   const paths = [markerPath()];
   if (!isInspectMode()) {
     paths.push(path.join(pmharnessHome(), "backend.json"));
   }
   for (const p of paths) {
-    try { fs.unlinkSync(p); } catch {}
-  }
-}
-
-function unlinkMarkerIfOwned(owned = backendOwned) {
-  // Accept an explicit ownership snapshot so callers that already cleared the
-  // global flag (exit handler) can still unlink when THEY owned the backend.
-  if (!shouldUnlinkBackendMarker(owned)) return;
-  unlinkMarker();
-}
-
-/**
- * Best-effort stop of a marker-pointed backend that failed the identity /
- * auth reuse handshake. Only signals the recorded pid (and its POSIX process
- * group); never clears another install's SQLite by force-wiping state.
- */
-async function replaceStaleBackendProcess(marker) {
-  const pid = marker && marker.pid != null ? Number(marker.pid) : NaN;
-  if (!Number.isFinite(pid) || pid <= 0) return;
-  try {
-    if (process.platform === "win32") {
-      const { spawnSync } = require("node:child_process");
-      spawnSync("taskkill", ["/pid", String(pid), "/T"], { windowsHide: true, timeout: 3000 });
-      await new Promise((r) => setTimeout(r, 400));
-      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout: 5000 });
-    } else {
-      try { process.kill(-pid, "SIGTERM"); } catch {
-        try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
-      }
-      await new Promise((r) => setTimeout(r, 400));
-      try { process.kill(-pid, "SIGKILL"); } catch {
-        try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
-      }
-    }
-  } catch (err) {
-    logMain(`[backend] stale process cleanup failed: ${err && err.message ? err.message : err}`);
+    try {
+      const marker = JSON.parse(fs.readFileSync(p, "utf8"));
+      if (marker && marker.pid === childPid) fs.unlinkSync(p);
+    } catch {}
   }
 }
 
@@ -728,14 +699,17 @@ function startBackend() {
 }
 
 async function _startBackendOnce() {
-  // 1. Try to reuse an existing healthy backend -- but only one the candidate
-  // token from disk actually AUTHENTICATES against AND whose source identity
-  // matches the current checkout. An unauthenticated liveness probe used to
-  // adopt any answering process, so a stale backend holding an OLD token
-  // (update relaunch / crash survivor) was "reused" and every renderer request
-  // 403'd. After a source update, an authenticated-but-old backend (pre-update
-  // code on the marker port) must also be replaced -- marker/version mismatch
-  // falls through to a fresh spawn instead of adopting stale agentic_ready etc.
+  if (process.env.MARIONETTE_BACKEND_RECEIPT) {
+    const attached = await attachBackend(process.env.MARIONETTE_BACKEND_RECEIPT, resolveRepoRoot());
+    backendPort = attached.receipt.port;
+    harnessToken = attached.token;
+    backend = null;
+    backendOwned = false;
+    void refreshAllowedLoopbackAliases();
+    return;
+  }
+  // Reuse requires authentication and matching source identity. A marker is
+  // discovery metadata, never authority to terminate the referenced process.
   const expectedIdentity = currentBackendIdentity({
     repoRoot: resolveRepoRoot(),
     appVersion: app.getVersion(),
@@ -775,18 +749,27 @@ async function _startBackendOnce() {
       return;
     }
     if (verdict.action === "replace" && verdict.marker) {
-      logMain(
-        `[backend] marker reuse rejected (${verdict.reason}`
-        + (probeErr && probeErr.message ? `; ${probeErr.message}` : "")
-        + `); replacing stale process on port ${verdict.marker.port}`
-      );
-      await replaceStaleBackendProcess(verdict.marker);
-      unlinkMarker();
-    } else if (probeErr) {
-      logMain(`[backend] marker reuse rejected: ${probeErr && probeErr.message ? probeErr.message : probeErr}`);
+      let ownerAbsent = false;
+      if (Number.isSafeInteger(verdict.marker.pid) && verdict.marker.pid > 0) {
+        try { process.kill(verdict.marker.pid, 0); }
+        catch (err) { ownerAbsent = err.code === "ESRCH"; }
+      }
+      if (ownerAbsent && !authenticated && probeErr && probeErr.code === "ECONNREFUSED") {
+        // The CLI repeats these checks under its state lease before token initialization.
+        logMain("[backend] absent owner and refused endpoint; attempting same-state restart under launch lease");
+      } else {
+        throw Object.assign(new Error(
+          `Backend marker cannot be reused (${verdict.reason}); its process is not owned by this client. Stop it through its owner before relaunching.`
+        ), { code: "BACKEND_NOT_OWNED" });
+      }
+    } else if (raw) {
+      throw Object.assign(new Error("Backend marker is invalid; resolve its state through the owner before relaunching."),
+        { code: "BACKEND_NOT_OWNED" });
     }
+
   } catch (probeErr) {
-    logMain(`[backend] marker reuse rejected: ${probeErr && probeErr.message ? probeErr.message : probeErr}`);
+    if (probeErr && probeErr.code === "BACKEND_NOT_OWNED") throw probeErr;
+    throw Object.assign(probeErr, { code: "BACKEND_NOT_OWNED" });
   }
 
   // 1b. If a self-update is applying (git pull + rebuild), do NOT spawn a fresh
@@ -894,6 +877,8 @@ async function _startBackendOnce() {
     detached: process.platform !== "win32",
   });
   backendOwned = true;
+  const spawnedBackend = backend;
+  const spawnedPid = backend.pid;
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
   // Unexpected death keeps the window and respawns Python. POST /api/restart
@@ -902,7 +887,8 @@ async function _startBackendOnce() {
   // the exit was NOT us. Capture ownership BEFORE clearing the global so we can
   // still unlink our marker (adopted markers stay untouched).
   backend.on("exit", (code, signal) => {
-    const wasOurs = backend;   // non-null => not cleanupBackend/quit
+    if (backend !== spawnedBackend) return;
+    const wasOurs = spawnedBackend;
     const owned = backendOwned;
     const intentionalRestart = consumeIntentionalRestartSignal();
     backend = null;
@@ -919,7 +905,7 @@ async function _startBackendOnce() {
       return;
     }
     // Unlink using the captured ownership snapshot — the global is already false.
-    unlinkMarkerIfOwned(owned);
+    unlinkMarkerIfOwned(spawnedPid, owned);
     if (next === "relaunch_app") {
       _dbg(`[backend] intentional restart (api/restart) code=${code} signal=${signal} -- relaunching app`);
       relaunchMarionette();
@@ -971,16 +957,30 @@ function authToken() {
   return harnessToken || "";
 }
 
-function _backendRequestOnce(method, apiPath, body) {
+function endpointRequestHeaders(value) {
+  const headers = {};
+  for (const name of ["X-Harness-Protocol", "X-Harness-Endpoint", "X-Harness-Boot"]) {
+    if (value && typeof value[name] === "string") headers[name] = value[name];
+  }
+  return headers;
+}
+
+function _backendRequestOnce(method, apiPath, body, correlationId = "", identityHeaders) {
   return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : null;
+    const data = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
       host: "127.0.0.1", port: backendPort, path: apiPath, method,
-      headers: { "Content-Type": "application/json", "X-Harness-Token": authToken(), ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}) },
+      headers: { ...endpointRequestHeaders(identityHeaders), "Content-Type": "application/json", "X-Harness-Token": authToken(), ...(correlationId ? { "X-Correlation-Id": correlationId } : {}), ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}) },
     }, (res) => {
       let buf = "";
+      res.setEncoding("utf8");
       res.on("data", (c) => (buf += c));
-      res.on("end", () => { try { resolve(JSON.parse(buf || "null")); } catch { resolve(null); } });
+      res.on("error", reject);
+      res.on("aborted", () => reject(Object.assign(new Error("Backend response aborted"), { code: "ECONNRESET" })));
+      res.on("end", () => resolve({
+        kind: "response", status: res.statusCode, text: buf,
+        correlationId: String(res.headers["x-correlation-id"] || ""),
+      }));
     });
     req.on("error", reject);
     if (data) req.write(data);
@@ -997,18 +997,20 @@ function _isTransientBackendConnError(err) {
   return /ECONNREFUSED|ECONNRESET|socket hang up/i.test(msg);
 }
 
-// Retry transient loopback refusals. History/wiki/etc. often fetch while the
+// Retry transient loopback failures only for reads. Writes may already have executed.
+// History/wiki/etc. often fetch while the
 // backend is mid-respawn on a new port (exit handler -> startBackend); without
 // this the renderer paints a raw "harness:getJSON ECONNREFUSED" that clears on
 // the next manual refresh. A few short retries cover the usual gap.
-async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 200 } = {}) {
+async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 200, responseEnvelope = false, correlationId = "", identityHeaders } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await _backendRequestOnce(method, apiPath, body);
+      const response = await _backendRequestOnce(method, apiPath, body, correlationId, identityHeaders);
+      return responseEnvelope ? response : require("./json-response.mjs").parseJSONResponse(response, apiPath);
     } catch (err) {
       lastErr = err;
-      if (!_isTransientBackendConnError(err) || attempt === retries) break;
+      if ((method !== "GET" && method !== "HEAD") || err.status || !_isTransientBackendConnError(err) || attempt === retries) break;
       // Marker may already list a new port (respawn / other window) while our
       // in-memory backendPort is still the dead one -- adopt before retrying.
       tryRefreshBackendPortFromMarker();
@@ -1025,12 +1027,21 @@ async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 20
   throw lastErr;
 }
 
+async function ipcBackendRequest(method, apiPath, body, options) {
+  try {
+    return await backendRequest(method, apiPath, body, options);
+  } catch (err) {
+    if (!options?.responseEnvelope) throw err;
+    return { kind: "connection-error", message: String(err?.message || err), code: String(err?.code || "") };
+  }
+}
+
 ipcMain.on("harness:rendererError", (_e, payload) => {
   const p = payload || {};
   logMain(`[rendererError:${p.scope || "app"}] ${p.message || ""}\n${p.stack || ""}${p.componentStack ? `\ncomponentStack:${p.componentStack}` : ""}`);
 });
-ipcMain.handle("harness:getJSON", (_e, p) => backendRequest("GET", p));
-ipcMain.handle("harness:postJSON", (_e, p, body) => {
+ipcMain.handle("harness:getJSON", (_e, p, options) => ipcBackendRequest("GET", p, undefined, options));
+ipcMain.handle("harness:postJSON", (_e, p, body, options) => {
   if (p === "/api/secrets/submit" && body && typeof body === "object") {
     try {
       const { safeStorage } = require("electron");
@@ -1046,7 +1057,7 @@ ipcMain.handle("harness:postJSON", (_e, p, body) => {
       /* Python vault is still authoritative for workers */
     }
   }
-  return backendRequest("POST", p, body);
+  return ipcBackendRequest("POST", p, body, options);
 });
 ipcMain.handle("secrets:save", (_e, payload) => {
   const { safeStorage } = require("electron");
@@ -1112,7 +1123,7 @@ ipcMain.handle("translucency:capabilities", () => translucency.capabilities());
 // the loopback port so the saved path matches what the chat/view_image path reads.
 // Without this, transport.uploadFile fell back to a bare fetch("/api/upload") which
 // has no backend origin in the packaged app -> "Image upload failed".
-ipcMain.handle("harness:uploadFile", async (_e, payload) => {
+ipcMain.handle("harness:uploadFile", async (_e, payload, identityHeaders) => {
   try {
     const { name, type, bytes } = payload || {};
     if (!bytes) return [];
@@ -1130,6 +1141,7 @@ ipcMain.handle("harness:uploadFile", async (_e, payload) => {
       const req = http.request({
         host: "127.0.0.1", port: backendPort, path: "/api/upload", method: "POST",
         headers: {
+          ...endpointRequestHeaders(identityHeaders),
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
           "Content-Length": body.length,
           "X-Harness-Token": authToken(),
@@ -1143,6 +1155,7 @@ ipcMain.handle("harness:uploadFile", async (_e, payload) => {
             if (res.statusCode >= 400) {
               resolve({
                 error: parsed.error || `Upload failed (${res.statusCode})`,
+                status: res.statusCode,
                 saved: [],
               });
             } else {
@@ -1160,6 +1173,23 @@ ipcMain.handle("harness:uploadFile", async (_e, payload) => {
   } catch {
     return [];
   }
+});
+
+// Binary images bypass renderer CORS without widening the backend origin policy.
+require("./image-bridge.cjs").registerImageBridge(ipcMain, {
+  getBackend: () => ({port: backendPort, token: authToken()}),
+  isAllowedSender: event => {
+    if (!win || win.isDestroyed() || event.sender !== win.webContents
+      || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
+    try {
+      const url = new URL(event.senderFrame.url);
+      url.hash = "";
+      url.search = "";
+      if (url.href === require("node:url").pathToFileURL(resolveDistIndex()).href) return true;
+      return [isDev && process.env.PMHARNESS_DEV_SERVER, viteUrl].some(source =>
+        source && url.origin === new URL(source).origin);
+    } catch { return false; }
+  },
 });
 
 // Native folder picker (Cursor-style "Open Folder"). Returns absolute path or null.
@@ -1182,7 +1212,7 @@ ipcMain.handle("harness:pickFolder", async () => {
 // Terminal contract (see stream-bridge.cjs): a non-2xx backend response (e.g. a
 // 403 from the auth gate) is `:error` with a sanitized status/code payload --
 // never `:done`, and never the response body or any token.
-ipcMain.on("harness:stream", (event, channelId, apiPath) => {
+ipcMain.on("harness:stream", (event, channelId, apiPath, identityHeaders) => {
   const tok = authToken();
   const streamPath = apiPath;
   let req = null;
@@ -1212,7 +1242,7 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
     host: "127.0.0.1",
     port: backendPort,
     path: streamPath,
-    headers: tok ? { "X-Harness-Token": tok } : {},
+    headers: { ...endpointRequestHeaders(identityHeaders), ...(tok ? { "X-Harness-Token": tok } : {}) },
   }, (res) => {
     wireStreamResponse(res, {
       onEvent: (ev) => safeSend(`${channelId}:event`, ev),
@@ -1353,7 +1383,7 @@ async function ensurePuppetmasterParity(repoRoot) {
 
 async function ensurePackagedCheckout() {
   if (!isPackaged) return resolveRepoRoot();
-  const repoRoot = packagedRepoRoot();
+  const repoRoot = resolveRepoRoot();
   // Do not set HARNESS_REPO to the Marionette checkout. resolveRepoRoot() already
   // uses packagedRepoRoot() when HARNESS_REPO is unset; HARNESS_REPO is reserved
   // for the user's open project (restored from workspace.json by the backend).
@@ -2198,7 +2228,7 @@ app.whenReady().then(async () => {
       }
     } catch { /* fall back to bootstrap's hydratePath() / reinjectPortableTools() */ }
   }
-  if (isPackaged) {
+  if (isPackaged && !process.env.MARIONETTE_BACKEND_RECEIPT) {
     try { await ensurePackagedCheckout(); } catch (e) {
       console.error("bootstrap failed:", e);
       dialog.showErrorBox("Marionette setup failed", String(e && e.message ? e.message : e));
@@ -2206,7 +2236,14 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  try { await startBackend(); } catch (e) { console.error("backend start failed:", e); }
+  try { await startBackend(); } catch (e) {
+    console.error("backend start failed:", e);
+    if (process.env.MARIONETTE_BACKEND_RECEIPT || e.code === "BACKEND_NOT_OWNED") {
+      dialog.showErrorBox("Backend attachment failed", String(e.message || e));
+      app.quit();
+      return;
+    }
+  }
   createWindow();
   flushWikiConnectQueue();
   const coldLink = (process.argv || []).find(
@@ -2222,7 +2259,13 @@ app.whenReady().then(async () => {
   // it died -- so a reopened window always connects to a working backend.
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      try { await startBackend(); } catch (e) { console.error("backend re-ensure failed:", e); }
+      try { await startBackend(); } catch (e) {
+        console.error("backend re-ensure failed:", e);
+        if (process.env.MARIONETTE_BACKEND_RECEIPT || e.code === "BACKEND_NOT_OWNED") {
+          dialog.showErrorBox("Backend attachment failed", String(e.message || e));
+          return;
+        }
+      }
       createWindow();
     } else {
       // A window exists but may be hidden/behind -- surface it.
@@ -2265,7 +2308,7 @@ async function cleanupBackend() {
   //      would be reused (old code). Adopted backends keep their marker.
   //   2. Await the whole owned process-tree shutdown so a slow-to-exit backend
   //      cannot retain locks into the next session / replacement spawn.
-  unlinkMarkerIfOwned();
+  unlinkMarkerIfOwned(backend && backend.pid, backendOwned);
   if (backend && backendOwned) {
     const b = backend;
     backend = null;
@@ -2301,6 +2344,7 @@ app.on("before-quit", (e) => {
     .finally(() => {
       cleanupVite();
       quitFinalized = true;
-      app.quit();
+      // Re-enter after the cancelled native quit event has unwound.
+      setImmediate(() => app.quit());
     });
 });

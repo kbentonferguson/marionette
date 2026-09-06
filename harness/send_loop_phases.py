@@ -29,6 +29,7 @@ from pmharness.drivers.base import known_assistant_phase
 
 from .goal_mode import reset_turn_goal_state
 from .log_reconstruction import check_outbound_reconstruction
+from .request_snapshot import FrozenRequest
 from .pilot import PilotAction, StreamingSayExtractor
 from .stream_identity import StreamDeltaBatch, normalize_delta_payload
 from .stream_performance import (
@@ -791,6 +792,30 @@ def _provider_dispatch_was_invoked(session: Any) -> bool:
         return False
 
 
+def _freeze_chat_request(session: Any, tools: Any, system: str, *, stream: bool) -> FrozenRequest:
+    session._last_log_reconstruction = {
+        "ok": False, "status": "error", "reason": "capture_incomplete",
+        "scope": "normalized_driver_inputs", "wire_status": "unverified",
+    }
+    pilot = session.pilot
+    method = pilot.chat_stream if stream else pilot.chat
+    kwargs = {"tools": tools, "system": system}
+    maybe_attach_pilot_session_id(
+        kwargs, method, getattr(session, "harness_session_id", None),
+    )
+    return FrozenRequest.capture(
+        method, session._messages_for_provider(), kwargs, getattr(pilot, "model", None),
+    )
+
+
+def _attach_request_receipt(resp: Any, receipt: dict) -> None:
+    try:
+        if isinstance(resp.meta, dict):
+            resp.meta["request_integrity"] = dict(receipt)
+    except Exception:
+        pass
+
+
 def dispatch_sync_pilot_chat(
     session: Any,
     tools_schema: Any,
@@ -798,28 +823,23 @@ def dispatch_sync_pilot_chat(
     *,
     accumulator: Any = None,
 ) -> Any:
-    """Non-streaming ``pilot.chat`` with the shared sanitize + honesty check."""
-    chat_kwargs = {
-        "tools": tools_schema,
-        "system": sys_prompt,
-    }
-    maybe_attach_pilot_session_id(
-        chat_kwargs,
-        session.pilot.chat,
-        getattr(session, "harness_session_id", None),
-    )
-    outbound = session._messages_for_provider()
-    try:
-        check_outbound_reconstruction(session, outbound, sys_prompt)
-    except Exception:
-        pass
+    """Freeze normalized inputs once, then dispatch an isolated materialization."""
+    request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=False)
+    outbound, chat_kwargs = request.materialize()
     if accumulator is not None:
         try:
             accumulator.mark_request_start()
         except Exception:
             pass
+    check_outbound_reconstruction(session, outbound, request=request, request_kwargs=chat_kwargs)
+    receipt = dict(session._last_log_reconstruction)
     _mark_provider_dispatch_invoked(session)
-    resp = session.pilot.chat(outbound, **chat_kwargs)
+    try:
+        resp = request.method(outbound, **chat_kwargs)
+    finally:
+        receipt.update(request.wire_receipt())
+        session._last_log_reconstruction = dict(receipt)
+    _attach_request_receipt(resp, receipt)
     _finish_and_attach_timing(accumulator, resp)
     return resp
 
@@ -832,6 +852,7 @@ def run_stream(
     *,
     clock: Any = None,
     accumulator: Any = None,
+    request: Optional[FrozenRequest] = None,
 ) -> None:
     """Background target: pilot.chat_stream → queue (delta/reasoning/tool_hint/wait/done/error).
 
@@ -840,8 +861,8 @@ def run_stream(
     ``clock`` is a monotonic callable for deterministic tests.
     ``accumulator`` is an optional send-thread pre-request clock; when omitted
     this function constructs its own so standalone tests keep working.
-    Request-start is marked immediately before ``chat_stream``, after outbound
-    construction / reconstruction check.
+    The send thread normally supplies a frozen request; direct callers capture
+    here. Request-start excludes capture and includes the boundary comparison.
     """
     try:
         acc = accumulator
@@ -873,15 +894,17 @@ def run_stream(
                     pass
             q.put(("reasoning", delta))
 
+        if request is None:
+            request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=True)
+        outbound, input_kwargs = request.materialize()
         kwargs = {
-            "tools": tools_schema,
-            "system": sys_prompt,
+            **input_kwargs,
             "on_delta": _on_delta,
             "on_reasoning_delta": _on_reasoning,
             "on_tool_hint": lambda name: q.put(("tool_hint", name)),
         }
         try:
-            params = inspect.signature(session.pilot.chat_stream).parameters
+            params = inspect.signature(request.method).parameters
         except Exception:
             params = {}
         if "on_wait_notice" in params:
@@ -892,27 +915,20 @@ def run_stream(
             kwargs["on_stream_item_done"] = (
                 lambda payload: q.put(("item_done", payload))
             )
-        maybe_attach_pilot_session_id(
-            kwargs,
-            session.pilot.chat_stream,
-            getattr(session, "harness_session_id", None),
-        )
-        # Sanitize immediately before dispatch (same seam as sync chat).
-        outbound = session._messages_for_provider()
-        try:
-            check_outbound_reconstruction(session, outbound, sys_prompt)
-        except Exception:
-            pass
         if acc is not None:
             try:
                 acc.mark_request_start()
             except Exception:
                 pass
+        check_outbound_reconstruction(session, outbound, request=request, request_kwargs=input_kwargs)
+        receipt = dict(session._last_log_reconstruction)
         _mark_provider_dispatch_invoked(session)
-        r = session.pilot.chat_stream(
-            outbound,
-            **kwargs,
-        )
+        try:
+            r = request.method(outbound, **kwargs)
+        finally:
+            receipt.update(request.wire_receipt())
+            session._last_log_reconstruction = dict(receipt)
+        _attach_request_receipt(r, receipt)
         _finish_and_attach_timing(acc, r)
         q.put(("done", r))
     except Exception as ex:
@@ -1035,11 +1051,12 @@ def dispatch_pilot_provider_call(
         if is_interactive and _can_stream:
             import queue
             import threading
+            request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=True)
             q = queue.Queue()
             t = threading.Thread(
                 target=run_stream,
                 args=(session, q, tools_schema, sys_prompt),
-                kwargs={"accumulator": accumulator},
+                kwargs={"accumulator": accumulator, "request": request},
                 daemon=True,
             )
             if accumulator is not None:
@@ -1064,19 +1081,32 @@ def dispatch_pilot_provider_call(
 
     # Same affinity helper as chat — only when complete() declares session_id.
     # Compaction summarizers call complete() directly without this attach.
+    pilot = session.pilot
+    complete_method = pilot.complete
     complete_kwargs: dict = {"system": sys_prompt}
     maybe_attach_pilot_session_id(
         complete_kwargs,
-        session.pilot.complete,
+        complete_method,
         getattr(session, "harness_session_id", None),
     )
+    session._last_log_reconstruction = {
+        "ok": False, "status": "error", "reason": "capture_incomplete",
+        "scope": "normalized_driver_inputs", "wire_status": "unverified",
+    }
+    request = FrozenRequest.capture(
+        complete_method, prompt, complete_kwargs, getattr(pilot, "model", None),
+    )
+    prompt, complete_kwargs = request.materialize()
     if accumulator is not None:
         try:
             accumulator.mark_request_start()
         except Exception:
             pass
     _mark_provider_dispatch_invoked(session)
-    resp = session.pilot.complete(prompt, **complete_kwargs)
+    check_outbound_reconstruction(session, prompt, request=request, request_kwargs=complete_kwargs)
+    receipt = dict(session._last_log_reconstruction)
+    resp = request.method(prompt, **complete_kwargs)
+    _attach_request_receipt(resp, receipt)
     stamp_sync_complete_terminal(resp)
     _finish_and_attach_timing(accumulator, resp)
     return "", resp
@@ -2316,32 +2346,41 @@ def drain_idle_turn(
                 yield from flush_steer()
         return ("return", user_message)
 
-    pending_steers = session.drain_steer()
+    pending_actions = session._drain_steer_actions() if hasattr(session, "_drain_steer_actions") else None
+    pending_steers = [a.text for a in pending_actions] if pending_actions is not None else session.drain_steer()
     if pending_steers:
         reset_turn_goal_state(session)
         format_steer = getattr(
             session, "_format_steer_user_content", None
         )
+        contents = []
         for steer in pending_steers:
-            yield ConvEvent("steer", {"text": steer})
             if callable(format_steer):
                 content = format_steer(steer)
             else:
-                # Compatibility for hosts that still expose the legacy marker.
-                marker = getattr(session, "_steer_marker", None)
+                marker = getattr(session, '_steer_marker', None)
                 content = marker(steer) if callable(marker) else steer
-            session._history.append({"role": "user", "content": content})
+            contents.append(content)
+        if pending_actions is not None:
+            if not session._publish_input_actions(pending_actions, contents):
+                return ('return', user_message)
+        else:
+            for content in contents:
+                session._history.append({'role': 'user', 'content': content})
+        for index, steer in enumerate(pending_steers):
+            yield ConvEvent('steer', {'text': steer, 'input_id': pending_actions[index].id if pending_actions is not None else ''})
         session._steer_pending = False
         return ("continue", user_message)
     mailbox_texts = []
+    mailbox_actions = None
     drain_mailbox = getattr(session, "drain_mailbox", None)
     if callable(drain_mailbox):
         try:
-            mailbox_texts = [
-                str(text).strip()
-                for text in (drain_mailbox() or [])
-                if str(text or "").strip()
-            ]
+            if hasattr(session, '_drain_mailbox_actions'):
+                mailbox_actions = session._drain_mailbox_actions()
+                mailbox_texts = [a.text for a in mailbox_actions]
+            else:
+                mailbox_texts = [str(text).strip() for text in (drain_mailbox() or []) if str(text or '').strip()]
         except Exception:
             mailbox_texts = []
     leftover_queued = None
@@ -2357,15 +2396,20 @@ def drain_idle_turn(
             if not q_text:
                 leftover_queued = None
                 break
-            if q_text in seen:
+            if not queued.get('input_id') and q_text in seen:
                 continue
             leftover_queued = queued
             break
         format_steer = getattr(session, "_format_steer_user_content", None)
-        for text in mailbox_texts:
-            yield ConvEvent("queued_prompt", {"id": "", "text": text, "images": []})
-            content = format_steer(text) if callable(format_steer) else text
-            session._history.append({"role": "user", "content": content})
+        contents = [format_steer(text) if callable(format_steer) else text for text in mailbox_texts]
+        if mailbox_actions is not None:
+            if not session._publish_input_actions(mailbox_actions, contents):
+                return ('return', user_message)
+        else:
+            for content in contents:
+                session._history.append({'role': 'user', 'content': content})
+        for index, text in enumerate(mailbox_texts):
+            yield ConvEvent('queued_prompt', {'id': mailbox_actions[index].id if mailbox_actions is not None else '', 'text': text, 'images': []})
         if leftover_queued and leftover_queued.get("text"):
             queued = leftover_queued
         else:
@@ -2410,6 +2454,12 @@ def drain_idle_turn(
         # transcription appended to the user content -- identical to
         # the normal-turn plumbing above.
         content = q_text
+        if queued.get('input_id'):
+            from .input_receipts import session_input_store
+            receipts = session_input_store(session)
+            receipts.prepare_delivery(queued['input_id'], handoff_token=queued.get('handoff_token'))
+            content, q_images = receipts.delivery_content(queued['input_id'], q_text)
+            q_text = content
         if q_images:
             from .vision import (
                 native_multimodal_user_content,
@@ -2470,7 +2520,13 @@ def drain_idle_turn(
             session._history.append({"role": "system", "content": content, "source": "goal_mode"})
         else:
             reset_turn_goal_state(session)
-            session._history.append({"role": "user", "content": content})
+            row = {"role": "user", "content": content}
+            if queued.get('input_id'):
+                row['input_id'] = queued['input_id']
+            session._history.append(row)
+            if queued.get('input_id'):
+                from .input_receipts import session_input_store
+                session_input_store(session).publish_injected([queued['input_id']], session.export_transcript_data())
         # Refresh the "current user message" reference so downstream
         # per-turn hooks (compaction, ingest, budget) attribute work
         # to the newly-running queued prompt instead of the previous
@@ -3400,7 +3456,11 @@ def dispatch_local_action(
         # Wave 2: explicit background mode returns a durable pending receipt
         # and never holds the turn on run_cancellable. Opt-in only.
         from harness.command_jobs import (
+            release_command_job_launch,
+            build_pending_receipt,
+            claim_command_job_launch,
             finish_foreground_command_job,
+            lookup_command_job,
             is_background_run_command,
             register_foreground_command_job,
             secret_free_command_preview,
@@ -3423,6 +3483,7 @@ def dispatch_local_action(
                 )
                 return
             result = {
+                **receipt,
                 "id": aid,
                 "kind": "run_command",
                 "status": receipt.get("status") or "pending",
@@ -3446,7 +3507,7 @@ def dispatch_local_action(
                 "artifacts": [{
                     "type": "command",
                     "headline": (
-                        f"background pending · job {receipt.get('job_id')}"
+                        f"background {receipt.get('status')} · job {receipt.get('job_id')}"
                     ),
                 }],
             }
@@ -3454,10 +3515,7 @@ def dispatch_local_action(
             session._append_action_result(
                 act,
                 aid,
-                (
-                    f"(run_command '{secret_free_command_preview(command)}' "
-                    f"dispatched in background: job {receipt.get('job_id')})"
-                ),
+                json.dumps(receipt),
                 is_native,
             )
             _note_turn_command(session)
@@ -3469,13 +3527,31 @@ def dispatch_local_action(
         job_id = ""
         try:
             job_id = register_foreground_command_job(session, act, aid)
-        except Exception:
-            job_id = ""
-        ok, status, val = session._do_run_command(act)
+            claimed = claim_command_job_launch(session, job_id)
+        except Exception as exc:
+            yield ConvEvent("action_result", {
+                "id": aid, "kind": "run_command", "status": "error", "error": str(exc),
+            })
+            session._append_action_result(act, aid, str(exc), is_native, ok=False)
+            return
+        if not claimed:
+            receipt = build_pending_receipt(lookup_command_job(session, job_id) or {})
+            yield ConvEvent("action_result", {**receipt, "id": aid, "kind": "run_command"})
+            session._append_action_result(act, aid, json.dumps(receipt), is_native)
+            return
         try:
-            finish_foreground_command_job(session, job_id, ok, status, val)
+            ok, status, val = session._do_run_command(act)
+            published = finish_foreground_command_job(session, job_id, ok, status, val)
         except Exception:
-            pass
+            # The executor may have produced effects before losing its result.
+            published = False
+        finally:
+            release_command_job_launch(session, job_id)
+        if not published:
+            receipt = build_pending_receipt(lookup_command_job(session, job_id) or {})
+            yield ConvEvent("action_result", {**receipt, "id": aid, "kind": "run_command"})
+            session._append_action_result(act, aid, json.dumps(receipt), is_native)
+            return
         if not ok:
             if status == "blocked":
                 block = val if isinstance(val, dict) else {"message": str(val)}
@@ -3491,6 +3567,9 @@ def dispatch_local_action(
                 )
                 yield ConvEvent("command_approval_pending", {
                     "id": aid,
+                    "approval_protocol": pending["approval_protocol"],
+                    "approval_id": pending["approval_id"],
+                    "action_id": pending["action_id"],
                     "command": command,
                     "command_hash": command_hash,
                     "session_id": pending.get("session_id"),
@@ -3580,7 +3659,7 @@ def dispatch_local_action(
                 "id": aid, "error": val, "kind": "run_command", "command": command,
                 **({"job_id": job_id} if job_id else {}),
             })
-            session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
+            session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native, ok=False)
             return
         output = val["output"]
         exit_code = val["exit_code"]
@@ -3624,7 +3703,10 @@ def dispatch_local_action(
                 f"{output}"
             )
         session._append_action_result(
-            act, aid, _with_command_footer(hist, val), is_native,
+            act, aid,
+            _with_command_footer(hist, val) if run_status == "ok" and exit_code == 0 else
+            json.dumps({**val, "output": _with_command_footer(hist, val)}),
+            is_native, ok=False if exit_code != 0 else True if run_status == "ok" else None,
         )
         _note_turn_command(session, "pass" if run_status == "ok" else run_status)
         return
@@ -3682,6 +3764,8 @@ def dispatch_local_action(
             "cwd": receipt.get("cwd"),
             "started_at": receipt.get("started_at"),
             "terminal_receipt": receipt.get("terminal_receipt"),
+            "recovery_state": receipt.get("recovery_state"),
+            "recovery_receipt": receipt.get("recovery_receipt"),
             "message": receipt.get("message") or "",
             "goal": f"command batch ({receipt.get('child_count') or 0} commands)",
             "num": int(receipt.get("child_count") or 0) or 1,
@@ -3696,7 +3780,7 @@ def dispatch_local_action(
             "artifacts": [{
                 "type": "command_batch",
                 "headline": (
-                    f"batch pending · job {receipt.get('job_id')} · "
+                    f"batch {receipt.get('status')} · job {receipt.get('job_id')} · "
                     f"{receipt.get('child_count') or 0} children"
                 ),
             }],
@@ -3705,10 +3789,7 @@ def dispatch_local_action(
         session._append_action_result(
             act,
             aid,
-            (
-                f"(run_command_batch dispatched: job {receipt.get('job_id')} "
-                f"children={receipt.get('child_count') or 0})"
-            ),
+            json.dumps(receipt, ensure_ascii=False),
             is_native,
         )
         _note_turn_command(session)

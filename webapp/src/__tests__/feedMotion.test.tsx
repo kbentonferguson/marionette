@@ -201,7 +201,7 @@ describe("feed Motion", () => {
     expect(column).not.toContain("motion.div");
     expect(column).not.toContain('from "motion/react"');
     expect(column).toContain("[overflow-anchor:auto]");
-    expect(column).toContain("[scroll-padding-bottom:var(--feed-chrome-clearance");
+    expect(column).toContain("scroll-pb-6");
     expect(column).not.toContain("overflow-anchor:none");
     expect(helpers).toContain("VIRTUAL_ROW_LAYOUT_ENABLED = false");
     expect(VIRTUAL_ROW_LAYOUT_ENABLED).toBe(false);

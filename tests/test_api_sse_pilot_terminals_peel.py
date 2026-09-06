@@ -357,7 +357,7 @@ def test_stream_terminal_missing_session_writes_reason_offset_once():
     h = _FakeHandler()
     stream_terminal(h, "gone", _terminal_svc(None), start_offset=7)
     frames = _sse_frames(h)
-    assert frames == [{"kind": "exit", "offset": 7, "reason": "missing_session"}]
+    assert frames == [{"kind": "exit", "offset": 7, "reason": "missing_session", "id": "gone"}]
 
 
 def test_stream_terminal_natural_exit_flushes_final_data_once():

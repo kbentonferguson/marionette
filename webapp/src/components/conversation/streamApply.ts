@@ -899,6 +899,9 @@ export function appendCommandApproval(
   items: Item[],
   data: {
     id?: string;
+    action_id?: string;
+    approval_id?: string;
+    approval_protocol?: number;
     command?: string;
     command_hash?: string;
     session_id?: string;
@@ -909,44 +912,49 @@ export function appendCommandApproval(
     suggested_amendment?: string;
   },
 ): Item[] {
-  // Reject empty/malformed hashes so they cannot occupy the empty-string
-  // dedupe key and suppress later valid approval cards.
   const commandHash = (data.command_hash || "").trim().toLowerCase();
-  if (!COMMAND_HASH_HEX.test(commandHash)) {
-    return items;
-  }
-  if (items.some(
-    (item) => item.kind === "command_approval" && item.commandHash === commandHash,
-  )) {
-    return items;
-  }
+  if (!COMMAND_HASH_HEX.test(commandHash)) return items;
+  const approvalId = data.approval_protocol === 1 ? data.approval_id : undefined;
+  const existing = items.findIndex((item) => item.kind === "command_approval"
+    && item.commandHash === commandHash);
+  const previous = items[existing];
+  if (previous?.kind === "command_approval" && previous.approvalId === approvalId) return items;
   const suggestedAmendment = (data.suggested_amendment || "").trim();
-  return [
-    ...items,
-    {
-      kind: "command_approval",
-      id: data.id || commandHash,
-      command: data.command || "",
-      commandHash,
-      sessionId: data.session_id || "",
-      workspaceRoot: data.workspace_root || "",
-      category: data.category || "",
-      reason: data.reason || "",
-      matched: data.matched || "",
-      ...(suggestedAmendment ? { suggestedAmendment } : {}),
-      status: "pending",
-    },
-  ];
+  const card: CommandApprovalItem = {
+    kind: "command_approval",
+    id: approvalId || data.id || commandHash,
+    actionId: data.action_id || data.id,
+    approvalId,
+    command: data.command || "",
+    commandHash,
+    sessionId: data.session_id || "",
+    workspaceRoot: data.workspace_root || "",
+    category: data.category || "",
+    reason: data.reason || "",
+    matched: data.matched || "",
+    ...(suggestedAmendment ? { suggestedAmendment } : {}),
+    status: "pending",
+  };
+  if (existing < 0) return [...items, card];
+  return items.map((item, index) => index === existing ? card : item);
+}
+
+export function sameCommandApproval(item: Item, expected: CommandApprovalItem): boolean {
+  return item.kind === "command_approval"
+    && !!expected.approvalId && !!expected.actionId
+    && item.approvalId === expected.approvalId && item.actionId === expected.actionId
+    && item.commandHash === expected.commandHash && item.sessionId === expected.sessionId
+    && item.workspaceRoot === expected.workspaceRoot;
 }
 
 export function updateCommandApproval(
   items: Item[],
-  commandHash: string,
-  patch: Partial<CommandApprovalItem>,
+  expected: CommandApprovalItem,
+  patch: Pick<Partial<CommandApprovalItem>, "status" | "error" | "refreshRequired">,
 ): Item[] {
   return items.map((item) => (
-    item.kind === "command_approval" && item.commandHash === commandHash
-      ? { ...item, ...patch, kind: "command_approval" }
+    item.kind === "command_approval" && sameCommandApproval(item, expected)
+      ? { ...item, ...patch }
       : item
   ));
 }

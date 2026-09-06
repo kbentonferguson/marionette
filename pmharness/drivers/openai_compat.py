@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
+from .request_boundary import http_request
 from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
     apply_openai_compat_cache_control,
@@ -917,7 +918,8 @@ class OpenAICompatDriver:
             last_err = None
             for attempt in range(2):
                 try:
-                    req = urllib.request.Request(
+                    req = http_request(
+                        self,
                         url, data=data, headers=headers, method="POST",
                     )
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -979,15 +981,8 @@ class OpenAICompatDriver:
 
         return with_retry(_call)
 
-    def chat(
-        self,
-        messages: list,
-        *,
-        tools: list | None = None,
-        system: str | None = None,
-        session_id: str | None = None,
-    ) -> DriverResponse:
-        url = f"{self.base_url}/chat/completions"
+    def _build_chat_body(self, messages, *, tools=None, system=None,
+                         session_id=None, stream=False):
         full_messages = []
         if system:
             full_messages.append({"role": "system", "content": system})
@@ -998,6 +993,9 @@ class OpenAICompatDriver:
             "messages": full_messages,
             self._output_token_limit_field(): self.max_tokens,
         }
+        if stream:
+            body['stream'] = True
+            body['stream_options'] = {'include_usage': True}
         self._apply_temperature(body)
         if self.enable_reasoning and not (
             tools and self._uses_openai_gpt5_chat_parameters()
@@ -1014,7 +1012,23 @@ class OpenAICompatDriver:
             system=system,
             session_id=session_id,
         )
+        if stream and (self._is_opencode_go_host() or self._is_llama_cpp_host()):
+            body.pop('stream_options', None)
         self._apply_openrouter_parallel_tool_calls(body, tools)
+        return body
+
+    def chat(
+        self,
+        messages: list,
+        *,
+        tools: list | None = None,
+        system: str | None = None,
+        session_id: str | None = None,
+    ) -> DriverResponse:
+        url = f"{self.base_url}/chat/completions"
+        body = self._build_chat_body(
+            messages, tools=tools, system=system, session_id=session_id,
+        )
 
         data = json.dumps(body).encode("utf-8")
 
@@ -1028,7 +1042,7 @@ class OpenAICompatDriver:
             t0 = time.time()
             raw = None
             try:
-                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                req = http_request(self, url, data=data, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
@@ -1040,7 +1054,7 @@ class OpenAICompatDriver:
                     body.pop("reasoning", None)
                     data = json.dumps(body).encode("utf-8")
                     try:
-                        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                        req = http_request(self, url, data=data, headers=headers, method="POST")
                         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
@@ -1049,7 +1063,8 @@ class OpenAICompatDriver:
                         if nxt:
                             headers["Authorization"] = f"Bearer {self._key()}"
                             try:
-                                req = urllib.request.Request(
+                                req = http_request(
+                                    self,
                                     url, data=data, headers=headers, method="POST",
                                 )
                                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -1080,7 +1095,8 @@ class OpenAICompatDriver:
                     if nxt:
                         headers["Authorization"] = f"Bearer {self._key()}"
                         try:
-                            req = urllib.request.Request(
+                            req = http_request(
+                                self,
                                 url, data=data, headers=headers, method="POST",
                             )
                             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -1185,37 +1201,9 @@ class OpenAICompatDriver:
         on_tool_hint: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
-        full_messages = []
-        if system:
-            full_messages.append({"role": "system", "content": system})
-        full_messages.extend(chat_completions_messages(messages))
-
-        body = {
-            "model": self.model,
-            "messages": full_messages,
-            self._output_token_limit_field(): self.max_tokens,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        self._apply_temperature(body)
-        if self.enable_reasoning and not (
-            tools and self._uses_openai_gpt5_chat_parameters()
-        ):
-            body["reasoning"] = {"max_tokens": 1024}
-        if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
-            if self._uses_openai_gpt5_chat_parameters():
-                body["reasoning_effort"] = "none"
-        self._prepare_body(
-            body,
-            messages=full_messages,
-            system=system,
-            session_id=session_id,
+        body = self._build_chat_body(
+            messages, tools=tools, system=system, session_id=session_id, stream=True,
         )
-        if self._is_opencode_go_host() or self._is_llama_cpp_host():
-            body.pop("stream_options", None)
-        self._apply_openrouter_parallel_tool_calls(body, tools)
 
         data = json.dumps(body).encode("utf-8")
 
@@ -1271,7 +1259,7 @@ class OpenAICompatDriver:
                 end_on_finish=self._is_llama_cpp_host(),
             )
 
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            req = http_request(self, url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     for line in resp:

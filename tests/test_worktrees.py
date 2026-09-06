@@ -56,7 +56,8 @@ def _post(port, path, body, headers):
     return urllib.request.urlopen(req, timeout=10)
 
 
-def test_worktrees_module_and_endpoints():
+def test_worktrees_module_and_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr(_wt, "_WORKTREES_JSON", str(tmp_path / "worktrees.json"))
     repo_path = create_temp_git_repo()
     httpd, port, srv = _server(repo_path)
     
@@ -96,7 +97,7 @@ def test_worktrees_module_and_endpoints():
         # 5. Test endpoint POST /api/worktrees/add
         # Add another branch 'feature-2'
         post_headers = {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN}
-        resp = _post(port, "/api/worktrees/add", {"branch": "feature-2"}, post_headers)
+        resp = _post(port, "/api/worktrees/add", {"branch": "feature-2", "repo": repo_path}, post_headers)
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["branch"] == "feature-2"
@@ -115,7 +116,7 @@ def test_worktrees_module_and_endpoints():
                 break
         assert feature_1_path is not None
         
-        resp = _post(port, "/api/worktrees/remove", {"path": feature_1_path}, post_headers)
+        resp = _post(port, "/api/worktrees/remove", {"path": feature_1_path, "repo": repo_path}, post_headers)
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["ok"] is True
@@ -126,7 +127,7 @@ def test_worktrees_module_and_endpoints():
         assert len(data["worktrees"]) == 2
         
         # 7. Test endpoint POST /api/worktrees/max
-        resp = _post(port, "/api/worktrees/max", {"max": 5}, post_headers)
+        resp = _post(port, "/api/worktrees/max", {"max": 5, "repo": repo_path}, post_headers)
         assert resp.status == 200
         
         resp = _get(port, "/api/worktrees")
@@ -359,7 +360,7 @@ def test_prune_orphan_edit_branches_deletes_stale_local_release():
     parent = os.path.dirname(repo)
     managed_dir = os.path.abspath(os.path.join(parent, ".pmharness-worktrees"))
     remote = os.path.join(parent, "origin-prune.git")
-    wt = os.path.join(parent, "wt-318")
+    wt = os.path.join(managed_dir, "wt-318")
     try:
         _create_branch(repo, "dev")
         _create_branch(repo, "release/v0.9.308")
@@ -479,7 +480,7 @@ def test_prune_edit_branches_endpoint():
     try:
         _create_branch(repo, "pmedit-stale99")
         post_headers = {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN}
-        resp = _post(port, "/api/worktrees/prune-edit-branches", {}, post_headers)
+        resp = _post(port, "/api/worktrees/prune-edit-branches", {"repo": repo}, post_headers)
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["ok"] is True

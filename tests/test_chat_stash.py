@@ -5,6 +5,7 @@ dropped. POST /api/chat/stash lets the client hand the payload over out of
 band and reference it from the GET stream via a short ?mid= id instead.
 """
 import json
+import pytest
 import tempfile
 import threading
 import urllib.error
@@ -80,14 +81,14 @@ def test_stash_caps_retained_entries():
         httpd.shutdown()
 
 
-def test_get_chat_mid_resolves_stashed_message():
+def test_get_chat_mid_resolves_stashed_message(owned_server):
     """A message far too large to ever fit in a URL still reaches the pilot
     when stashed and referenced via ?mid=, proving the data-loss bug is fixed."""
     import harness.server as srv
 
-    mock_pilot = MagicMock()
-    mock_pilot.send.return_value = []
-    mock_pilot.drain_swarm_results.return_value = []
+    mock_pilot = owned_server._pilot
+    mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+    mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
     with patch("harness.server._pilot", mock_pilot), \
          patch("harness.server._pilot_preflight", return_value=None):
@@ -96,8 +97,7 @@ def test_get_chat_mid_resolves_stashed_message():
         try:
             headers = {"Content-Type": "application/json", "X-Harness-Token": srv_inst._TOKEN}
 
-            sess = srv_inst._sessions.create()
-            srv_inst._sessions._active = sess["id"]
+            assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
             # A transcript far larger than a URL could ever carry (well past
             # the stdlib http.server request-line limit).
@@ -121,6 +121,9 @@ def test_get_chat_mid_resolves_stashed_message():
             mock_pilot.send.assert_called_once()
             sent_msg = mock_pilot.send.call_args[0][0]
             assert sent_msg == huge_message
+            receipt, = mock_pilot.input_receipts()
+            assert receipt["original_text"] == huge_message
+            assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
 
             # The stash entry was consumed (popped), not left to leak forever.
             assert mid not in srv_inst._CHAT_STASH
@@ -128,14 +131,13 @@ def test_get_chat_mid_resolves_stashed_message():
             httpd.shutdown()
 
 
-def test_get_chat_unknown_mid_does_not_crash():
-    """An unknown/expired mid must degrade gracefully (e.g. treated as an
-    empty message), never a server crash."""
+def test_get_chat_unknown_mid_refuses_without_consuming_input(owned_server):
+    """Expired staging refuses admission and leaves existing input intact."""
     import harness.server as srv
 
-    mock_pilot = MagicMock()
-    mock_pilot.send.return_value = []
-    mock_pilot.drain_swarm_results.return_value = []
+    mock_pilot = owned_server._pilot
+    mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+    mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
     with patch("harness.server._pilot", mock_pilot), \
          patch("harness.server._pilot_preflight", return_value=None):
@@ -144,16 +146,20 @@ def test_get_chat_unknown_mid_does_not_crash():
         try:
             headers = {"Content-Type": "application/json", "X-Harness-Token": srv_inst._TOKEN}
 
-            sess = srv_inst._sessions.create()
-            srv_inst._sessions._active = sess["id"]
+            assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
-            res = _get(port, "/api/chat?mid=doesnotexist", headers)
-            assert res.status == 200
-            while True:
-                line = res.readline().decode()
-                if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
-                    break
-            # No exception escaped, and the stream still terminated cleanly.
+            queued = mock_pilot.enqueue_prompt("  keep this draft\n")
+            before = mock_pilot.input_receipts()
+            with pytest.raises(urllib.error.HTTPError) as error:
+                _get(port, "/api/chat?mid=doesnotexist&message=do+not+send", headers)
+            assert error.value.code == 409
+            payload = json.loads(error.value.read())
+            assert payload["code"] == "input_stash_expired"
+            assert payload["ok"] is False
+            mock_pilot.send.assert_not_called()
+            assert mock_pilot.input_receipts() == before
+            assert mock_pilot.list_prompts()[0]["id"] == queued["id"]
+
         finally:
             httpd.shutdown()
 

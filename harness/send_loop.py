@@ -37,7 +37,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Iterator, Optional
+from typing import Any, Generator, Iterator, Optional
 
 from ._exec import _puppetmaster_available, _puppetmaster_cmd  # noqa: F401 — test patch surface
 from .pilot import (
@@ -77,6 +77,7 @@ from .terminal_cause import (
     finalize_stop_cause,
 )
 from .stream_performance import (
+    StreamTimingAccumulator,
     make_stream_timing_accumulator,
     reset_provider_step_timing,
     reset_timing_before_step,
@@ -454,27 +455,15 @@ class SendLoopMixin:
         display.insert(insert_at, card)
         return card
 
-    def send(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
-        """Process one user message: drive the pilot loop until it yields back.
+    def _acquire_send_turn(self):
+        from .pilot_replacement import replacement_gate
+        with replacement_gate(self):
+            if (getattr(self, '_replacement_pending', False)
+                    or getattr(self, '_replacement_retired', False)):
+                return None
+            return self._acquire_send_turn_unreserved()
 
-        ``resume=True`` is the keep-alive continuation path: a background swarm
-        finished and ``drain_swarm_results`` already appended the result record
-        plus a user-role continuation to history. We generate off that existing
-        history WITHOUT appending a new user turn, so the pilot autonomously
-        assesses the result and takes the next step -- no new user message and no
-        autopilot required.
-        """
-        from .conversation import ConvEvent
-        # Keep-alive must not restart a turn the user just stopped. Real user /
-        # autopilot sends clear the Stop hold in _mark_busy_acquired once they
-        # own the lock.
-        if resume and (
-            getattr(self, "_stop_holds_idle", False)
-            or getattr(self, "_interrupted_swarms", False)
-        ):
-            return
-        self._cancel.clear()
-        self._pending_advisor_warnings = []
+    def _acquire_send_turn_unreserved(self):
         if not self._busy.acquire(blocking=False):
             # The lock is held. Normally that means a turn is genuinely streaming.
             # But if a previous turn's generator was never closed (hard crash /
@@ -543,12 +532,39 @@ class SendLoopMixin:
                     except RuntimeError:
                         pass
                 if not self._busy.acquire(blocking=False):
-                    yield ConvEvent("error", {"error": "session busy: another request is in flight"})
-                    return
+                    return None
             else:
-                yield ConvEvent("error", {"error": "session busy: another request is in flight"})
-                return
-        busy_gen = self._mark_busy_acquired()
+                return None
+        return self._mark_busy_acquired()
+
+    def send(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False, *, input_id=None, handoff_token=None) -> Iterator[ConvEvent]:
+        """Process one user message: drive the pilot loop until it yields back.
+
+        ``resume=True`` is the keep-alive continuation path: a background swarm
+        finished and ``drain_swarm_results`` already appended the result record
+        plus a user-role continuation to history. We generate off that existing
+        history WITHOUT appending a new user turn, so the pilot autonomously
+        assesses the result and takes the next step -- no new user message and no
+        autopilot required.
+        """
+        from .conversation import ConvEvent
+        # Keep-alive must not restart a turn the user just stopped. Real user /
+        # autopilot sends clear the Stop hold in _mark_busy_acquired once they
+        # own the lock.
+        if resume and (
+            getattr(self, '_cold_input_hold', False)
+            or getattr(self, "_stop_holds_idle", False)
+            or getattr(self, "_interrupted_swarms", False)
+        ):
+            return
+        busy_gen = self._acquire_send_turn()
+        if busy_gen is None:
+            yield ConvEvent("error", {"error": "session busy or replaced: another request owns this runner"})
+            return
+        if not resume:
+            self._cold_input_hold = False
+        self._cancel.clear()
+        self._pending_advisor_warnings = []
         # Bind turn identity for allowlist attribution during this send.
         from .turn_identity import new_turn_id, reset_turn_id, set_turn_id
         _turn_token = set_turn_id(new_turn_id())
@@ -601,7 +617,11 @@ class SendLoopMixin:
         try:
             import time
             action_starts = {}
-            for ev in self._send_locked(user_message, images=images, plan=plan, resume=resume):
+            for ev in self._send_locked(user_message, images=images, plan=plan, resume=resume, **({"input_id": input_id, "handoff_token": handoff_token} if input_id else {})):
+                with self._busy_meta:
+                    still_owned = busy_gen == self._busy_gen
+                if not still_owned:
+                    return
                 if ev.kind == "tool_prep":
                     # Cursor-native tools (CLI/ACP) emit tool_prep only — persist
                     # by stable call_id so reload keeps chronological slots.
@@ -908,23 +928,38 @@ class SendLoopMixin:
             # Append-only freezes an enriched system prompt (MCP catalog, pilot
             # identity, …). Restoring the pre-turn base would desync history
             # from the frozen prefix and break prompt.startswith stability.
-            if self._resolve_append_only() and self._frozen_system_prompt is not None:
-                self._history[0]["content"] = self._frozen_system_prompt
-            else:
-                self._history[0]["content"] = original_sys
+            with self._busy_meta:
+                if busy_gen == self._busy_gen:
+                    if self._resolve_append_only() and self._frozen_system_prompt is not None:
+                        self._history[0]["content"] = self._frozen_system_prompt
+                    else:
+                        self._history[0]["content"] = original_sys
             reset_turn_id(_turn_token)
             self._release_busy(busy_gen)
 
-    def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
+    def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False, *, input_id=None, handoff_token=None) -> Iterator[ConvEvent]:
         from .conversation import ConvEvent
-        self._state = "thinking"
+        from .prompt_queue import PromptQueueError
+        with self._busy_meta:
+            retired = (getattr(self, '_replacement_pending', False)
+                       or getattr(self, '_replacement_retired', False))
+            busy_gen = self._busy_gen
+            if not retired:
+                self._state = "thinking"
+        if retired:
+            yield ConvEvent("error", {"error": "session pilot was replaced"})
+            return
         try:
             if not resume and (user_message or "").strip().lower() == "/reload-mcp":
                 yield from self._dispatch_reload_mcp()
                 return
-            yield from self._send_locked_inner(user_message, images=images, plan=plan, resume=resume)
+            yield from self._send_locked_inner(user_message, images=images, plan=plan, resume=resume, **({"input_id": input_id, "handoff_token": handoff_token} if input_id else {}))
+        except PromptQueueError as exc:
+            yield ConvEvent('error', exc.payload())
         finally:
-            self._state = "idle"
+            with self._busy_meta:
+                if busy_gen == self._busy_gen:
+                    self._state = "idle"
 
     def _dispatch_reload_mcp(self) -> Iterator[Any]:
         """User hatch: reconnect MCP and drop the frozen tools[] snapshot."""
@@ -1057,7 +1092,139 @@ class SendLoopMixin:
         )
         return True
 
-    def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
+    def _prepare_user_turn(
+        self, user_message: str, images: Optional[list], plan: bool,
+        timing: StreamTimingAccumulator, *, input_id=None, handoff_token=None,
+    ) -> Generator[ConvEvent, None, Optional[str]]:
+        """Retain and publish a user input before the model turn begins."""
+        from .conversation import ConvEvent
+
+        if hasattr(self, '_queue_lock') and (input_id is not None or not getattr(self, '_auto_mode', False)):
+            from .input_receipts import session_input_store, InputReceiptError
+            try:
+                receipts = session_input_store(self)
+                if input_id is None:
+                    input_id = receipts.admit(user_message, images=images,
+                        upload_root=getattr(self, '_input_upload_root', None))['id']
+                receipts.prepare_delivery(input_id, handoff_token=handoff_token)
+                user_message, images = receipts.delivery_content(input_id, user_message)
+            except InputReceiptError as exc:
+                yield ConvEvent('error', exc.payload())
+                return
+        # Native multimodal vs sidecar transcription; abort if images unusable.
+        image_prep = yield from yield_timed_phase(
+            timing, "image_prep",
+            prepare_turn_images(self, user_message, images),
+        )
+        if image_prep is None:
+            if input_id:
+                receipts.transition(input_id, 'uncertain', 'image_conversion_failed')
+            return
+        processed_message, native_image_paths = image_prep
+
+        self._turn_output_tokens = 0
+        self._turn_budget = None
+        # Fresh turn: clear guard / stagnation / failed-objective resume state.
+        self._turn_guard_state = None
+        reset_repeat_chain(self)
+        self._stagnation_last_prose = None
+        self._stagnation_last_actions = None
+        self._stagnation_streak = 0
+        self._invalid_only_streak = 0
+        self._failed_objective_resume_counts = {}
+        self._keep_alive_waits = 0
+        yield from yield_timed_phase(
+            timing, "task_profile",
+            emit_turn_task_profile(self, user_message),
+        )
+        try:
+            from .turn_budget import turn_budget_enabled
+
+            if turn_budget_enabled():
+                self._turn_budget = self._turn_economy.parse_output_directive(
+                    user_message
+                )
+        except Exception:
+            pass
+
+        image_encode_error = None
+        # Exact order: user content, append-only trailer, plan suffix,
+        # then native image encode/append. user_append_ms is additive
+        # around trailer + encode/append; suffix stays outside the clock.
+        if self._resolve_append_only():
+            with timed_phase(timing, "user_append"):
+                processed_message = self._append_turn_context_trailer(
+                    processed_message, user_message
+                )
+
+        if plan:
+            from .pilot import PLAN_SYSTEM_SUFFIX
+            processed_message = (
+                processed_message.rstrip() + "\n\n" + PLAN_SYSTEM_SUFFIX
+            )
+
+        with timed_phase(timing, "user_append"):
+            if native_image_paths:
+                from .vision import native_multimodal_user_content
+                try:
+                    history_content = native_multimodal_user_content(
+                        processed_message, native_image_paths,
+                    )
+                except Exception as e:
+                    image_encode_error = e
+                    history_content = None
+            else:
+                history_content = processed_message
+
+            # Preserve strict user/assistant alternation in _history: if the last
+            # message is already a user turn (e.g. a background job just drained a
+            # pilot-resume continuation before the user typed), merge into it rather
+            # than appending a second adjacent user message, which some chat APIs
+            # (Anthropic) reject and the concurrency stress test forbids.
+            if history_content is not None:
+                if self._history and self._history[-1].get("role") == "user":
+                    from .vision import merge_user_contents
+                    self._history[-1]["content"] = merge_user_contents(
+                        self._history[-1].get("content"), history_content,
+                    )
+                else:
+                    self._history.append({"role": "user", "content": history_content})
+                if input_id:
+                    ids = self._history[-1].setdefault('input_ids', [])
+                    if input_id not in ids:
+                        ids.append(input_id)
+                display_row = {"type": "message", "role": "user", "text": user_message}
+                if input_id:
+                    display_row['input_id'] = input_id
+                self._display_transcript.append(display_row)
+                if input_id:
+                    receipts.publish_injected([input_id], self.export_transcript_data())
+
+        if image_encode_error is not None:
+            if input_id:
+                receipts.transition(input_id, 'uncertain', 'image_encoding_failed')
+            yield ConvEvent("error", {
+                "error": f"Failed to load attached image(s): {image_encode_error}",
+            })
+            return
+
+        # Inject relevance-ranked CodeGraph context (best-effort, exception-guarded)
+        # so the driver sees the most relevant code BEFORE it starts calling tools.
+        # Skip for no_delegation worker sessions (they run in a fresh worktree with
+        # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
+        _skip_cg, _ = profile_skips_auto_inject(self)
+        if (
+            not getattr(self.config, "no_delegation", False)
+            and not self._resolve_append_only()
+            and not _skip_cg
+        ):
+            with timed_phase(timing, "auto_codegraph"):
+                cg_context = self._get_codegraph_context(user_message)
+                if cg_context:
+                    self._history.append({"role": "user", "content": cg_context})
+        return user_message
+
+    def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False, *, input_id=None, handoff_token=None) -> Iterator[ConvEvent]:
         from .conversation import (
             ConvEvent,
             _format_mcp_tools_section,
@@ -1074,104 +1241,13 @@ class SendLoopMixin:
             if not (self._history and self._history[-1].get("role") == "user"):
                 return
         else:
-            # Native multimodal vs sidecar transcription; abort if images unusable.
-            image_prep = yield from yield_timed_phase(
-                timing, "image_prep",
-                prepare_turn_images(self, user_message, images),
+            prepared_message = yield from self._prepare_user_turn(
+                user_message, images, plan, timing,
+                input_id=input_id, handoff_token=handoff_token,
             )
-            if image_prep is None:
+            if prepared_message is None:
                 return
-            processed_message, native_image_paths = image_prep
-
-            self._turn_output_tokens = 0
-            self._turn_budget = None
-            # Fresh turn: clear guard / stagnation / failed-objective resume state.
-            self._turn_guard_state = None
-            reset_repeat_chain(self)
-            self._stagnation_last_prose = None
-            self._stagnation_last_actions = None
-            self._stagnation_streak = 0
-            self._invalid_only_streak = 0
-            self._failed_objective_resume_counts = {}
-            self._keep_alive_waits = 0
-            yield from yield_timed_phase(
-                timing, "task_profile",
-                emit_turn_task_profile(self, user_message),
-            )
-            try:
-                from .turn_budget import turn_budget_enabled
-
-                if turn_budget_enabled():
-                    self._turn_budget = self._turn_economy.parse_output_directive(
-                        user_message
-                    )
-            except Exception:
-                pass
-
-            image_encode_error = None
-            # Exact order: user content, append-only trailer, plan suffix,
-            # then native image encode/append. user_append_ms is additive
-            # around trailer + encode/append; suffix stays outside the clock.
-            if self._resolve_append_only():
-                with timed_phase(timing, "user_append"):
-                    processed_message = self._append_turn_context_trailer(
-                        processed_message, user_message
-                    )
-
-            if plan:
-                from .pilot import PLAN_SYSTEM_SUFFIX
-                processed_message = (
-                    processed_message.rstrip() + "\n\n" + PLAN_SYSTEM_SUFFIX
-                )
-
-            with timed_phase(timing, "user_append"):
-                if native_image_paths:
-                    from .vision import native_multimodal_user_content
-                    try:
-                        history_content = native_multimodal_user_content(
-                            processed_message, native_image_paths,
-                        )
-                    except Exception as e:
-                        image_encode_error = e
-                        history_content = None
-                else:
-                    history_content = processed_message
-
-                # Preserve strict user/assistant alternation in _history: if the last
-                # message is already a user turn (e.g. a background job just drained a
-                # pilot-resume continuation before the user typed), merge into it rather
-                # than appending a second adjacent user message, which some chat APIs
-                # (Anthropic) reject and the concurrency stress test forbids.
-                if history_content is not None:
-                    if self._history and self._history[-1].get("role") == "user":
-                        from .vision import merge_user_contents
-                        self._history[-1]["content"] = merge_user_contents(
-                            self._history[-1].get("content"), history_content,
-                        )
-                    else:
-                        self._history.append({"role": "user", "content": history_content})
-                    self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
-
-            if image_encode_error is not None:
-                yield ConvEvent("error", {
-                    "error": f"Failed to load attached image(s): {image_encode_error}",
-                })
-                return
-
-            # Inject relevance-ranked CodeGraph context (best-effort, exception-guarded)
-            # so the driver sees the most relevant code BEFORE it starts calling tools.
-            # Skip for no_delegation worker sessions (they run in a fresh worktree with
-            # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
-            _skip_cg, _ = profile_skips_auto_inject(self)
-            if (
-                not getattr(self.config, "no_delegation", False)
-                and not self._resolve_append_only()
-                and not _skip_cg
-            ):
-                with timed_phase(timing, "auto_codegraph"):
-                    cg_context = self._get_codegraph_context(user_message)
-                    if cg_context:
-                        self._history.append({"role": "user", "content": cg_context})
+            user_message = prepared_message
 
         swarms = 0
         synchronous_swarms = 0
@@ -1751,4 +1827,3 @@ class SendLoopMixin:
             turn_prose=turn_prose,
             turn_findings=turn_findings,
         )
-

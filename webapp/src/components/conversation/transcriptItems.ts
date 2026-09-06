@@ -279,8 +279,8 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
         // Keep a terminal decision over a still-pending SSE/poll duplicate.
         if (
           prev.kind === "command_approval"
-          && prev.status === "pending"
-          && item.status !== "pending"
+          && (prev.approvalId !== item.approvalId
+            || (prev.status === "pending" && item.status !== "pending"))
         ) {
           out[prevIdx] = item;
         }
@@ -447,7 +447,9 @@ export function transcriptResponseToItems(res: {
         ) ? m.status : "pending";
         return [{
           kind: "command_approval" as const,
-          id: m.id || m.action_id || commandHash,
+          id: m.approval_id || m.id || m.action_id || commandHash,
+          actionId: m.action_id || m.id,
+          approvalId: m.approval_protocol === 1 ? m.approval_id : undefined,
           command: m.command || "",
           commandHash,
           sessionId: m.session_id || "",
@@ -876,8 +878,22 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
     localPendingKeys.add(key);
   }
 
+  const withApprovals = [...withPending];
+  for (const rem of remote) {
+    if (rem.kind !== "command_approval") continue;
+    const index = withApprovals.findIndex((it) => it.kind === "command_approval"
+      && it.commandHash === rem.commandHash);
+    if (index < 0) withApprovals.push(rem);
+    else {
+      const previous = withApprovals[index];
+      if (previous.kind === "command_approval"
+        && (previous.approvalId !== rem.approvalId || previous.status === "pending")) {
+        withApprovals[index] = rem;
+      }
+    }
+  }
   // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
-  return dedupeDisplayItems(appendMissingPendingApprovals(withPending, local));
+  return dedupeDisplayItems(appendMissingPendingApprovals(withApprovals, local));
 }
 
 /** Bound path/id lists so fingerprints stay cheap and order-stable. */
@@ -916,7 +932,7 @@ export function transcriptFingerprint(items: Item[]): string {
       const terminals = normalizeSwarmJobIds(it.terminal_job_ids || []).slice(0, 16).join(",");
       fp += `|sp:${ids}:${status}:${status === "running" ? 1 : 0}:${terminals}`;
     } else if (it.kind === "command_approval") {
-      fp += `|ca:${it.commandHash}:${it.status}`;
+      fp += `|ca:${it.commandHash}:${it.approvalId || ""}:${it.actionId || ""}:${it.status}`;
     } else if (it.kind === "secret_request") {
       fp += `|sr:${it.connector}:${it.field}:${it.status}`;
     } else if (it.kind === "thinking") {

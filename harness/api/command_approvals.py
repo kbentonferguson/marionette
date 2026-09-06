@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, Union
+
+from ..command_approval_identity import ApprovalExpectation, StaleApprovalError
 
 
 @dataclass
@@ -40,6 +42,21 @@ def _resolve_runner(
     return None, (runner, session_id, workspace_root, command_hash)
 
 
+def _expectation(body: dict) -> Optional[ApprovalExpectation]:
+    protocol = body.get("approval_protocol")
+    if protocol is not None and (type(protocol) is not int or protocol != 1):
+        raise ValueError("unsupported_approval_protocol")
+    action = body.get("expected_action_id")
+    approval = body.get("expected_approval_id")
+    if (
+        protocol is None
+        or not isinstance(action, str) or not action
+        or not isinstance(approval, str) or not approval
+    ):
+        return None
+    return ApprovalExpectation(action_id=action, approval_id=approval)
+
+
 def _decide(
     body: dict,
     svc: CommandApprovalServices,
@@ -63,15 +80,23 @@ def _decide(
             pending = decide(
                 command_hash=command_hash,
                 workspace_root=workspace_root,
+                expected=_expectation(body),
                 approve=approve,
             )
+    except StaleApprovalError as exc:
+        return 409, {"error": str(exc)}
     except PermissionError as exc:
         return 403, {"error": str(exc)}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     if pending is None:
         return 404, {"error": "pending command approval not found"}
 
     payload: dict[str, Any] = {
         "ok": True,
+        "approval_protocol": 1,
+        "approval_id": pending.get("approval_id", ""),
+        "action_id": pending.get("action_id", ""),
         "decision": "approved" if approve else "rejected",
         "session_id": session_id,
         "workspace_root": pending["workspace_root"],
@@ -125,7 +150,10 @@ def post_command_approval_amendment(
             pending = decide(
                 command_hash=command_hash,
                 workspace_root=workspace_root,
+                expected=_expectation(body),
             )
+    except StaleApprovalError as exc:
+        return 409, {"error": str(exc)}
     except PermissionError as exc:
         return 403, {"error": str(exc)}
     except ValueError as exc:
@@ -135,6 +163,9 @@ def post_command_approval_amendment(
 
     return 200, {
         "ok": True,
+        "approval_protocol": 1,
+        "approval_id": pending.get("approval_id", ""),
+        "action_id": pending.get("action_id", ""),
         "decision": "approved_amendment",
         "session_id": session_id,
         "workspace_root": pending["workspace_root"],

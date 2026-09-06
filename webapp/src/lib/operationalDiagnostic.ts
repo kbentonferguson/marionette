@@ -185,8 +185,10 @@ export function fromTransportFailure(input: {
       repo: input.repo,
     });
   }
-  const err = input.err as { message?: string; code?: string; status?: number } | undefined;
-  const raw = String(err?.message || err || "request failed");
+  const err = input.err;
+  const fields = err && typeof err === "object" ? err : {};
+  const correlationId = "correlationId" in fields && typeof fields.correlationId === "string" ? fields.correlationId : "";
+  const raw = "message" in fields && typeof fields.message === "string" ? fields.message : String(err || "request failed");
   if (input.isTransient) {
     return createOperationalDiagnostic({
       scope: "transport",
@@ -199,6 +201,7 @@ export function fromTransportFailure(input: {
       recovery: { kind: "retry", label: "Retry" },
       sessionId: input.sessionId,
       repo: input.repo,
+      correlationId,
     });
   }
   const viaIpc = input.hasBridge ?? (
@@ -215,6 +218,7 @@ export function fromTransportFailure(input: {
     recovery: { kind: "retry", label: "Retry" },
     sessionId: input.sessionId,
     repo: input.repo,
+    correlationId,
   });
 }
 
@@ -486,8 +490,8 @@ export function belongsToActiveScope(
   diag: OperationalDiagnostic,
   active: { sessionId?: string; repo?: string },
 ): boolean {
-  if (diag.sessionId && active.sessionId && diag.sessionId !== active.sessionId) return false;
-  if (diag.repo && active.repo && diag.repo !== active.repo) return false;
+  if (diag.sessionId && diag.sessionId !== active.sessionId) return false;
+  if (diag.repo && diag.repo !== active.repo) return false;
   return true;
 }
 

@@ -8,6 +8,8 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("owned_server")
+
 
 def _server():
     import harness.server as srv

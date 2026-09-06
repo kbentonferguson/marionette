@@ -1272,7 +1272,7 @@ def test_real_pm_builder_drives_fresh_scope_headline_and_row(tmp_path, monkeypat
     first_code, first_payload = get_economics({"scope": ["conversation"]}, services)
     assert first_code == 200
     assert isinstance(first_payload, dict)
-    assert first_payload["counterfactual_status"] == "unavailable"
+    assert first_payload["counterfactual_status"] == "incomplete"
 
     store.save_artifact(Artifact(
         job_id=created.id,

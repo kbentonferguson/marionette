@@ -174,7 +174,11 @@ def detect_sandbox_capability(
     *,
     force_refresh: bool = False,
 ) -> SandboxCapability:
-    """Detect whether an OS sandbox backend is available on this host."""
+    """Detect whether an OS sandbox backend can launch a trivial command.
+
+    Availability is not verification of a requested network or write policy:
+    the macOS probe uses allow-default, not the production Seatbelt profile.
+    """
     global _PROBE_CACHE
     if _PROBE_CACHE is not None and not force_refresh:
         return _PROBE_CACHE
@@ -210,8 +214,7 @@ def build_seatbelt_profile(writable_paths: list[str], *, network: str = "allow")
     if network not in {"allow", "deny"}:
         raise ValueError("network must be 'allow' or 'deny'")
     lines = ["(version 1)", "(deny default)", "(allow process*)", "(allow signal (target self))", "(allow sysctl-read)", "(allow file-read*)"]
-    if network == "deny":
-        lines.append("(deny network*)")
+    lines.append(f"({network} network*)")
     lines.append("(allow file-write*")
     for path in writable_paths:
         escaped = _canonical_path(path).replace("\\", "\\\\").replace('"', '\\"')

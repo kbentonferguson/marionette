@@ -150,7 +150,7 @@ def test_register_before_start_and_pending_receipt(session):
     assert row["action_id"] == "a-1"
     assert row["command_fingerprint"] == command_fingerprint("echo wave2")
     assert "command" not in row or row.get("command") in (None, "")
-    assert receipt["status"] == "pending"
+    assert receipt["status"] == "registered"
     assert receipt["session_id"] == "sess-cmd"
     assert receipt["action_id"] == "a-1"
     assert receipt["cwd"] == repo
@@ -308,15 +308,26 @@ def test_background_dispatch_returns_pending_receipt(session):
     sess, state_dir, repo = session
     act = PilotAction(kind="run_command", command="echo bg", background=True)
 
-    with patch(
-        "harness.command_policy.run_cancellable",
-        return_value=("bg\n", 0, "ok"),
-    ):
-        events = list(dispatch_local_action(sess, act, "a-bg", True, []))
+    release = threading.Event()
+    def held_command(*args, **kwargs):
+        assert release.wait(3), "test did not release command"
+        return "bg\n", 0, "ok"
 
-    assert len(events) == 1
-    data = events[0].data
-    assert data["status"] == "pending"
+    try:
+        with patch("harness.command_policy.run_cancellable", side_effect=held_command):
+            events = list(dispatch_local_action(sess, act, "a-bg", True, []))
+            assert len(events) == 1
+            data = events[0].data
+            assert data["status"] in {"registered", "running"}
+            assert data["terminal_receipt"] is None
+            release.set()
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if sess.get_local_job(data["job_id"]).get("status") == "completed":
+                    break
+                time.sleep(0.01)
+    finally:
+        release.set()
     assert data["job_id"].startswith("local-cmd-")
     assert data["action_id"] == "a-bg"
     assert data["command_fingerprint"] == command_fingerprint("echo bg")

@@ -341,6 +341,7 @@ class PtySession:
         self.cols = cols
         self.rows = rows
         self._buffer = bytearray()
+        self._total_output = 0
         self._lock = threading.Lock()
         self._alive = True
         now = time.time()
@@ -388,7 +389,7 @@ class PtySession:
                     data = os.read(self.fd, 65536)
                     if not data:
                         break
-                    _append_to_buffer(self._buffer, self._lock, data)
+                    self._append_output(data)
             except (OSError, ValueError):
                 break
         self._alive = False
@@ -544,7 +545,7 @@ class PtySession:
             )
             if not ok or nread.value == 0:
                 break
-            _append_to_buffer(self._buffer, self._lock, buf.raw[: nread.value])
+            self._append_output(buf.raw[: nread.value])
         self._alive = False
 
     def _cleanup_conpty_handles(self) -> None:
@@ -601,33 +602,60 @@ class PtySession:
 
     # ----- Public API -------------------------------------------------------
 
-    def read_since(self, offset: int) -> tuple:
-        """Return (new_bytes, new_offset) for output produced since `offset`."""
+    def _append_output(self, data: bytes) -> None:
         with self._lock:
-            total = len(self._buffer)
-            if offset < 0 or offset > total:
-                offset = 0
-            data = bytes(self._buffer[offset:])
+            self._total_output += len(data)
+            self._buffer.extend(data)
+            if len(self._buffer) > _BUFFER_CAP:
+                del self._buffer[:len(self._buffer) - _BUFFER_CAP]
+
+    def read_output(self, offset: int) -> tuple:
+        """Atomic (bytes, absolute end, actual start, gap reason) snapshot.
+
+        Invalid/future cursors replay retained bytes, matching legacy clamping.
+        Old cursors resume at the retained boundary and explicitly report loss.
+        """
+        with self._lock:
+            total = self._total_output
+            retained_start = total - len(self._buffer)
+            reason = None
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                offset, reason = retained_start, "invalid_cursor"
+            elif offset > total:
+                offset, reason = retained_start, "cursor_ahead"
+            elif offset < retained_start:
+                offset, reason = retained_start, "trimmed"
+            data = bytes(self._buffer[offset - retained_start:])
             if data:
                 self.last_activity = time.time()
-            return data, total
+            return data, total, offset, reason
 
-    def write(self, data: str) -> None:
+    def read_since(self, offset: int) -> tuple:
+        """Return (bytes, absolute cursor); feed the returned cursor back unchanged.
+
+        The tuple schema is unchanged. Zero reads all retained output. Offsets
+        relative to the retained buffer are no longer valid after trimming.
+        Call read_output when the reader needs explicit gap metadata.
+        """
+        data, total, _start, _reason = self.read_output(offset)
+        return data, total
+
+    def write(self, data: str) -> int:
+        """Return bytes accepted by the PTY, not proof of command execution."""
         if not self._alive:
-            return
+            return 0
         self.last_activity = time.time()
         if os.name == "nt":
-            self._write_conpty(data)
-        else:
-            self._write_unix(data)
+            return self._write_conpty(data)
+        return self._write_unix(data)
 
-    def _write_unix(self, data: str) -> None:
+    def _write_unix(self, data: str) -> int:
         try:
-            os.write(self.fd, data.encode("utf-8", "replace"))
+            return os.write(self.fd, data.encode("utf-8", "replace"))
         except OSError:
-            self._alive = False
+            return 0
 
-    def _write_conpty(self, data: str) -> None:
+    def _write_conpty(self, data: str) -> int:
         payload = data.encode("utf-8", "replace")
         written = wintypes.DWORD(0)
         ok = kernel32.WriteFile(
@@ -637,8 +665,7 @@ class PtySession:
             ctypes.byref(written),
             None,
         )
-        if not ok:
-            self._alive = False
+        return written.value if ok else 0
 
     def resize(self, rows: int, cols: int) -> None:
         # Callers (xterm FitAddon / termios) pass (rows, cols); clamp_pty_dims

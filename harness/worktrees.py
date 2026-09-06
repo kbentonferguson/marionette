@@ -546,6 +546,15 @@ def remove_worktree(repo: str, path: str, force: bool = False) -> None:
     if not _is_confined(path, managed_dir):
         raise ValueError("Path traversal detected or path outside managed directory")
 
+    if not force:
+        # Git's own non-force removal protects tracked/untracked changes but
+        # permits ignored files. Check those too before any process teardown.
+        rc, out, err = _git(path, "status", "--porcelain", "--untracked-files=all", "--ignored")
+        if rc != 0:
+            raise RuntimeError(err or "Could not inspect worktree")
+        if out:
+            raise RuntimeError("Tracked, untracked, or ignored changes")
+
     # Reap orphaned subprocesses (e.g. codegraph indexers) whose cwd is inside
     # this worktree BEFORE git yanks the directory out from under them, so they
     # do not survive as init-reparented zombies. Never let a reap failure block
@@ -593,30 +602,56 @@ def set_max_worktrees(max_count: int) -> None:
     except Exception as exc:
         logger.warning("failed to persist max_worktrees to %s: %s", _WORKTREES_JSON, exc)
 
-def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
-    worktrees = list_worktrees(repo)
-    non_main = [wt for wt in worktrees if not wt["is_main"]]
-    if len(non_main) <= max_count:
-        return
-        
+def _remove_automatic_worktree(repo: str, wt: dict) -> str:
+    """Remove an idle, clean managed tree; return a reason when it is kept."""
+    path = wt["path"]
+    if wt.get("is_main"):
+        return "Active or main checkout"
+    if wt.get("locked"):
+        return "Locked worktree"
+    if not _is_confined(path, _get_managed_dir(repo)):
+        return "Outside managed directory"
+    if _registered_pids_for_worktree(path):
+        return "Registered worker processes"
+    try:
+        remove_worktree(repo, path, force=False)
+    except Exception as exc:
+        return str(exc)
+    return ""
+
+
+def cleanup_old_worktrees(repo: str, max_count: int = 25, *, keep_paths=()) -> dict:
+    """Best-effort soft limit; protected trees can keep the count above it."""
+    non_main = [wt for wt in list_worktrees(repo) if not wt["is_main"]]
+    remaining = len(non_main)
+    removed = []
+    skipped = []
+    keep = {_normalize_worktree_path(path) for path in keep_paths}
+
     def get_mtime(wt):
         try:
             return os.path.getmtime(wt["path"])
         except OSError:
             return 0
-            
-    non_main.sort(key=get_mtime)
-    to_remove = non_main[:len(non_main) - max_count]
-    for wt in to_remove:
-        try:
-            remove_worktree(repo, wt["path"], force=True)
-        except Exception as exc:
-            logger.warning("failed to remove stale worktree %s: %s", wt["path"], exc)
+
+    for wt in sorted(non_main, key=get_mtime):
+        if remaining <= max_count:
+            break
+        path = wt["path"]
+        reason = ("Newly created worktree" if _normalize_worktree_path(path) in keep
+                  else _remove_automatic_worktree(repo, wt))
+        if reason:
+            skipped.append({"path": path, "reason": reason})
+        else:
+            removed.append(path)
+            remaining -= 1
+    return {"removed": removed, "count": len(removed), "skipped": skipped,
+            "remaining": remaining}
 
 
 def _is_managed_worktree(wt: dict) -> bool:
     """True for pmedit-/pmworker- scratch trees, never the main checkout."""
-    if not wt or wt.get("is_main") or wt.get("locked"):
+    if not wt or wt.get("is_main"):
         return False
     branch = (wt.get("branch") or "").strip()
     if _is_managed_branch_name(branch):
@@ -631,22 +666,18 @@ def reap_stale_managed_worktrees(repo: str, max_age_seconds: float = 0) -> dict:
     Only ``pmedit-*`` / ``pmworker-*`` trees under the managed directory are
     eligible. The main checkout, locked trees, user-named worktrees, and any
     tree with a still-registered live pid are left alone. ``max_age_seconds=0``
-    (boot) reaps every leftover; a positive age keeps recent in-session trees.
+    (boot) considers every leftover; a positive age keeps recent in-session
+    trees. Dirty trees, including ignored files, are reported in ``skipped``.
     """
     if not repo or not _is_repo(repo):
-        return {"removed": [], "count": 0}
+        return {"removed": [], "count": 0, "skipped": []}
 
-    managed_dir = _get_managed_dir(repo)
     now = time.time()
     removed: list[str] = []
+    skipped: list[dict] = []
     for wt in list_worktrees(repo):
         path = (wt.get("path") or "").strip()
         if not path or not _is_managed_worktree(wt):
-            continue
-        real = os.path.realpath(path)
-        if not _is_confined(real, managed_dir):
-            continue
-        if _registered_pids_for_worktree(path):
             continue
         if max_age_seconds > 0:
             try:
@@ -655,18 +686,19 @@ def reap_stale_managed_worktrees(repo: str, max_age_seconds: float = 0) -> dict:
                 age = max_age_seconds + 1
             if age < max_age_seconds:
                 continue
-        try:
-            remove_worktree(repo, path, force=True)
+        reason = _remove_automatic_worktree(repo, wt)
+        if reason:
+            skipped.append({"path": path, "reason": reason})
+            logger.info("kept stale managed worktree %s: %s", path, reason)
+        else:
             removed.append(os.path.abspath(path))
-        except Exception as exc:
-            logger.warning("failed to reap stale managed worktree %s: %s", path, exc)
 
     if removed:
         try:
             prune_orphan_edit_branches(repo)
         except Exception as exc:
             logger.warning("failed to prune orphan edit branches after reap: %s", exc)
-    return {"removed": removed, "count": len(removed)}
+    return {"removed": removed, "count": len(removed), "skipped": skipped}
 
 
 _MANAGED_BRANCH_PREFIXES = ("pmedit-", "pmworker-")
@@ -777,34 +809,47 @@ def delete_branch(
         raise RuntimeError(err or "git branch -D failed")
 
 
+def _retained_merge_target(repo: str, branch: str, durable: list[str]) -> str:
+    """Only non-prunable local heads count as retention, never fellow orphans."""
+    for target in durable:
+        rc, _, _ = _git(repo, "merge-base", "--is-ancestor",
+                        "refs/heads/" + branch, "refs/heads/" + target)
+        if rc == 0:
+            return target
+    return ""
+
+
 def prune_orphan_edit_branches(repo: str) -> dict:
     """Delete unused local edit/worker and leftover gone-upstream branches.
 
     Skips the current checkout, protected main/dev, and live pmedit-/pmworker-
     worktrees. Leftover dest / absorb / release/v0.9.* / gone-upstream heads
-    are pruned; leftover release worktrees are removed first. Returns
-    ``{"deleted": [...], "count": N}``.
+    are pruned only when merged into a non-prunable local branch. That proof
+    precedes removal of any eligible clean managed release worktree.
+    Returns deleted branches, their count, and skipped paths with reasons.
     """
     if not repo or not _is_repo(repo):
-        return {"deleted": [], "count": 0}
+        return {"deleted": [], "count": 0, "skipped": []}
 
     _prune_stale_origin_refs(repo)
 
     rc, out, _ = _git(repo, "branch", "--format=%(refname:short)")
     if rc != 0:
-        return {"deleted": [], "count": 0}
+        return {"deleted": [], "count": 0, "skipped": []}
 
     current = _current_branch(repo)
     attached_live: set[str] = set()
     attached_paths: dict[str, str] = {}
+    attached_trees: dict[str, dict] = {}
     for wt in list_worktrees(repo):
         wt_branch = (wt.get("branch") or "").strip()
         wt_path = (wt.get("path") or "").strip()
         if not wt_branch:
             continue
-        if wt_path and os.path.isdir(wt_path):
+        if wt_path:
             attached_live.add(wt_branch)
             attached_paths[wt_branch] = wt_path
+            attached_trees[wt_branch] = wt
 
     try:
         from .workspaces import _origin_branch_names, is_stale_local_release_branch
@@ -835,30 +880,48 @@ def prune_orphan_edit_branches(repo: str) -> dict:
         candidates.append(name)
 
     if not candidates:
-        return {"deleted": [], "count": 0}
+        return {"deleted": [], "count": 0, "skipped": []}
 
+    # Exclude every eligible name, even if attached/current and skipped this run:
+    # it could become an orphan on the next boot. Remote-tracking refs and
+    # reflogs are also not durable retention for automatic branch cleanup.
+    durable = [name.strip() for name in out.splitlines()
+               if name.strip() and not _is_deletable_leftover_branch(
+                   name.strip(), remote, gone)]
     deleted: list[str] = []
+    skipped: list[dict] = []
     for branch in candidates:
         if branch in _PROTECTED_BRANCHES:
             continue
         if branch == current:
             continue
+        target = _retained_merge_target(repo, branch, durable)
+        if not target:
+            skipped.append({"branch": branch, "path": attached_paths.get(branch, ""),
+                            "reason": "Commits not retained by a non-prunable local branch"})
+            continue
         if branch in attached_live:
-            if not _is_stale_release_branch_name(branch):
+            wt = attached_trees[branch]
+            reason = ("Attached worktree" if not _is_stale_release_branch_name(branch)
+                      else _remove_automatic_worktree(repo, wt))
+            if reason:
+                skipped.append({"branch": branch, "path": wt["path"], "reason": reason})
+                logger.info("kept branch %s: %s", branch, reason)
                 continue
-            wt_path = attached_paths.get(branch) or ""
-            if wt_path:
-                try:
-                    remove_worktree(repo, wt_path, force=True)
-                except Exception:
-                    _git(repo, "worktree", "remove", "--force", wt_path)
-                    _git(repo, "worktree", "prune")
         before = _branch_exists(repo, branch)
         if not before:
             continue
-        delete_branch(repo, branch, remote=remote, gone_names=gone)
+        # Git rechecks ancestry and attached worktrees at deletion time. Override
+        # the upstream only for this command; never persist branch config or use
+        # the explicit discard helper's force-delete contract here.
+        _git(repo, "-c", f"branch.{branch}.remote=.",
+             "-c", f"branch.{branch}.merge=refs/heads/{target}",
+             "branch", "-d", "--", branch)
         if not _branch_exists(repo, branch):
             deleted.append(branch)
+        else:
+            skipped.append({"branch": branch, "path": attached_paths.get(branch, ""),
+                            "reason": "Branch could not be deleted"})
 
-    return {"deleted": deleted, "count": len(deleted)}
+    return {"deleted": deleted, "count": len(deleted), "skipped": skipped}
 

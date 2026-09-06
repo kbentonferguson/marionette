@@ -1,3 +1,4 @@
+import { withEndpointDiscovery } from "./endpointFixture";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DESKTOP_BRIDGE_MISSING } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, resetDiagnosticBus } from "../lib/operationalDiagnosticBus";
@@ -98,7 +99,7 @@ describe("web fetch SSE stream terminal settle", () => {
     delete w.harnessIPC;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => sseResponse(['data: {"kind":"message_delta","data":{"text":"hi"}}\n\n'])),
+      withEndpointDiscovery(vi.fn(async () => sseResponse(['data: {"kind":"message_delta","data":{"text":"hi"}}\n\n']))),
     );
     const events: string[] = [];
     let done = false;
@@ -122,12 +123,12 @@ describe("web fetch SSE stream terminal settle", () => {
     delete w.harnessIPC;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
+      withEndpointDiscovery(vi.fn(async () =>
         sseResponse([
           'data: {"kind":"assistant_done","data":{"stop_cause":"natural"}}\n\n',
           'data: {"kind":"done"}\n\n',
         ]),
-      ),
+      )),
     );
     let doneCount = 0;
     stream(

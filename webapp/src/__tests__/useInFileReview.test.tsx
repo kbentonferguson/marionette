@@ -54,7 +54,7 @@ describe("useInFileReview", () => {
     expect(result.current.extension).toBeTruthy();
   });
 
-  it("Accept calls apply_review with fully seeded namespaced decisions", async () => {
+  it("Accept calls apply_review for only the selected hunk", async () => {
     vi.mocked(api.applyReview).mockResolvedValue({
       ok: true,
       message: "ok",
@@ -74,12 +74,11 @@ describe("useInFileReview", () => {
 
     expect(api.applyReview).toHaveBeenCalledWith("rev-infile", {
       "infile_a#0": "accept",
-      "infile_b#0": "accept",
-    });
+    }, "selected");
     expect(reviewHunkDecisionKey("rev-infile", "infile_a#0")).toBe("rev-infile::infile_a#0");
   });
 
-  it("Reject seeds sibling hunks as accept so they are not silently dropped", async () => {
+  it("Reject leaves sibling hunks pending", async () => {
     vi.mocked(api.applyReview).mockResolvedValue({
       ok: true,
       message: "ok",
@@ -92,8 +91,7 @@ describe("useInFileReview", () => {
     await applyInFileHunkDecision(review, "infile_b#0", "reject");
 
     expect(api.applyReview).toHaveBeenCalledWith("rev-infile", {
-      "infile_a#0": "accept",
       "infile_b#0": "reject",
-    });
+    }, "selected");
   });
 });

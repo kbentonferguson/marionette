@@ -20,16 +20,16 @@ describe("terminalBareOnDoneAction", () => {
     expect(terminalBareOnDoneAction(base)).toBe("reattach");
   });
 
-  it("auto-recovers once on empty first stream", () => {
+  it("reattaches an empty first stream", () => {
     expect(
       terminalBareOnDoneAction({ ...base, sawOutput: false, autoRecovered: false }),
-    ).toBe("auto_recover");
+    ).toBe("reattach");
   });
 
-  it("marks exited after a second empty-stream close", () => {
+  it("reattaches after a second empty-stream close", () => {
     expect(
       terminalBareOnDoneAction({ ...base, sawOutput: false, autoRecovered: true }),
-    ).toBe("mark_exited");
+    ).toBe("reattach");
   });
 
   it("marks exited after kind:exit settled", () => {

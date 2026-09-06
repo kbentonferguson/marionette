@@ -22,7 +22,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .base import DriverResponse, SYSTEM_PROMPT, known_assistant_phase
+from .request_boundary import http_request
+from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
 from .retry import with_retry
 
 
@@ -269,7 +270,7 @@ def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
             out.append({
                 "type": "function_call_output",
                 "call_id": msg.get("tool_call_id") or msg.get("id") or "",
-                "output": content if isinstance(content, str) else json.dumps(content),
+                "output": tool_result_content(msg) if isinstance(content, str) else json.dumps(content),
             })
             continue
         if role == "assistant" and msg.get("tool_calls"):
@@ -1301,7 +1302,8 @@ class CodexResponsesDriver:
                     _codex_session_affinity_headers(body.get("prompt_cache_key"))
                 )
             try:
-                req = urllib.request.Request(
+                req = http_request(
+                    self,
                     f"{self.base_url}/responses",
                     data=data,
                     headers=headers,

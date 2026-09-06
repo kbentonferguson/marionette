@@ -1,34 +1,36 @@
-"""Prompt queue persistence across backend restart.
-
-The server-side _prompt_queue is mirrored to {state_dir}/prompt_queue.json so a
-fresh ConversationalSession over the SAME state_dir reloads queued prompts in
-order. pop/remove/clear are reflected after reload, and a corrupt file yields an
-empty queue rather than a crash. No model, no network.
-"""
+"""Same-session prompt persistence; unscoped legacy files remain read-only."""
 import json
 import os
 import tempfile
+from pathlib import Path
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 
 
 def _session(state_dir):
-    return ConversationalSession(HarnessConfig(state_dir=state_dir))
+    session = ConversationalSession(HarnessConfig(state_dir=state_dir))
+    session.harness_session_id = "persistence-test"
+    return session
 
 
 def test_enqueue_survives_restart_in_order():
     d = tempfile.mkdtemp()
     s = _session(d)
     s.enqueue_prompt("first")
-    s.enqueue_prompt("second", images=["/tmp/a.png", "/tmp/b.png"], model="glm-5.2")
+    images = [str(Path(d) / name) for name in ('a.png', 'b.png')]
+    for path in images:
+        Path(path).write_bytes(b'original test image')
+    s.enqueue_prompt("second", images=images, model="glm-5.2", upload_root=d)
 
     s2 = _session(d)
-    items = s2.list_prompts()
+    assert s2.list_prompts() == []
+    items = s2.held_prompts()
     assert [i["text"] for i in items] == ["first", "second"]
     assert items[0]["images"] == []
     assert items[0].get("model", "") == ""
-    assert items[1]["images"] == ["/tmp/a.png", "/tmp/b.png"]
+    assert all(ref.startswith("input:persistence-test:") for ref in items[1]["images"])
+    assert len(s2.input_receipts()[1]["attachments"]) == 2
     assert items[1]["model"] == "glm-5.2"
 
 
@@ -41,7 +43,7 @@ def test_pop_reflected_after_reload():
     assert popped["text"] == "one"
 
     s2 = _session(d)
-    assert [i["text"] for i in s2.list_prompts()] == ["two"]
+    assert [i["text"] for i in s2.held_prompts()] == ["two"]
 
 
 def test_remove_reflected_after_reload():
@@ -52,7 +54,7 @@ def test_remove_reflected_after_reload():
     assert s.remove_prompt(b["id"]) is True
 
     s2 = _session(d)
-    texts = [i["text"] for i in s2.list_prompts()]
+    texts = [i["text"] for i in s2.held_prompts()]
     assert texts == ["keep"]
     assert a["text"] == "keep"
 
@@ -68,19 +70,20 @@ def test_clear_reflected_after_reload():
     assert s2.list_prompts() == []
 
 
-def test_corrupt_file_yields_empty_queue():
+def test_corrupt_legacy_file_remains_available_for_review():
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "prompt_queue.json"), "w", encoding="utf-8") as f:
         f.write("{ this is not valid json ]]")
 
     s = _session(d)
     assert s.list_prompts() == []
-    # queue still usable after tolerating the corrupt file
+    assert s.prompt_queue_recovery()[0]["content"] == "{ this is not valid json ]]"
+    # The separate session-owned queue is usable without overwriting legacy data.
     s.enqueue_prompt("fresh")
     assert [i["text"] for i in s.list_prompts()] == ["fresh"]
 
 
-def test_non_dict_items_skipped_on_load():
+def test_legacy_items_are_not_automatically_imported():
     d = tempfile.mkdtemp()
     payload = {"queue": [{"id": "x", "text": "good", "images": []},
                          "not-a-dict",
@@ -89,4 +92,5 @@ def test_non_dict_items_skipped_on_load():
         json.dump(payload, f)
 
     s = _session(d)
-    assert [i["text"] for i in s.list_prompts()] == ["good"]
+    assert s.list_prompts() == []
+    assert json.loads(s.prompt_queue_recovery()[0]["content"]) == payload

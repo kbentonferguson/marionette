@@ -324,6 +324,7 @@ def _session_services(state_dir: str) -> SessionServices:
         save_active_transcript=lambda: None,
         attach_view=lambda *_a, **_k: None,
         sync_pilot_session_id=lambda: None,
+        clear_active_pilot=lambda: None,
         diag=lambda *_a, **_k: None,
         is_app_install_root=lambda _p: False,
         ensure_home_workspace=lambda: state_dir,

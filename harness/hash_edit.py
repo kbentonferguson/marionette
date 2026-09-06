@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tempfile
+import threading
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
@@ -44,8 +46,11 @@ def detect_eol_style(text: str) -> str:
     """Return the dominant line ending style in ``text``."""
     crlf = text.count("\r\n")
     lf_only = text.count("\n") - crlf
-    if crlf > 0 and crlf >= lf_only:
+    cr_only = text.count("\r") - crlf
+    if crlf > 0 and crlf >= max(lf_only, cr_only):
         return "\r\n"
+    if cr_only > lf_only:
+        return "\r"
     return "\n"
 
 
@@ -229,24 +234,6 @@ def _validate_op(op: HashEditOp, lines: list[str]) -> Optional[str]:
     return None
 
 
-def _apply_op(lines: list[str], op: HashEditOp) -> None:
-    """Apply a single validated op to ``lines`` in place."""
-    if op.op == "replace":
-        end = min(op.end_line, len(lines))
-        new_lines = split_lines(normalize_newlines(op.text))
-        lines[op.start_line - 1 : end] = new_lines
-    elif op.op == "delete":
-        end = min(op.end_line, len(lines))
-        del lines[op.start_line - 1 : end]
-    elif op.op == "insert":
-        insert_at = op.after_line
-        new_lines = split_lines(normalize_newlines(op.text))
-        if insert_at == 0:
-            lines[:0] = new_lines
-        else:
-            lines[insert_at:insert_at] = new_lines
-
-
 def _overlap_errors(ops: list[HashEditOp]) -> list[str]:
     """Detect overlapping replace/delete ranges and insert positions.
 
@@ -342,16 +329,29 @@ def apply_hash_edits(
             return (op.after_line, 0)
         return (op.start_line, 1)
 
+    # Keep physical terminators on untouched lines. The BOM participates in
+    # existing anchor hashes, but belongs to the file rather than its first line.
+    bom = "\ufeff" if original_text.startswith("\ufeff") else ""
+    body = original_text[len(bom):]
+    physical = re.findall(r"([^\r\n]*)(\r\n|\r|\n|$)", body)[:-1]
     for _, op in sorted(indexed, key=sort_key, reverse=True):
-        _apply_op(lines, op)
+        start = op.after_line if op.op == "insert" else op.start_line - 1
+        end = start if op.op == "insert" else min(op.end_line, len(physical))
+        local_eol = physical[start][1] if start < len(physical) else eol
+        replacement = [] if op.op == "delete" else [
+            (line, local_eol or eol) for line in split_lines(op.text)
+        ]
+        physical[start:end] = replacement
 
-    new_text = join_lines(lines, eol)
-    # Preserve trailing newline semantics from the original.
-    norm_orig = normalize_newlines(original_text)
-    if norm_orig.endswith("\n") and not new_text.endswith(eol):
-        new_text += eol
-    elif not norm_orig.endswith("\n") and new_text.endswith(eol):
-        new_text = new_text[: -len(eol)]
+    if physical:
+        # Insertions after an unterminated line need a separator. Preserve the
+        # original final terminator (or its absence), including mixed EOL files.
+        final_eol = re.search(r"(\r\n|\r|\n)\Z", original_text)
+        physical[-1] = (physical[-1][0], final_eol.group() if final_eol else "")
+    new_text = bom + "".join(
+        line + ((ending or eol) if i < len(physical) - 1 else ending)
+        for i, (line, ending) in enumerate(physical)
+    )
 
     return new_text, ApplyResult(
         ok=True,
@@ -361,46 +361,91 @@ def apply_hash_edits(
     )
 
 
-def atomic_write_text(path: str, content: str) -> None:
-    """Write ``content`` atomically via temp file + replace."""
+class FileChangedError(OSError):
+    """The file no longer matches the version used to compute an edit."""
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    data: bytes
+    version: tuple[int, ...]
+    mode: int
+
+    @property
+    def text(self) -> str:
+        return self.data.decode("utf-8", errors="strict")
+
+
+def _file_version(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid)
+
+
+def read_file_snapshot(path: str) -> FileSnapshot:
+    """Read bytes and version from one descriptor, refusing unstable reads."""
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("hash_edit requires a regular file, not a symlink or special file")
+    with open(path, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if _file_version(before) != _file_version(opened):
+            raise FileChangedError("file changed while opening; re-read before editing")
+        data = stream.read()
+        after = os.fstat(stream.fileno())
+    version = _file_version(opened)
+    if (version != _file_version(after) or version != _file_version(os.lstat(path))
+            or len(data) != after.st_size):
+        raise FileChangedError("file changed while reading; re-read before editing")
+    return FileSnapshot(data, version, stat.S_IMODE(opened.st_mode))
+
+
+# Serialize only cooperating hash-edit commits in this process. This is not an
+# OS-level CAS: external writers can still race the final check and os.replace.
+_write_lock = threading.Lock()
+
+
+def atomic_write_text(path: str, content: str, *, expected: FileSnapshot) -> None:
+    """Replace a matching snapshot, preserving mode; refuse detected conflicts.
+
+    Other processes and writers that do not use this boundary are not locked.
+    Their changes after the final snapshot check cannot be detected atomically.
+    """
     target_dir = os.path.dirname(path) or "."
-    os.makedirs(target_dir, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-hash-edit-")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(content)
-        os.replace(temp_path, path)
-    except Exception:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp_path, expected.mode)
+        with _write_lock:
+            try:
+                current = read_file_snapshot(path)
+            except OSError as exc:
+                raise FileChangedError("file changed before write; re-read before editing") from exc
+            if current != expected:
+                raise FileChangedError("file changed before write; re-read before editing")
+            os.replace(temp_path, path)
+    finally:
         if os.path.exists(temp_path):
+            if os.name == "nt":
+                os.chmod(temp_path, stat.S_IWRITE)
             os.remove(temp_path)
-        raise
 
 
 def apply_hash_edits_to_file(path: str, ops: list[HashEditOp]) -> ApplyResult:
-    """Read, validate, and atomically write hash-anchored edits to ``path``."""
-    if not os.path.exists(path):
-        return ApplyResult(ok=False, message=f"file not found: {path}", stale_anchors=[])
-    if os.path.isdir(path):
-        return ApplyResult(ok=False, message=f"path is a directory: {path}", stale_anchors=[])
-
-    # Strict UTF-8: errors="replace" would turn latin1/binary bytes into U+FFFD
-    # and write them back, silently corrupting the file. Bail instead.
+    """Read, validate, and replace a matching file snapshot."""
     try:
-        with open(path, "r", encoding="utf-8", errors="strict", newline="") as f:
-            original = f.read()
+        snapshot = read_file_snapshot(path)
+        new_text, result = apply_hash_edits(snapshot.text, ops)
+        if result.ok:
+            atomic_write_text(path, new_text, expected=snapshot)
+        return result
     except UnicodeDecodeError as exc:
         return ApplyResult(
             ok=False,
-            message=(
-                f"file is not valid UTF-8 (hash_edit refuses to rewrite binary/"
-                f"legacy encodings): {path}: {exc}"
-            ),
+            message=f"file is not valid UTF-8 (hash_edit refuses to rewrite it): {path}: {exc}",
             stale_anchors=[],
         )
-
-    new_text, result = apply_hash_edits(original, ops)
-    if not result.ok:
-        return result
-
-    atomic_write_text(path, new_text)
-    return result
+    except OSError as exc:
+        return ApplyResult(ok=False, message=str(exc), stale_anchors=[])

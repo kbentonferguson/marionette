@@ -6,10 +6,29 @@ ONLY the vision-transcription wiring deterministically -- they must never spawn 
 real in-process Puppetmaster worker (that blocks in _wait_for_worker on the demo
 adapter and hangs the suite). The real swarm path is covered by the E2E tests.
 """
+import base64
 import tempfile
+from pathlib import Path
+
+import pytest
 from harness.config import HarnessConfig
 from harness.session import Session
 from harness.vision import VisionResult
+from harness.input_receipts import session_input_store
+
+
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGNocDgARAwQCgApDgYBH5bqCgAAAABJRU5ErkJggg=="
+)
+
+
+@pytest.fixture
+def uploaded_image(tmp_path):
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    image = uploads / "shot.png"
+    image.write_bytes(PNG)
+    return image
 
 
 class _FakeSidecar:
@@ -38,7 +57,7 @@ def _stub_execute_intent(monkeypatch):
     monkeypatch.setattr(sess, "execute_intent", fake_execute_intent)
 
 
-def test_session_transcribes_and_prepends(monkeypatch):
+def test_session_transcribes_and_prepends(monkeypatch, uploaded_image):
     # patch transcribe_images to use the fake sidecar
     import harness.vision as v
     monkeypatch.setattr(v, "transcribe_images",
@@ -49,7 +68,7 @@ def test_session_transcribes_and_prepends(monkeypatch):
     cfg = HarnessConfig(driver="stub-oracle-v2", reach="openrouter",
                         budget=3, state_dir=tempfile.mkdtemp(prefix="vh-"))
     s = Session(cfg)
-    events = list(s.run("What secret is in this screenshot?", images=["/fake/path.png"]))
+    events = list(s.run("What secret is in this screenshot?", images=[str(uploaded_image)]))
     kinds = [e.kind for e in events]
     # a vision event was emitted
     assert "vision" in kinds
@@ -67,7 +86,7 @@ def test_no_images_no_vision_event(monkeypatch):
     assert not any(e.kind == "vision" for e in events)
 
 
-def test_all_transcriptions_failed_stops_loudly(monkeypatch):
+def test_all_transcriptions_failed_stops_loudly(monkeypatch, uploaded_image):
     """Regression: if images were attached but EVERY transcription errors, the
     driver (text-only) must not silently answer as though no image was sent --
     that is a wrong answer dressed as a normal turn. The run must fail loudly and
@@ -81,7 +100,7 @@ def test_all_transcriptions_failed_stops_loudly(monkeypatch):
 
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(prefix="vh-"))
     s = Session(cfg)
-    events = list(s.run("What secret is in this screenshot?", images=["/fake/a.png"]))
+    events = list(s.run("What secret is in this screenshot?", images=[str(uploaded_image)]))
     kinds = [e.kind for e in events]
 
     assert "executing" not in kinds, "must not drive/swarm when all images failed"
@@ -91,24 +110,35 @@ def test_all_transcriptions_failed_stops_loudly(monkeypatch):
     assert any(e.kind == "vision" and e.data.get("error") for e in events)
 
 
-def test_conversational_send_all_transcriptions_failed_stops_loudly(monkeypatch):
+def test_conversational_send_all_transcriptions_failed_stops_loudly(monkeypatch, uploaded_image):
     """Parity with Session.run: ConversationalSession.send must fail loudly when
     every sidecar transcription errors (never continue as bare text-only)."""
     import harness.vision as v
     from harness.conversation import ConversationalSession
 
-    monkeypatch.setattr(
-        v,
-        "transcribe_images",
-        lambda paths, sidecar=None: [
-            VisionResult(text="", error="vlm unavailable", model="fake") for _ in paths
-        ],
-    )
+    transcribed = []
+    def transcribe(paths, sidecar=None):
+        transcribed.extend(paths)
+        assert len(paths) == 1
+        assert paths[0] != str(uploaded_image)
+        assert Path(paths[0]).read_bytes() == PNG
+        return [VisionResult(text="", error="vlm unavailable", model="fake")]
+    monkeypatch.setattr(v, "transcribe_images", transcribe)
     monkeypatch.setattr(v, "pilot_supports_native_images", lambda *a, **k: False)
 
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(prefix="vh-"))
     session = ConversationalSession(cfg)
-    events = list(session.send("What is in this screenshot?", images=["/fake/a.png"]))
+    session._input_upload_root = str(uploaded_image.parent)
+    class NoModel:
+        def chat(self, *_a, **_k):
+            pytest.fail("model must not run when all transcriptions fail")
+        complete = chat
+    session.pilot = NoModel()
+    events = list(session.send("What is in this screenshot?", images=[str(uploaded_image)]))
+    assert transcribed
+    receipt, = session.input_receipts()
+    assert receipt["original_text"] == "What is in this screenshot?"
+    assert session_input_store(session).attachment(receipt["attachments"][0]["ref"]) == PNG
     kinds = [e.kind for e in events]
 
     assert "error" in kinds
@@ -194,7 +224,7 @@ def test_native_multimodal_user_content_builds_image_url(tmp_path):
     from harness.vision import native_multimodal_user_content
 
     img = tmp_path / "shot.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img.write_bytes(PNG)
     parts = native_multimodal_user_content("look", [str(img)])
     assert parts[0] == {"type": "text", "text": "look"}
     assert parts[1]["type"] == "image_url"
@@ -212,17 +242,17 @@ def test_pilot_supports_native_images_codex_and_stub():
     assert pilot_supports_native_images(None, model="stub-oracle-v2", pilot=stub) is False
 
 
-def test_conversational_send_native_multimodal_skips_sidecar(tmp_path, monkeypatch):
+def test_conversational_send_native_multimodal_skips_sidecar(monkeypatch, uploaded_image):
     """Vision-capable pilots receive pixels in history, not transcription preamble."""
     import harness.vision as v
     from harness.conversation import ConversationalSession
     from pmharness.drivers.base import DriverResponse
 
-    img = tmp_path / "shot.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = uploaded_image
 
     monkeypatch.setattr(v, "pilot_supports_native_images", lambda *a, **k: True)
     called = {"transcribe": 0}
+    model_messages = []
 
     def _boom(*_a, **_k):
         called["transcribe"] += 1
@@ -235,6 +265,7 @@ def test_conversational_send_native_multimodal_skips_sidecar(tmp_path, monkeypat
         supports_streaming = False
 
         def chat(self, messages, *, tools=None, system=None, **_k):
+            model_messages.extend(messages)
             return DriverResponse(
                 text='{"say":"ok","actions":[]}',
                 tokens_in=1, tokens_out=1, latency_ms=1.0,
@@ -245,6 +276,7 @@ def test_conversational_send_native_multimodal_skips_sidecar(tmp_path, monkeypat
 
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(prefix="vh-"))
     session = ConversationalSession(cfg)
+    session._input_upload_root = str(img.parent)
     session.pilot = _Pilot()
     session._build_visible_tools_schema = lambda: []
     session._maybe_compact_history = lambda *a, **k: iter(())
@@ -259,7 +291,13 @@ def test_conversational_send_native_multimodal_skips_sidecar(tmp_path, monkeypat
     assert isinstance(content, list)
     assert content[0]["type"] == "text"
     assert "cannot see the image" not in content[0]["text"]
-    assert any(p.get("type") == "image_url" for p in content)
+    image_part, = [p for p in content if p.get("type") == "image_url"]
+    assert base64.b64decode(image_part["image_url"]["url"].split(",", 1)[1]) == PNG
+    receipt, = session.input_receipts()
+    assert receipt["status"] == "injected"
+    assert user_msgs[0]["input_ids"] == [receipt["id"]]
+    assert session_input_store(session).attachment(receipt["attachments"][0]["ref"]) == PNG
+    assert any(m.get("role") == "user" and m["content"] == content for m in model_messages)
 
 
 def test_anthropic_driver_maps_image_url_parts():
@@ -293,7 +331,7 @@ def test_view_image_native_skips_sidecar(tmp_path, monkeypatch):
     from harness.vision import native_multimodal_user_content
 
     img = tmp_path / "shot.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img.write_bytes(PNG)
 
     monkeypatch.setattr(v, "session_supports_native_images", lambda _s: True)
     monkeypatch.setattr(

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
-import { useProcessUsage } from "../lib/processUsage";
+import { refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
@@ -33,6 +33,10 @@ function economicsCacheKey(root: string, scope: EconomicsPaneScope, periodDays: 
   return `economics:${root}:${scope}:${periodDays || "all"}`;
 }
 
+function readEconomicsCache(key: string): EconomicsData | undefined {
+  return key.includes(":conversation:") ? undefined : readSWRCache<EconomicsData>(key);
+}
+
 /** Right-pane projection of canonical PM Economics reports. */
 export default function EconomicsPane() {
   const pendingSelection = (window as any).__pmPendingEconomicsSelection as
@@ -46,7 +50,7 @@ export default function EconomicsPane() {
   );
   const [periodDays, setPeriodDays] = useState<30 | null>(null);
   const [economics, setEconomics] = useState<EconomicsData | null>(
-    () => readSWRCache<EconomicsData>(
+    () => readEconomicsCache(
       economicsCacheKey(
         lastSelectedProjectRoot(),
         opensAtSessionAll ? "conversation" : "repo",
@@ -95,7 +99,11 @@ export default function EconomicsPane() {
       void loadEconomics();
     };
     const onSessionChanged = () => {
-      if (scope === "conversation") void loadEconomics();
+      if (scope === "conversation") {
+        economicsRequest.current += 1;
+        setEconomics(null);
+        void loadEconomics();
+      }
     };
     window.addEventListener("harness-usage-refresh", onUsageRefresh);
     window.addEventListener("harness-session-changed", onSessionChanged);
@@ -112,7 +120,7 @@ export default function EconomicsPane() {
       economicsRequest.current += 1;
       setProjectRoot(root);
       setEconomics(
-        readSWRCache<EconomicsData>(economicsCacheKey(root, scope, periodDays)) ?? null,
+        readEconomicsCache(economicsCacheKey(root, scope, periodDays)) ?? null,
       );
       if (projectRoot) void loadEconomics(scope, periodDays, root);
     };
@@ -128,7 +136,7 @@ export default function EconomicsPane() {
       setScope("conversation");
       setPeriodDays(null);
       setEconomics(
-        readSWRCache<EconomicsData>(
+        readEconomicsCache(
           economicsCacheKey(projectRoot, "conversation", null),
         ) ?? null,
       );
@@ -152,7 +160,8 @@ export default function EconomicsPane() {
   const showProcessMeters = Boolean(
     processMeters
     && (
-      (processMeters.tokens_used ?? 0) > 0
+      processMeters.read_status === "unavailable"
+      || (processMeters.tokens_used ?? 0) > 0
       || (processMeters.est_cost_usd ?? 0) > 0
       || listPriceValueTotal(processMeters) > 0
     ),
@@ -175,7 +184,7 @@ export default function EconomicsPane() {
             const nextScope = event.target.value as EconomicsPaneScope;
             setScope(nextScope);
             setEconomics(
-              readSWRCache<EconomicsData>(economicsCacheKey(projectRoot, nextScope, periodDays)) ?? null,
+              readEconomicsCache(economicsCacheKey(projectRoot, nextScope, periodDays)) ?? null,
             );
             void loadEconomics(nextScope, periodDays, projectRoot);
           }}
@@ -192,7 +201,7 @@ export default function EconomicsPane() {
             const nextPeriod = event.target.value === "30" ? 30 : null;
             setPeriodDays(nextPeriod);
             setEconomics(
-              readSWRCache<EconomicsData>(economicsCacheKey(projectRoot, scope, nextPeriod)) ?? null,
+              readEconomicsCache(economicsCacheKey(projectRoot, scope, nextPeriod)) ?? null,
             );
             void loadEconomics(scope, nextPeriod, projectRoot);
           }}
@@ -204,6 +213,16 @@ export default function EconomicsPane() {
         </select>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
+        {processUsage.readStatus === "unavailable" && (
+          <button type="button" className="px-3 py-2 text-[11px] text-risk" onClick={() => void refreshProcessUsage()}>
+            App-run usage partial / unavailable. Retry
+          </button>
+        )}
+        {scope === "conversation" && processUsage.sessionTotal?.read_status === "unavailable" && (
+          <button type="button" className="px-3 py-2 text-[11px] text-risk" onClick={() => void refreshProcessUsage()}>
+            Session total partial / unavailable. Retry
+          </button>
+        )}
         {showProcessMeters && processMeters ? (
           <CostBreakdown data={processMeters} hero={processHero} />
         ) : null}

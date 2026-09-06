@@ -4,6 +4,12 @@ import SwarmPane, { jobDegradedWorkerCount, jobIdentifier, jobSavings, namedSavi
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import { jobControlKey } from "../lib/jobControl";
+import { fetchJobArtifacts } from "../lib/jobArtifacts";
+
+vi.mock("../lib/jobArtifacts", async importOriginal => ({
+  ...await importOriginal<typeof import("../lib/jobArtifacts")>(), fetchJobArtifacts: vi.fn(),
+}));
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -22,6 +28,10 @@ vi.mock("../lib/api", async (importOriginal) => {
 const mockSwarmLive = vi.mocked(api.swarmLive);
 const mockSwarmCancel = vi.mocked(api.swarmCancel);
 const mockArtifacts = vi.mocked(api.artifacts);
+function savedKey(id: string, repo: string, sessionId = "", owner = "sess-test", source = "harness", stateId: string | null = null) {
+  return jobControlKey({ id, session_id: owner, source,
+    ...(stateId ? { job_ref: { job_id: id, state_id: stateId } } : {}) }, repo, sessionId);
+}
 
 function liveJob(
   jobOverrides: Partial<SwarmLive["jobs"][number]> = {},
@@ -75,6 +85,7 @@ async function expandVisibleJobs() {
 describe("SwarmPane sort and filter controls", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -165,6 +176,7 @@ describe("SwarmPane SWR cache first-open", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -263,6 +275,7 @@ describe("SwarmPane SWR cache first-open", () => {
 describe("SwarmPane model badge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -505,6 +518,7 @@ describe("SwarmPane model badge", () => {
 describe("SwarmPane worker details", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -605,9 +619,12 @@ describe("SwarmPane worker details", () => {
   });
 
   it("expands a worker from the keyboard and keeps nested Kill from toggling the job", async () => {
+    dispatchProjectSelected("/cancel-repo");
+    vi.mocked(api.sessions).mockResolvedValue([{ id: "sess-test", active: true }]);
     mockSwarmLive.mockResolvedValue(
       liveJob({
-        id: "job-keys",
+        id: "local-keys",
+        source: "local",
         goal: "Keyboard disclosure",
         status: "running",
         tasks: [
@@ -624,7 +641,7 @@ describe("SwarmPane worker details", () => {
     );
 
     render(<SwarmPane />);
-    mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "job-keys" });
+    mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "local-keys" });
     const job = await expandJob(/Keyboard disclosure/);
     expect(job).toHaveAttribute("aria-expanded", "true");
     expect(job.className).toMatch(/focus-visible:outline/);
@@ -652,7 +669,7 @@ describe("SwarmPane worker details", () => {
     expect(mockSwarmCancel).not.toHaveBeenCalled();
     fireEvent.click(kill);
     await waitFor(() => {
-      expect(mockSwarmCancel).toHaveBeenCalledWith("job-keys");
+      expect(mockSwarmCancel).toHaveBeenCalledWith({ version: 1, source: "local", repo: "/cancel-repo", session_id: "sess-test", job_ref: { job_id: "local-keys", state_id: null } });
     });
   });
 });
@@ -660,6 +677,7 @@ describe("SwarmPane worker details", () => {
 describe("SwarmPane pin attribution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -822,6 +840,7 @@ describe("SwarmPane pin attribution", () => {
 describe("SwarmPane routing dedupe", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -934,6 +953,7 @@ describe("SwarmPane routing dedupe", () => {
 describe("SwarmPane mid-run job-row meters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1213,6 +1233,7 @@ describe("SwarmPane mid-run job-row meters", () => {
 describe("SwarmPane truthful failed vs cancelled chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1362,15 +1383,19 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 describe("SwarmPane cancel Kill contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
     mockSwarmCancel.mockReset();
+    dispatchProjectSelected("/cancel-repo");
+    vi.mocked(api.sessions).mockResolvedValue([{ id: "sess-test", active: true }]);
     mockSwarmLive.mockResolvedValue(
       liveJob({
-        id: "job-kill",
+        id: "local-kill",
+        source: "local",
         goal: "Killable running swarm",
         status: "running",
         adapter: "agentic",
@@ -1379,19 +1404,23 @@ describe("SwarmPane cancel Kill contract", () => {
   });
 
   it("accepted Kill shows optimistic cancelling then refreshes live", async () => {
-    mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "job-kill" });
+    let accept: (value: { ok: boolean }) => void = () => {};
+    mockSwarmCancel.mockReturnValue(new Promise(resolve => { accept = resolve; }));
     let liveCalls = 0;
+    let accepted = false;
     mockSwarmLive.mockImplementation(async () => {
       liveCalls += 1;
-      if (liveCalls <= 1) {
+      if (!accepted) {
         return liveJob({
-          id: "job-kill",
+          id: "local-kill",
+        source: "local",
           goal: "Killable running swarm",
           status: "running",
         });
       }
       return liveJob({
-        id: "job-kill",
+        id: "local-kill",
+        source: "local",
         goal: "Killable running swarm",
         status: "cancelled",
       });
@@ -1399,12 +1428,14 @@ describe("SwarmPane cancel Kill contract", () => {
 
     render(<SwarmPane />);
     const kill = await screen.findByTitle("Cancel this job");
+    await waitFor(() => expect(kill).toBeEnabled());
     fireEvent.click(kill);
 
     await waitFor(() => {
-      expect(mockSwarmCancel).toHaveBeenCalledWith("job-kill");
+      expect(mockSwarmCancel).toHaveBeenCalledWith({ version: 1, source: "local", repo: "/cancel-repo", session_id: "sess-test", job_ref: { job_id: "local-kill", state_id: null } });
       expect(screen.getByText("cancelling...")).toBeInTheDocument();
     });
+    await act(async () => { accepted = true; accept({ ok: true }); });
     // Best-effort cooperative cancel only — no force-kill claim in the UI.
     expect(screen.queryByText(/force/i)).not.toBeInTheDocument();
 
@@ -1418,10 +1449,11 @@ describe("SwarmPane cancel Kill contract", () => {
 
     render(<SwarmPane />);
     const kill = await screen.findByTitle("Cancel this job");
+    await waitFor(() => expect(kill).toBeEnabled());
     fireEvent.click(kill);
 
     await waitFor(() => {
-      expect(mockSwarmCancel).toHaveBeenCalledWith("job-kill");
+      expect(mockSwarmCancel).toHaveBeenCalledWith({ version: 1, source: "local", repo: "/cancel-repo", session_id: "sess-test", job_ref: { job_id: "local-kill", state_id: null } });
     });
     await waitFor(() => {
       expect(screen.queryByText("cancelling...")).not.toBeInTheDocument();
@@ -1437,10 +1469,11 @@ describe("SwarmPane cancel Kill contract", () => {
   it("stale/404 Kill clears cancelling, refreshes, and allows retry", async () => {
     mockSwarmCancel
       .mockRejectedValueOnce(Object.assign(new Error("Not Found"), { status: 404 }))
-      .mockResolvedValueOnce({ ok: true, job_id: "job-kill" });
+      .mockResolvedValueOnce({ ok: true, job_id: "local-kill" });
 
     render(<SwarmPane />);
     const kill = await screen.findByTitle("Cancel this job");
+    await waitFor(() => expect(kill).toBeEnabled());
     fireEvent.click(kill);
 
     await waitFor(() => {
@@ -1460,6 +1493,7 @@ describe("SwarmPane cancel Kill contract", () => {
 describe("SwarmPane canonical outcome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1495,6 +1529,7 @@ describe("SwarmPane canonical outcome", () => {
 describe("SwarmPane findings section collapse", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1541,9 +1576,13 @@ describe("SwarmPane findings section collapse", () => {
   });
 
   it("lazy-loads full artifacts when expanding a slim finished job", async () => {
+    dispatchProjectSelected("/workspace");
+    vi.mocked(api.sessions).mockResolvedValueOnce([{ id: "sess-test", active: true, title: "Current" }]);
     mockSwarmLive.mockResolvedValue(
       liveJob({
         id: "job-slim",
+        source: "harness",
+        job_ref: { job_id: "job-slim", state_id: "state_fixture" },
         status: "complete",
         goal: "Slim finished swarm",
         adapter: "agentic",
@@ -1553,7 +1592,7 @@ describe("SwarmPane findings section collapse", () => {
         ],
       }),
     );
-    mockArtifacts.mockResolvedValue([
+    vi.mocked(fetchJobArtifacts).mockResolvedValue([
       { type: "ROUTING", headline: "", model: "glm-5.2", created_by: "router" },
       { type: "FINDING", headline: "lazy finding landed", confidence: 0.9 },
     ]);
@@ -1566,7 +1605,9 @@ describe("SwarmPane findings section collapse", () => {
     fireEvent.click(goal);
 
     await waitFor(() => {
-      expect(mockArtifacts).toHaveBeenCalledWith("job-slim");
+      expect(fetchJobArtifacts).toHaveBeenCalledWith({ job_ref: { job_id: "job-slim", state_id: "state_fixture" },
+        source: "harness", session_id: "sess-test", repo: "/workspace" });
+      expect(mockArtifacts).not.toHaveBeenCalled();
       expect(screen.getByText("lazy finding landed")).toBeInTheDocument();
     });
   });
@@ -1595,9 +1636,9 @@ describe("SwarmPane findings section collapse", () => {
     fireEvent.click(screen.getByText("Finished"));
     fireEvent.click(await screen.findByText("Owned sibling slim"));
 
-    await waitFor(() => {
-      expect(mockArtifacts).toHaveBeenCalledWith("job-sibling");
-    });
+    expect(await screen.findByText(/Artifact preview is unavailable/)).toBeInTheDocument();
+    expect(mockArtifacts).not.toHaveBeenCalled();
+    expect(fetchJobArtifacts).not.toHaveBeenCalled();
     expect(screen.getByText("slim finding kept")).toBeInTheDocument();
   });
 });
@@ -1605,6 +1646,7 @@ describe("SwarmPane findings section collapse", () => {
 describe("SwarmPane worker-owned routing surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1866,6 +1908,7 @@ describe("SwarmPane worker-owned routing surface", () => {
 describe("SwarmPane worker tokens and cost", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1929,6 +1972,7 @@ describe("SwarmPane worker tokens and cost", () => {
 describe("SwarmPane worker progress", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -1965,6 +2009,7 @@ describe("SwarmPane worker progress", () => {
 describe("SwarmPane worker outcome hierarchy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -2242,6 +2287,7 @@ describe("SwarmPane session scope before a project event", () => {
 describe("SwarmPane tracker header", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -2280,6 +2326,7 @@ describe("SwarmPane tracker header", () => {
 describe("SwarmPane does not paint unowned CLI captions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -2424,6 +2471,7 @@ describe("SwarmPane repo-scoped dismiss", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -2480,31 +2528,28 @@ describe("SwarmPane repo-scoped dismiss", () => {
       expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
     });
 
-    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
-    expect(stored[REPO_A]).toEqual(["shared-job"]);
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v3") || "{}");
+    expect(stored[REPO_A]).toEqual([savedKey("shared-job", REPO_A)]);
     expect(stored[REPO_B]).toBeUndefined();
   });
 
-  it("migrates the legacy global dismiss blob into the default view only", async () => {
+  it("ignores the legacy global dismiss blob without deleting it", async () => {
     localStorage.setItem("swarm.dismissed.v1", JSON.stringify(["legacy-job"]));
     dispatchProjectSelected("");
-
     mockSwarmLive.mockResolvedValue(finishedJob("legacy-job", "Legacy finished swarm"));
-
     render(<SwarmPane />);
-    await waitFor(() => {
-      expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
-    });
-
-    expect(localStorage.getItem("swarm.dismissed.v1")).toBeNull();
-    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
-    expect(stored.__default__).toEqual(["legacy-job"]);
+    await openFinishedSection();
+    expect(await screen.findByText("Legacy finished swarm")).toBeInTheDocument();
+    expect(screen.queryByText("All swarm jobs cleared")).not.toBeInTheDocument();
+    expect(localStorage.getItem("swarm.dismissed.v1")).toBe(JSON.stringify(["legacy-job"]));
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v3") || "{}");
+    expect(stored.__default__ || []).toEqual([]);
   });
 
   it("keeps live jobs visible even when their id is in the dismiss store", async () => {
     localStorage.setItem(
-      "swarm.dismissed.v2",
-      JSON.stringify({ [REPO_A]: ["live-owned-job", "old-finished"] }),
+      "swarm.dismissed.v3",
+      JSON.stringify({ [REPO_A]: [savedKey("live-owned-job", REPO_A, "", "sess-1"), jobControlKey({ id: "old-finished" }, REPO_A, "")] }),
     );
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
@@ -2536,8 +2581,8 @@ describe("SwarmPane repo-scoped dismiss", () => {
 
   it("keeps a previously dismissed job visible after it completes if it was seen live", async () => {
     localStorage.setItem(
-      "swarm.dismissed.v2",
-      JSON.stringify({ [REPO_A]: ["live-owned-job"] }),
+      "swarm.dismissed.v3",
+      JSON.stringify({ [REPO_A]: [savedKey("live-owned-job", REPO_A, "", "sess-1")] }),
     );
     mockSwarmLive.mockResolvedValue({
       session: { tokens_used: 0, est_cost_usd: 0 },
@@ -2557,8 +2602,8 @@ describe("SwarmPane repo-scoped dismiss", () => {
     });
     // Live sighting prunes the id from dismiss so completion cannot re-hide it.
     await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
-      expect(stored[REPO_A] || []).not.toContain("live-owned-job");
+      const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v3") || "{}");
+      expect(stored[REPO_A] || []).not.toContain(savedKey("live-owned-job", REPO_A, "", "sess-1"));
     });
     unmount();
     clearSWRCache();
@@ -2613,6 +2658,7 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -2625,12 +2671,16 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
   });
 
   it("undismisses, expands, and scrolls to the target job row", async () => {
+    vi.mocked(api.sessions).mockResolvedValueOnce([{ id: "sess-test", active: true, title: "Current" }]);
+    vi.mocked(fetchJobArtifacts).mockResolvedValue([]);
     localStorage.setItem(
-      "swarm.dismissed.v2",
-      JSON.stringify({ [REPO]: ["job_abcdef012345"] }),
+      "swarm.dismissed.v3",
+      JSON.stringify({ [REPO]: [savedKey("job_abcdef012345", REPO, "sess-test", "sess-test", "harness", "state_fixture")] }),
     );
     mockSwarmLive.mockResolvedValue(
       finishedJob("job_abcdef012345", "Deep-link target swarm", {
+        source: "harness",
+        job_ref: { job_id: "job_abcdef012345", state_id: "state_fixture" },
         artifacts_complete: false,
         artifacts: [],
       }),
@@ -2656,10 +2706,12 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     await waitFor(() => {
       expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
-    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
-    expect(stored[REPO] || []).not.toContain("job_abcdef012345");
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v3") || "{}");
+    expect(stored[REPO] || []).not.toContain(savedKey("job_abcdef012345", REPO, "sess-test", "sess-test", "harness", "state_fixture"));
     await waitFor(() => {
-      expect(mockArtifacts).toHaveBeenCalledWith("job_abcdef012345");
+      expect(fetchJobArtifacts).toHaveBeenCalledWith({ job_ref: { job_id: "job_abcdef012345", state_id: "state_fixture" },
+        source: "harness", session_id: "sess-test", repo: REPO });
+      expect(mockArtifacts).not.toHaveBeenCalled();
     });
   });
 
@@ -2721,8 +2773,8 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
       "../lib/pendingSwarmOpenJob"
     );
     localStorage.setItem(
-      "swarm.dismissed.v2",
-      JSON.stringify({ [REPO]: ["job_abcdef012345"] }),
+      "swarm.dismissed.v3",
+      JSON.stringify({ [REPO]: [savedKey("job_abcdef012345", REPO, "sess-test", "sess-test", "harness", "state_fixture")] }),
     );
     mockSwarmLive.mockResolvedValue(
       finishedJob("job_abcdef012345", "Late-mount deep-link target", {
@@ -2752,6 +2804,7 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
 describe("SwarmPane final-review blockers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -3054,6 +3107,7 @@ describe("SwarmPane job-card expansion persistence", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -3133,13 +3187,13 @@ describe("SwarmPane job-card expansion persistence", () => {
     const jobB = await screen.findByRole("button", { name: /Repo B running/ });
     expect(jobB).toHaveAttribute("aria-expanded", "false");
 
-    const stored = JSON.parse(localStorage.getItem("swarm.expanded.v1") || "{}");
-    expect(stored[REPO_A]?.["shared-job"]).toBe(false);
+    const stored = JSON.parse(localStorage.getItem("swarm.expanded.v2") || "{}");
+    expect(stored[REPO_A]?.[savedKey("shared-job", REPO_A)]).toBe(false);
     expect(stored[REPO_B]).toBeUndefined();
   });
 
   it("falls back to defaults when expansion storage is malformed", async () => {
-    localStorage.setItem("swarm.expanded.v1", "not-json{{{");
+    localStorage.setItem("swarm.expanded.v2", "not-json{{{");
     mockSwarmLive.mockResolvedValue(
       liveJob({ id: "job-running", goal: "Running swarm", status: "running" }),
     );
@@ -3192,6 +3246,7 @@ describe("receipt-first spend (#102)", () => {
 describe("swarm tracker usage pills (0.9.300)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -3272,6 +3327,7 @@ describe("swarm tracker usage pills (0.9.300)", () => {
 describe("SwarmPane command vs swarm split", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -3401,6 +3457,7 @@ describe("SwarmPane command vs swarm split", () => {
 describe("SwarmPane v0.9.350 collapsed chrome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
@@ -3469,6 +3526,7 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
 describe("SwarmPane 353 mixed chrome and routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessions).mockResolvedValue([]);
     localStorage.clear();
     localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();

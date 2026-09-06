@@ -127,7 +127,6 @@ import {
 import {
   cacheHitEmptyTranscriptDecision,
   collectDisplayArtifacts,
-  emptySessionSwitchState,
   emptyTranscriptAfterRetryDecision,
   mergeUniqueArtifacts,
   reattachSessionStateFailureDecision,
@@ -2107,6 +2106,9 @@ describe("streamApply module", () => {
     expect(appendVaultCite([], "empty", [], "no hits")).toEqual([]);
     const approvals = appendCommandApproval([], {
       id: "call-1",
+      action_id: "call-1",
+      approval_id: "approval-1",
+      approval_protocol: 1,
       command: "ssh prod reboot",
       command_hash: "a".repeat(64),
       session_id: "session-a",
@@ -2118,11 +2120,15 @@ describe("streamApply module", () => {
       sessionId: "session-a",
     });
     expect(appendCommandApproval(approvals, {
+      approval_protocol: 1,
+      approval_id: "approval-1",
       command_hash: "a".repeat(64),
     })).toBe(approvals);
+    const approval = approvals[0];
+    if (approval.kind !== "command_approval") throw new Error("missing approval");
     expect(updateCommandApproval(
       approvals,
-      "a".repeat(64),
+      approval,
       { status: "rejected" },
     )[0]).toMatchObject({ status: "rejected" });
     const statusItems = appendAutoStatus([], 1, { swarms_used: 0, max_swarms: 5 });
@@ -2197,8 +2203,6 @@ describe("sessionHydrate module", () => {
     // collect mirrors display walk (no dedupe); mergeUniqueArtifacts dedupes.
     expect(collected).toHaveLength(3);
     expect(mergeUniqueArtifacts(collected, [{ type: "note", headline: "b" }])).toHaveLength(2);
-    expect(emptySessionSwitchState(0)).toEqual({ clearItems: true, stale: false });
-    expect(emptySessionSwitchState(3)).toEqual({ clearItems: false, stale: true });
   });
 
   it("runner busy switch decisions preserve chrome rules", () => {

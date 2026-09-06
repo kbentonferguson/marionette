@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -711,3 +712,196 @@ def history_compaction_payload(
     if summary.estimated_cost_usd is not None:
         payload["history_compaction_cost_usd"] = summary.estimated_cost_usd
     return payload
+
+
+_COMPACTION_COMMIT_LOCK = threading.RLock()
+
+_COMMIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS compaction_commit (
+    session_id TEXT PRIMARY KEY,
+    source_json TEXT,
+    target_digest TEXT NOT NULL,
+    archive_digest TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL
+)
+"""
+
+
+def _commit_connection(state_dir: str):
+    path = _db_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=5.0)
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute(_COMMIT_SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(compaction_commit)")}
+    for name in ("archive_before_json", "archive_generation_json"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE compaction_commit ADD COLUMN {name} TEXT")
+    return conn
+
+
+def recover_compaction_commit(state_dir: str, session_id: str) -> str:
+    from .native_publication import native_publication
+    with native_publication(state_dir):
+        return _recover_compaction_commit(state_dir, session_id)
+
+
+def _recover_compaction_commit(state_dir: str, session_id: str) -> str:
+    """Finish a verified publication or restore its undo record on cold load.
+
+    Unlike telemetry, an unreadable pending commit raises: returning an empty
+    history here could hide lost user messages. No model or FTS is required.
+    """
+    import json
+    from .compaction_archive import json_digest, verified_archive_digest, restore_archive_generation
+    from .sessions import _write_transcript
+
+    if not _db_path(state_dir).is_file():
+        return "none"
+    conn = _commit_connection(state_dir)
+    try:
+        row = conn.execute(
+            "SELECT source_json, target_digest, archive_digest, status, "
+            "archive_before_json, archive_generation_json "
+            "FROM compaction_commit WHERE session_id=?", (session_id,),
+        ).fetchone()
+        if not row or row[3] != "pending":
+            return "none"
+        original, target_digest, archive_digest, _, before_json, generation_json = row
+        path = Path(state_dir) / "transcripts" / f"{session_id}.json"
+        valid = False
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            valid = (
+                json_digest(current) == target_digest
+                and verified_archive_digest(
+                    state_dir, session_id,
+                    json.loads(generation_json) if generation_json else None,
+                ) == archive_digest
+            )
+        except (OSError, ValueError):
+            pass
+        if valid:
+            if generation_json:
+                try:
+                    verified_archive_digest(
+                        state_dir, session_id,
+                        ancestor=json.loads(generation_json).get("head", ""),
+                    )
+                except (OSError, ValueError):
+                    restore_archive_generation(state_dir, session_id, json.loads(generation_json))
+            status = "committed"
+        else:
+            _write_transcript(state_dir, session_id, json.loads(original))
+            if before_json is not None:
+                restore_archive_generation(state_dir, session_id, json.loads(before_json))
+            status = "restored"
+        conn.execute(
+            "UPDATE compaction_commit SET status=?, source_json=NULL WHERE session_id=?",
+            (status, session_id),
+        )
+        conn.commit()
+        return status
+    finally:
+        conn.close()
+
+
+def commit_image_aged_transcript(
+    state_dir: str, session_id: str, source: dict, target: dict,
+) -> None:
+    """Retain exact changed rows as an indexed native-archive projection.
+
+    Indexes refer to source['history'] (without the system prefix). This is a
+    partial source revision, not another chronological transcript. The native
+    segment chain and chat archive bundles retain it after journal cleanup.
+    """
+    from .compaction_archive import json_digest
+
+    before, after = source["history"], target["history"]
+    if len(before) != len(after):
+        raise ValueError("Image aging must preserve transcript row count")
+    indexes = [i for i, (old, new) in enumerate(zip(before, after)) if old != new]
+    if not indexes:
+        return
+    projection = {
+        "role": "system",
+        "content": "[Original rows retained before image aging; indexed partial source revision]",
+        "_image_aging_projection": {
+            "version": 1,
+            "source_history_digest": json_digest(before),
+            "target_history_digest": json_digest(after),
+            "source_length": len(before),
+            "indexes": indexes,
+            "rows": [before[i] for i in indexes],
+        },
+    }
+    commit_compacted_transcript(state_dir, session_id, source, target, [projection])
+
+
+def commit_compacted_transcript(
+    state_dir: str, session_id: str, source: dict, target: dict, middle: list,
+) -> None:
+    from .native_publication import native_publication
+    with native_publication(state_dir):
+        _commit_compacted_transcript(state_dir, session_id, source, target, middle)
+
+
+def _commit_compacted_transcript(
+    state_dir: str, session_id: str, source: dict, target: dict, middle: list,
+) -> None:
+    """Journal undo -> verified complete archive -> durable residual -> commit.
+
+    Caller holds turn ownership and has fenced the source revision. The undo
+    payload lives only in the existing journal until publication is verified.
+    Search indexing is deliberately outside this durability protocol.
+    """
+    import json
+    from .compaction_archive import (
+        append_compaction_archive, json_digest, safe_session_id,
+        verified_archive_digest, _load_archive_document, compaction_archive_path,
+    )
+    from .sessions import _write_transcript
+
+    sid = safe_session_id(session_id)
+    if not state_dir or not sid:
+        raise OSError("Compaction requires a durable session")
+    recover_compaction_commit(state_dir, sid)
+    before = _load_archive_document(state_dir, sid)
+    if before is None and Path(compaction_archive_path(state_dir, sid)).exists():
+        raise OSError("Compaction archive unavailable or corrupt")
+    if before is not None:
+        verified_archive_digest(state_dir, sid, before)
+    conn = _commit_connection(state_dir)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO compaction_commit "
+            "(session_id, source_json, target_digest, archive_digest, status, archive_before_json) "
+            "VALUES (?, ?, ?, '', 'pending', ?)",
+            (sid, json.dumps(source), json_digest(target), json.dumps(before)),
+        )
+        conn.commit()
+        try:
+            if not append_compaction_archive(
+                state_dir, sid, middle, require_complete=True,
+                commit_id=json_digest(source) + json_digest(middle),
+            ):
+                raise OSError("Compaction archive could not retain complete history")
+            generation = _load_archive_document(state_dir, sid)
+            digest = verified_archive_digest(state_dir, sid, generation)
+            conn.execute(
+                "UPDATE compaction_commit SET archive_digest=?, archive_generation_json=? WHERE session_id=?",
+                (digest, json.dumps(generation), sid),
+            )
+            conn.commit()
+            _write_transcript(state_dir, sid, target)
+            conn.execute(
+                "UPDATE compaction_commit SET status='committed', source_json=NULL "
+                "WHERE session_id=?", (sid,),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if recover_compaction_commit(state_dir, sid) != "committed":
+                raise
+    finally:
+        conn.close()

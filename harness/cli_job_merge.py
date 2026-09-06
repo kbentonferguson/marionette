@@ -215,7 +215,7 @@ def merge_running_cli_jobs_all_projects(
     *,
     seen_ids: set,
     primary_state_dir: str = "",
-    tasks_by_job: dict[str, list] | None = None,
+    tasks_by_job: dict[tuple, list] | None = None,
 ) -> list[dict]:
     """Scan recent sibling PM project stores for running jobs.
 
@@ -257,7 +257,7 @@ def merge_running_cli_jobs_all_projects(
         collected: list[dict] = []
         for job in rows or []:
             jid = job.get("id") if isinstance(job, dict) else getattr(job, "id", None)
-            if not jid or jid in seen_ids:
+            if not jid:
                 continue
             status = (
                 job.get("status")
@@ -279,8 +279,11 @@ def merge_running_cli_jobs_all_projects(
             row["source"] = "cli"
             row["cli_state_dir"] = state_dir
             row["cross_project"] = True
+            key = job_read_key(row, store)
+            if key in seen_ids:
+                continue
             collected.append(row)
-            seen_ids.add(jid)
+            seen_ids.add(key)
         if tasks_by_job is not None and store is not None and collected:
             jids = [str(row.get("id") or "") for row in collected if row.get("id")]
             try:
@@ -288,13 +291,8 @@ def merge_running_cli_jobs_all_projects(
             except Exception:
                 loaded = {}
             for jid in jids:
-                tasks = list(loaded.get(jid) or [])
-                if not tasks:
-                    try:
-                        tasks = list(store.list_tasks(jid) or [])
-                    except Exception:
-                        tasks = []
-                tasks_by_job[jid] = tasks
+                tasks = list(loaded.get(jid, []))
+                tasks_by_job[job_read_key({"id": jid, "source": "cli", "cli_state_dir": state_dir}, store)] = tasks
         out.extend(collected)
     return out
 
@@ -317,7 +315,7 @@ def merge_scoped_cli_jobs(
     repo_root: str,
     workspace_root: str,
     registered_job_ids: list | set | None = None,
-) -> tuple[list[dict], Any | None, dict[str, list]]:
+) -> tuple[list[dict], Any | None, dict[tuple, list]]:
     """Return harness jobs plus Marionette-owned CLI jobs, tagged with ``source``.
 
     Cross-project running rows are admitted only when they carry Marionette
@@ -331,23 +329,23 @@ def merge_scoped_cli_jobs(
     """
     from .job_scoping import filter_store_jobs_with_tasks, job_visible_for_view, parse_job_session_id
 
-    harness_ids = {j.get("id") for j in harness_jobs if j.get("id")}
     merged: list[dict] = []
-    cli_tasks_by_job: dict[str, list] = {}
+    cli_tasks_by_job: dict[tuple, list] = {}
     for job in harness_jobs:
         row = dict(job)
         row.setdefault("source", "harness")
         merged.append(row)
 
-    seen_ids = set(harness_ids)
+    seen_ids = {job_read_key(j, harness_store) for j in merged}
     primary_state_dir = resolve_cli_state_dir(workspace_root) or ""
     cli_state = open_cli_durable_state(workspace_root)
     primary_store = None
 
     if cli_state is not None:
         try:
+            primary_state_dir = str(getattr(cli_state.store, "root", None) or primary_state_dir)
             cli_rows = _retry_on_locked(lambda: cli_state.list_jobs())
-            visible, cli_tasks_by_job = filter_store_jobs_with_tasks(
+            visible, primary_tasks = filter_store_jobs_with_tasks(
                 cli_rows,
                 cli_state.store,
                 active_session_id=active_session_id,
@@ -358,14 +356,18 @@ def merge_scoped_cli_jobs(
             )
             for job in visible:
                 jid = job.get("id")
-                if not jid or jid in seen_ids:
+                if not jid:
                     continue
                 row = dict(job)
                 row["source"] = "cli"
                 if primary_state_dir:
                     row["cli_state_dir"] = primary_state_dir
+                key = job_read_key(row, cli_state.store)
+                if key in seen_ids:
+                    continue
                 merged.append(row)
-                seen_ids.add(jid)
+                seen_ids.add(key)
+                cli_tasks_by_job[key] = primary_tasks.get(jid, [])
             primary_store = cli_state.store
         except Exception as exc:
             _log_merge_failure("cli_job_merge.merge_jobs", exc)
@@ -374,16 +376,16 @@ def merge_scoped_cli_jobs(
     # and operators who want workspace-scoped tracker views only.
     if cross_project_scan_enabled():
         try:
-            sibling_tasks: dict[str, list] = {}
+            sibling_tasks: dict[tuple, list] = {}
             for row in merge_running_cli_jobs_all_projects(
                 seen_ids=seen_ids,
                 primary_state_dir=primary_state_dir,
                 tasks_by_job=sibling_tasks,
             ):
                 jid = str(row.get("id") or "")
-                tasks = sibling_tasks.get(jid) or []
-                if jid and tasks:
-                    cli_tasks_by_job[jid] = tasks
+                key = job_read_key(row)
+                tasks = sibling_tasks.get(key, [])
+                cli_tasks_by_job[key] = tasks
                 if not job_visible_for_view(
                     session_id=parse_job_session_id(row.get("label"), tasks),
                     label=row.get("label"),
@@ -406,6 +408,39 @@ def merge_scoped_cli_jobs(
             _log_merge_failure("cli_job_merge.merge_running_all", exc)
 
     return merged, primary_store, cli_tasks_by_job
+
+
+def job_read_key(job: dict, store=None) -> tuple:
+    """Canonical store/source/job identity for read joins and deduplication."""
+    from puppetmaster.state import state_identity
+
+    source = job.get("source") or "harness"
+    root = getattr(store, "root", None) if store is not None else None
+    root = root or job.get("cli_state_dir")
+    state_id = state_identity(root) if root else (job.get("job_ref") or {}).get("state_id")
+    return (state_id, source, str(job.get("id") or ""))
+
+
+def job_stores_for_read(jobs: list[dict], harness_store, cli_store) -> dict:
+    """Resolve each row independently; an explicit unavailable CLI root stays unavailable."""
+    by_dir: dict = {}
+    out: dict = {}
+    for job in jobs:
+        if job.get("source") != "cli":
+            store = harness_store
+        elif job.get("cli_state_dir"):
+            key = job_read_key(job)[0]
+            if key not in by_dir:
+                if cli_store is not None and job_read_key(job, cli_store)[0] == key:
+                    by_dir[key] = cli_store
+                else:
+                    durable = open_cli_durable_at(job["cli_state_dir"])
+                    by_dir[key] = getattr(durable, "store", None)
+            store = by_dir[key]
+        else:
+            store = cli_store
+        out[job_read_key(job, store)] = store
+    return out
 
 
 def partition_jobs_by_store(
@@ -449,33 +484,43 @@ def cli_stores_by_job(jobs: list[dict]) -> dict[str, Any]:
     return out
 
 
-def bulk_load_store_artifacts(store, job_ids: list[str]) -> dict:
+def bulk_load_store_artifacts(store, job_ids: list[str], *, unavailable: set | None = None) -> dict:
     arts_by_job: dict = {}
     if not store or not job_ids:
+        if store is None and unavailable is not None:
+            unavailable.update(job_ids)
         return arts_by_job
     try:
         for art in _retry_on_locked(lambda: store.list_artifacts_for_jobs(job_ids)):
             arts_by_job.setdefault(getattr(art, "job_id", None), []).append(art)
     except Exception:
+        arts_by_job.clear()
         for jid in job_ids:
             try:
                 arts_by_job[jid] = _retry_on_locked(lambda j=jid: store.list_artifacts(j))
             except Exception:
+                if unavailable is not None:
+                    unavailable.add(jid)
                 arts_by_job[jid] = []
     return arts_by_job
 
 
-def bulk_load_store_tasks(store, job_ids: list[str]) -> dict:
+def bulk_load_store_tasks(store, job_ids: list[str], *, unavailable: set | None = None) -> dict:
     tasks_by_job: dict = {}
     if not store or not job_ids:
+        if store is None and unavailable is not None:
+            unavailable.update(job_ids)
         return tasks_by_job
     try:
         for task in _retry_on_locked(lambda: store.list_tasks_for_jobs(job_ids)):
             tasks_by_job.setdefault(getattr(task, "job_id", None), []).append(task)
     except Exception:
+        tasks_by_job.clear()
         for jid in job_ids:
             try:
                 tasks_by_job[jid] = _retry_on_locked(lambda j=jid: store.list_tasks(j))
             except Exception:
+                if unavailable is not None:
+                    unavailable.add(jid)
                 tasks_by_job[jid] = []
     return tasks_by_job

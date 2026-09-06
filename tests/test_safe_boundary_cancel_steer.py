@@ -258,8 +258,8 @@ def test_interrupt_source_has_no_unsafe_thread_kill():
         assert token not in src, f"unsafe kill primitive leaked into interrupt: {token}"
 
 
-def test_http_cancel_and_interrupt_share_dual_store_seam(monkeypatch):
-    """Membership cancel (HTTP) and drain (interrupt) use the same helpers."""
+def test_http_cancel_refuses_while_interrupt_retains_dual_store_seam(monkeypatch):
+    """HTTP cannot promise a worker stop through the legacy drain helper."""
     label = job_label_for_session("sess-x")
     harness = _FakeStore([{"id": "harness-only", "label": label}])
     cli = _FakeStore([{"id": "cli-only", "label": label}])
@@ -281,7 +281,7 @@ def test_http_cancel_and_interrupt_share_dual_store_seam(monkeypatch):
     assert cli.cancelled == ["cli-only"]
     assert harness.cancelled == []
 
-    # Production HTTP handler still resolves CLI-only jobs.
+    # HTTP refuses an unscoped durable cancellation without further mutation.
     svc = _job_services(
         get_pilot=lambda: SimpleNamespace(cancel_local_job=lambda _j: False),
         get_session=lambda: SimpleNamespace(
@@ -289,9 +289,10 @@ def test_http_cancel_and_interrupt_share_dual_store_seam(monkeypatch):
         ),
     )
     code, body = post_swarm_cancel({"job_id": "harness-only"}, svc)
-    assert code == 200
-    assert body["ok"] is True
-    assert harness.cancelled == ["harness-only"]
+    assert code == 409
+    assert body["ok"] is False
+    assert harness.cancelled == []
+    assert cli.cancelled == ["cli-only"]
 
 
 def test_cancel_job_dual_store_does_not_resolve_sibling(monkeypatch):

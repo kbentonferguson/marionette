@@ -10,7 +10,7 @@ import type { Extension } from "@codemirror/state";
 
 /**
  * Load pending reviews for the open editor path and build the in-file
- * Accept/Reject CodeMirror extension (same apply_review + seeded keys as the pane).
+ * Accept/Reject CodeMirror extension with explicit selected-hunk scope.
  */
 export function useInFileReview(editorPath: string): {
   extension: Extension;

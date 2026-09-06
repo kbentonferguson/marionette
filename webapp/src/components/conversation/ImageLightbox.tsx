@@ -2,6 +2,7 @@
  * Fullscreen image lightbox for transcript / attachment previews.
  */
 
+import { ImageResource } from "./ImageResource";
 import { useRef } from "react";
 import { X } from "lucide-react";
 import { OverlayPortal } from "../../lib/overlayPortal";
@@ -39,7 +40,7 @@ export default function ImageLightbox({
           >
             <X size={16} />
           </button>
-          <img
+          <ImageResource
             src={url}
             alt="Enlarged screenshot"
             className="max-w-full max-h-[80vh] object-contain rounded-lg border border-edge shadow-2xl"

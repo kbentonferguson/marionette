@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .pilot_replacement import (input_projection, input_conversion, input_publication,
+                                replacement_gate, note_input_stop, check_input_owner)
+
+from .prompt_queue import PromptQueueError
+
 """Steer mixin: mid-turn interrupt enqueue/drain/inject helpers.
 
 Extracted mechanically from harness/conversation.py to continue decomposing the
@@ -25,6 +30,7 @@ from .session_actions import (
     DeliveryPolicy,
     SessionAction,
     SessionActionStore,
+    SessionActionIllegalTransition,
     SteerQueueView,
     injectable_kinds,
 )
@@ -84,8 +90,17 @@ class SteerMixin:
             self._session_actions = store
         if not isinstance(getattr(self, "_steer_queue", None), SteerQueueView):
             self._steer_queue = SteerQueueView(store)
+        if hasattr(self, '_queue_lock'):
+            def retain(action):
+                from .input_receipts import session_input_store
+                receipt = session_input_store(self).admit(
+                    action.text, images=action.images,
+                    upload_root=getattr(self, '_input_upload_root', None), input_id=action.id)
+                action.id = receipt['id']
+            store.retain_input = retain
         return store
 
+    @input_projection
     def admit_session_action(self, kind, text: str = "", **kwargs) -> SessionAction:
         """Locked admit into the session store (HTTP RecoverTurn / turn input)."""
         with self._steer_lock:
@@ -98,12 +113,28 @@ class SteerMixin:
         an abandoned generator or contaminate a later unrelated user send.
         """
         with self._steer_lock:
-            dropped = self._action_store().clear()
+            store = self._action_store()
+            if hasattr(self, '_queue_lock'):
+                from .input_receipts import session_input_store
+                receipts = session_input_store(self)
+                known = {r['id']: r for r in receipts.list()}
+                for action in list(store):
+                    if action.id in known and known[action.id]['status'] not in ('injected', 'dropped'):
+                        receipts.transition(action.id, 'dropped', 'stop')
+            dropped = store.clear()
         try:
             self._steer_pending = False
         except Exception:
             pass
         return [action.text for action in dropped if str(action.text or "").strip()]
+
+    def retire_input_receipts_after_stop(self, preserve_input_id=None):
+        with replacement_gate(self):
+            check_input_owner(self)
+            note_input_stop(self, preserve_input_id)
+            receipts = getattr(self, '_input_receipts', None)
+            if receipts is not None:
+                receipts.retire_after_stop(preserve_input_id)
 
     @staticmethod
     def _steer_drop_notice_text(dropped: list[str]) -> str:
@@ -147,7 +178,8 @@ class SteerMixin:
         from .conversation import ConvEvent
         yield ConvEvent("notice", dict(pending))
 
-    def steer_with_images(self, text: str, images: Optional[list] = None) -> str:
+    @input_conversion
+    def steer_with_images(self, text: str, images: Optional[list] = None, *, input_id=None, expected_turn_id=None) -> str:
         """Enqueue a steer with attached images.
 
         Mid-turn steers are text-only user messages at a safe boundary, so they
@@ -170,6 +202,13 @@ class SteerMixin:
         cleaned = text.strip() if text and text.strip() else ""
         paths = [p for p in (images or []) if p]
         if paths:
+            receipt_id = input_id
+            if receipt_id is None and hasattr(self, '_queue_lock'):
+                from .input_receipts import session_input_store
+                with input_publication(self):
+                    receipt_id = session_input_store(self).admit(
+                        text or '', images=paths, upload_root=getattr(self, '_input_upload_root', None))['id']
+                input_id = receipt_id
             try:
                 from .vision import session_supports_native_images
                 if session_supports_native_images(self):
@@ -178,8 +217,8 @@ class SteerMixin:
                     # notice here would double-paint chrome on busy Enter.
                     if hasattr(self, "enqueue_prompt"):
                         self.enqueue_prompt(
-                            cleaned or "(see attached image)",
-                            images=paths,
+                            text or "(see attached image)",
+                            images=paths, upload_root=getattr(self, "_input_upload_root", None), input_id=input_id,
                         )
                         return DeliveryAction.ENQUEUE_PROMPT.value
                     notice = (
@@ -189,8 +228,11 @@ class SteerMixin:
                         "vision-capable but mid-turn steers cannot carry "
                         "pixels — send as a follow-up turn]"
                     )
-                    self.enqueue_steer(notice)
+                    self.enqueue_steer(notice, input_id=input_id, expected_turn_id=expected_turn_id)
                     return DeliveryAction.ENQUEUE_STEER.value
+                if receipt_id is not None:
+                    from .input_receipts import session_input_store
+                    _, paths = session_input_store(self).delivery_content(receipt_id, '')
                 from .vision import transcribe_images
                 parts = [cleaned] if cleaned else []
                 for r in transcribe_images(paths):
@@ -198,19 +240,21 @@ class SteerMixin:
                         parts.append(f"[attached image could not be read: {r.error}]")
                     elif getattr(r, "text", ""):
                         parts.append(f"[attached image]\n{r.text}")
-                combined = "\n\n".join(p for p in parts if p)
+                combined = "\n\n".join(p for p in parts if p) or "[attached image produced no transcription]"
                 if combined:
-                    self.enqueue_steer(combined)
+                    self.enqueue_steer(combined, input_id=receipt_id, expected_turn_id=expected_turn_id)
                 return DeliveryAction.ENQUEUE_STEER.value
+            except (PromptQueueError, SessionActionIllegalTransition):
+                raise
             except Exception as e:
                 parts = [cleaned] if cleaned else []
                 parts.append(f"[attached image transcription failed: {e}]")
                 combined = "\n\n".join(p for p in parts if p)
                 if combined:
-                    self.enqueue_steer(combined)
+                    self.enqueue_steer(combined, input_id=receipt_id, expected_turn_id=expected_turn_id)
                 return DeliveryAction.ENQUEUE_STEER.value
         if cleaned:
-            self.enqueue_steer(cleaned)
+            self.enqueue_steer(text, input_id=input_id, expected_turn_id=expected_turn_id)
             return DeliveryAction.ENQUEUE_STEER.value
         return ""
 
@@ -234,7 +278,8 @@ class SteerMixin:
             # Fail closed under Stop hold if the lock is unreadable.
             return True
 
-    def enqueue_steer(self, text: str, *, expected_turn_id: Optional[str] = None) -> None:
+    @input_projection
+    def enqueue_steer(self, text: str, *, expected_turn_id: Optional[str] = None, input_id=None):
         """Append a pending mid-turn user steer.
 
         Thin adapter: admits ``kind=steer`` with ``delivery=next_turn_boundary``.
@@ -244,39 +289,82 @@ class SteerMixin:
         runners chrome (cleared on the next real user send).
         """
         cleaned = (text or "").strip()
+        if input_id and hasattr(self, '_queue_lock'):
+            from .input_receipts import session_input_store
+            receipts = session_input_store(self)
+            receipt = receipts.get(input_id)
+            if receipt['status'] != 'accepted' or receipt['owner_instance'] != receipts.instance:
+                from .input_receipts import InputReceiptError
+                raise InputReceiptError('input_held', 'Input delivery was stopped or held; inspect Saved inputs.')
+            text, _ = receipts.delivery_content(input_id, text)
+            cleaned = text.strip()
         if not cleaned:
             return
-        if self._abandoned_turn_blocks_steer_enqueue():
-            self._record_steer_drop_notice([cleaned])
-            return
         with self._steer_lock:
-            self._action_store().admit(
+            if self._abandoned_turn_blocks_steer_enqueue():
+                if hasattr(self, '_queue_lock'):
+                    from .input_receipts import session_input_store
+                    receipts = session_input_store(self)
+                    receipt = receipts.get(input_id) if input_id else receipts.admit(text)
+                    receipts.transition(receipt['id'], 'dropped', 'stop')
+                self._record_steer_drop_notice([cleaned])
+                return
+            return self._action_store().admit(
                 ActionKind.STEER,
-                cleaned,
+                text,
                 delivery=DeliveryPolicy.NEXT_TURN_BOUNDARY,
                 expected_turn_id=expected_turn_id,
+                input_id=input_id,
             )
+
+    def _drain_ready_input_actions(self, policy, kinds):
+        with self._steer_lock:
+            store = self._action_store()
+            ready = [a for a in store if a.kind in kinds and a.delivery is policy]
+            if hasattr(self, '_queue_lock'):
+                from .input_receipts import session_input_store
+                receipts = session_input_store(self)
+                known = {r['id']: r for r in receipts.list()}
+                for action in ready:
+                    if action.id not in known:
+                        receipts.admit(action.text, images=action.images, input_id=action.id,
+                                       upload_root=getattr(self, '_input_upload_root', None))
+                    receipts.transition(action.id, 'delivering')
+            return store.drain_ready(policy, kinds=kinds)
 
     def _drain_steer_actions(self) -> List[SessionAction]:
-        """Pop steer/mailbox actions ready at the next-turn boundary."""
-        with self._steer_lock:
-            return self._action_store().drain_ready(
-                DeliveryPolicy.NEXT_TURN_BOUNDARY,
-                kinds=injectable_kinds(),
-            )
+        return self._drain_ready_input_actions(DeliveryPolicy.NEXT_TURN_BOUNDARY, injectable_kinds())
 
     def drain_steer(self) -> list[str]:
-        """Atomically pop and return all pending steer/mailbox texts (empty if none)."""
         return [action.text for action in self._drain_steer_actions()]
 
+    def _drain_mailbox_actions(self):
+        return self._drain_ready_input_actions(DeliveryPolicy.WHEN_RUN_IDLE, (ActionKind.MAILBOX,))
+
     def drain_mailbox(self) -> list[str]:
-        """Pop mailbox actions due when the run is idle."""
+        return [a.text for a in self._drain_mailbox_actions() if a.text.strip()]
+
+    def _publish_input_actions(self, actions, contents, *, display=True):
+        """Append a complete batch and persist its IDs before releasing events."""
         with self._steer_lock:
-            actions = self._action_store().drain_ready(
-                DeliveryPolicy.WHEN_RUN_IDLE,
-                kinds=(ActionKind.MAILBOX,),
-            )
-        return [action.text for action in actions if str(action.text or "").strip()]
+            receipts = None
+            if hasattr(self, '_queue_lock'):
+                from .input_receipts import session_input_store
+                receipts = session_input_store(self)
+            if self._steer_boundary_blocks_inject():
+                if receipts is not None:
+                    for action in actions:
+                        receipts.transition(action.id, 'dropped', 'stop_before_injection')
+                self._record_steer_drop_notice([a.text for a in actions])
+                return False
+            for action, content in zip(actions, contents):
+                self._history.append({'role': 'user', 'content': content, 'input_id': action.id})
+                transcript = getattr(self, '_display_transcript', None)
+                if display and transcript is not None:
+                    transcript.append({'type': 'message', 'role': 'user', 'text': action.text, 'input_id': action.id})
+            if receipts is not None:
+                receipts.publish_injected([a.id for a in actions], self.export_transcript_data())
+            return True
 
     @staticmethod
     def _format_steer_user_content(text: str) -> str:
@@ -379,42 +467,31 @@ class SteerMixin:
             else:
                 yield from self._flush_steer_drop_notice()
             return
-        actions = self._drain_steer_actions()
-        if not actions:
-            return
         if not self._steer_inject_boundary_is_safe():
             # Keep pending until pairs complete (or sanitize heals them). Signal
             # the action loop to abandon remaining tools so the next step can
             # inject at a safe boundary — do NOT insert a user row between
             # assistant tool_use and tool_result.
-            with self._steer_lock:
-                self._action_store().requeue_front(actions)
             self._steer_pending = True
             return
+        actions = self._drain_steer_actions()
+        if not actions:
+            return
+        contents = []
         for action in actions:
-            steer = action.text
-            content = self._format_steer_user_content(steer)
+            content = self._format_steer_user_content(action.text)
             try:
                 from .task_transaction import context_block
-
-                extra = context_block(getattr(self, "_task_tx", None))
+                extra = context_block(getattr(self, '_task_tx', None))
                 if extra:
-                    content = content + "\n\n" + extra
+                    content += '\n\n' + extra
             except Exception:
                 pass
-            yield ConvEvent("steer", {"text": steer})
-            self._history.append({"role": "user", "content": content})
-            try:
-                display = getattr(self, "_display_transcript", None)
-                if display is not None:
-                    display.append({
-                        "type": "message",
-                        "role": "user",
-                        "text": steer,
-                    })
-            except Exception:
-                pass
+            contents.append(content)
+        if self._publish_input_actions(actions, contents):
             self._steer_pending = True
+            for action in actions:
+                yield ConvEvent('steer', {'text': action.text, 'input_id': action.id})
 
     def _tool_result_is_adjacent(self, i: int) -> bool:
         """True when the tool-role message at history index ``i`` is part of the

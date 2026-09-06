@@ -362,11 +362,10 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/worktrees/remove": post_json(
             _wt_api.post_worktrees_remove, services=svc.worktree_services),
         "/api/worktrees/prune": post_json(
-            _wt_api.post_worktrees_prune, services=svc.worktree_services,
-            needs_body=False),
+            _wt_api.post_worktrees_prune, services=svc.worktree_services),
         "/api/worktrees/prune-edit-branches": post_json(
             _wt_api.post_worktrees_prune_edit_branches,
-            services=svc.worktree_services, needs_body=False),
+            services=svc.worktree_services),
         "/api/worktrees/max": post_json(
             _wt_api.post_worktrees_max, services=svc.worktree_services),
         "/api/hooks/add": post_json(_hooks_api.post_hooks_add),
@@ -510,6 +509,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import files as _files_api
     from .api import git as _git_api
     from .api import hooks as _hooks_api
+    from .api import job_evidence as _job_evidence_api
     from .api import jobs as _jobs_api
     from .api import mcp as _mcp_api
     from .api import platform as _plat_api
@@ -564,7 +564,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     def _get_image(handler: Any, u: Any, qs: dict) -> Any:
         req_path = qs.get("path", [""])[0]
         status, body_or_err, ctype = _files_api.get_image(
-            req_path, svc.get_upload_dir())
+            req_path, svc.get_upload_dir(), **({'session': svc.session_control_services().get_pilot()} if req_path.startswith('input:') else {}))
         if isinstance(body_or_err, dict):
             return send_json(handler, status, body_or_err)
         return handler._send(status, body_or_err, ctype)
@@ -617,24 +617,45 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             return send_json(handler, err[0], err[1])
         return handler._stream_run(qs.get("prompt", [""])[0], imgs)
 
+    def _stream_submission(qs, text_field, raw_query):
+        fields = {key: qs[key][0] for key in ('input_id', 'handoff_token', 'retry_key', 'session_id', 'original_text') if qs.get(key)}
+        # The global parser drops blank values; an explicit empty original
+        # still distinguishes a new attachment-only draft from a legacy client.
+        original = parse_qs(raw_query, keep_blank_values=True).get('original_text')
+        if original is not None:
+            fields['original_text'] = original[0]
+        if qs.get('documents'):
+            fields['documents'] = json.loads(qs['documents'][0])
+            if not isinstance(fields['documents'], list):
+                raise ValueError('documents must be a list')
+        text = qs.get(text_field, [''])[0]
+        images = qs.get('images', [''])[0]
+        mid = qs.get('mid', [''])[0]
+        if mid:
+            stashed = svc.stash_pop(mid)
+            if stashed is None:
+                raise LookupError('stashed input expired')
+            text = stashed.get('message', '')
+            images = '|'.join(stashed.get('images') or [])
+            for key in ('documents', 'input_id', 'handoff_token', 'retry_key', 'session_id', 'original_text'):
+                if key in stashed:
+                    fields[key] = stashed[key]
+        return text, images, fields
+
     def _get_chat(handler: Any, u: Any, qs: dict) -> Any:
-        from .api.streams import (
-            resolve_stashed_chat_message,
-            validate_upload_image_paths,
-        )
-        message, raw_images = resolve_stashed_chat_message(
-            qs.get("mid", [""])[0],
-            qs.get("message", [""])[0],
-            qs.get("images", [""])[0],
-            svc.stash_pop,
-        )
-        imgs, err = validate_upload_image_paths(raw_images, svc.get_upload_dir())
+        from .api.streams import validate_upload_image_paths
+        try:
+            message, raw_images, receipt_args = _stream_submission(qs, 'message', u.query)
+        except LookupError:
+            return send_json(handler, 409, {'ok': False, 'code': 'input_stash_expired', 'error': 'Input staging expired. Your draft can be submitted again.'})
+        except (ValueError, TypeError):
+            return send_json(handler, 400, {'ok': False, 'code': 'input_invalid', 'error': 'Invalid input submission.'})
+        imgs, err = validate_upload_image_paths(raw_images, svc.get_upload_dir(), **({'session': svc.session_control_services().get_pilot()} if 'input:' in raw_images else {}))
         if err is not None:
             return send_json(handler, err[0], err[1])
-        plan_val = qs.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
-        resume_val = qs.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
-        return handler._stream_chat(
-            message, imgs, plan=plan_val, resume=resume_val)
+        plan_val = qs.get('plan', ['false'])[0].lower() in ('true', '1', 'yes')
+        resume_val = qs.get('resume', ['false'])[0].lower() in ('true', '1', 'yes')
+        return handler._stream_chat(message, imgs, plan=plan_val, resume=resume_val, **receipt_args)
 
     def _get_chat_events(handler: Any, u: Any, qs: dict) -> Any:
         since_raw = qs.get("since", ["0"])[0]
@@ -669,6 +690,16 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         )
         return send_json(handler, status, payload)
 
+    def _get_backend_lifetime(handler: Any, u: Any, qs: dict) -> Any:
+        from .backend_lifetime import get_status
+        status, payload = get_status()
+        return send_json(handler, status, payload)
+
+    def _get_endpoint(handler: Any, u: Any, qs: dict) -> Any:
+        from .api.endpoint import get_endpoint
+        status, payload = get_endpoint(svc.endpoint_identity)
+        return send_json(handler, status, payload)
+
     def _get_session_events(handler: Any, u: Any, qs: dict) -> Any:
         """GET /api/session/events — unified store cursor (read_events_since)."""
         status, payload = _session_events_api.read_events_since_http(
@@ -677,6 +708,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
                 sse_services=svc.sse_services,
                 session_control_services=svc.session_control_services,
             ),
+            versioned=handler.headers.get("X-Harness-Protocol") == "1",
         )
         return send_json(handler, status, payload)
 
@@ -690,20 +722,17 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         return handler._swap_pilot(qs.get("model", [""])[0])
 
     def _get_auto(handler: Any, u: Any, qs: dict) -> Any:
-        from .api.streams import (
-            resolve_stashed_chat_message,
-            validate_upload_image_paths,
-        )
-        objective, raw_images = resolve_stashed_chat_message(
-            qs.get("mid", [""])[0],
-            qs.get("objective", [""])[0],
-            qs.get("images", [""])[0],
-            svc.stash_pop,
-        )
-        imgs, err = validate_upload_image_paths(raw_images, svc.get_upload_dir())
+        from .api.streams import validate_upload_image_paths
+        try:
+            objective, raw_images, receipt_args = _stream_submission(qs, 'objective', u.query)
+        except LookupError:
+            return send_json(handler, 409, {'ok': False, 'code': 'input_stash_expired', 'error': 'Input staging expired. Your draft can be submitted again.'})
+        except (ValueError, TypeError):
+            return send_json(handler, 400, {'ok': False, 'code': 'input_invalid', 'error': 'Invalid input submission.'})
+        imgs, err = validate_upload_image_paths(raw_images, svc.get_upload_dir(), **({'session': svc.session_control_services().get_pilot()} if 'input:' in raw_images else {}))
         if err is not None:
             return send_json(handler, err[0], err[1])
-        return handler._stream_auto(objective, imgs)
+        return handler._stream_auto(objective, imgs, **receipt_args)
 
     def _get_sessions_export(handler: Any, u: Any, qs: dict) -> Any:
         return _sessions_api.write_sessions_export(
@@ -724,6 +753,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _session_perf_api.get_session_performance,
             services=svc.session_control_services,
             pass_qs=True),
+        "/api/endpoint": _get_endpoint,
+        "/api/backend/lifetime": _get_backend_lifetime,
         "/api/session/events": _get_session_events,
         "/api/session/goal": get_json(
             _sc_api.get_session_goal, services=svc.session_control_services,
@@ -824,12 +855,16 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/platform": get_json(
             _plat_api.get_platform, services=svc.platform_services),
         "/api/jobs": _get_jobs,
+        "/api/jobs/evidence": get_json(
+            _job_evidence_api.get_job_evidence, services=svc.job_services, pass_qs=True),
         "/api/jobs/events": get_json(
             _jobs_api.get_job_events, services=svc.job_services, pass_qs=True),
         "/api/usage": get_json(
             _usage_api.get_usage, services=svc.usage_services, qs_arg="repo"),
         "/api/economics": get_json(
             _econ_api.get_economics, services=svc.economics_services, pass_qs=True),
+        "/api/jobs/artifacts/v1": get_json(
+            _jobs_api.get_scoped_artifacts, services=svc.job_services, pass_qs=True),
         "/api/artifacts": get_json(
             _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id",
             empty_as_none=True),
@@ -848,11 +883,13 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/terminal/stream": _get_terminal_stream,
         "/api/pilot": _get_pilot,
         "/api/context/usage": get_json(
-            _usage_api.get_context_usage, services=svc.usage_services),
+            lambda session_id, usage: _usage_api.get_context_usage(usage, session_id),
+            services=svc.usage_services, qs_arg="session_id"),
         "/api/workspaces": get_json(
             _ws_api.get_workspaces, services=svc.workspace_services),
         "/api/worktrees": get_json(
-            _wt_api.get_worktrees, services=svc.worktree_services),
+            lambda qs, services: _wt_api.get_worktrees(services, qs.get("repo", [""])[0]),
+            services=svc.worktree_services, pass_qs=True),
         "/api/hooks": get_json(_hooks_api.get_hooks),
         "/api/schedules": get_json(_sched_api.get_schedules),
         "/api/schedules/history": get_json(

@@ -131,3 +131,62 @@ test("sanitizedStreamConnError: carries only the errno code", () => {
   assert.equal(payload.code, "ECONNREFUSED");
   assert.ok(!JSON.stringify(payload).includes(SECRET_TOKEN));
 });
+
+for (const code of ["input_commit_uncertain", "input_stopped"]) test(`${code} keeps its code without forwarding backend body text`, () => {
+  const res = fakeResponse(503);
+  const calls = wireWithRecorder(res);
+  res.emit("data", JSON.stringify({ ok: false, code, error: SECRET_TOKEN }));
+  res.emit("end");
+  assert.equal(calls.done, 0);
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0].code, code);
+  assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
+});
+
+test("unknown structured input error codes remain sanitized", () => {
+  const res = fakeResponse(503);
+  const calls = wireWithRecorder(res);
+  res.emit("data", JSON.stringify({ code: `input_${SECRET_TOKEN}`, error: SECRET_TOKEN }));
+  res.emit("end");
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0].code, "backend_error");
+  assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
+});
+
+test("oversized error bodies settle once with the coarse HTTP error", () => {
+  const res = fakeResponse(503);
+  const calls = wireWithRecorder(res);
+  res.emit("data", "x".repeat(4097));
+  res.emit("end");
+  res.emit("aborted");
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0].code, "backend_error");
+  assert.equal(calls.done, 0);
+  assert.equal(res.destroyed, true);
+});
+
+test("real HTTP input rejection reaches the renderer contract with its safe code", async () => {
+  const http = require("node:http");
+  const server = http.createServer((_req, res) => {
+    res.writeHead(503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, code: "input_attachment_unavailable", error: SECRET_TOKEN }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const payload = await new Promise((resolve, reject) => {
+      const req = http.get({ host: "127.0.0.1", port: server.address().port }, (res) => {
+        wireStreamResponse(res, {
+          onEvent: () => reject(new Error("HTTP failure emitted an SSE event")),
+          onDone: () => reject(new Error("HTTP failure emitted completion")),
+          onError: resolve,
+        });
+      });
+      req.on("error", reject);
+    });
+    assert.equal(payload.code, "input_attachment_unavailable");
+    assert.equal(payload.status, 503);
+    assert.ok(!JSON.stringify(payload).includes(SECRET_TOKEN));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

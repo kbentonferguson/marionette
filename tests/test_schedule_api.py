@@ -26,6 +26,7 @@ def test_get_schedules_empty(sched_state):
 
 def test_add_list_enable_disable_history(sched_state):
     status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state),
         "name": "nightly",
         "objective": "audit",
         "cron": "0 2 * * *",
@@ -63,32 +64,29 @@ def test_add_list_enable_disable_history(sched_state):
     assert hist["runs"][0]["status"] == "ok"
 
 
-def test_add_rejects_nonempty_timezone_iana_deferred(sched_state):
+def test_add_accepts_iana_timezone(sched_state):
     status, body = sched_api.post_schedules_add({
-        "name": "bad",
-        "objective": "o",
-        "cron": "0 0 * * *",
-        "timezone": "America/New_York",
-    })
-    assert status == 400
-    assert "IANA" in body["error"]
-    assert "deferred" in body["error"].lower()
-
-
-def test_update_rejects_nonempty_timezone_iana_deferred(sched_state):
-    status, added = sched_api.post_schedules_add({
-        "name": "x", "objective": "o", "cron": "0 0 * * *",
+        "repo": str(sched_state), "name": "iana", "objective": "o",
+        "cron": "0 0 * * *", "timezone": "America/New_York",
     })
     assert status == 200
-    status, body = sched_api.post_schedules_update({
-        "id": added["id"], "timezone": "UTC",
+    assert body["timezone"] == "America/New_York"
+    assert body["timezone_mode"] == "iana"
+
+
+def test_update_accepts_iana_timezone(sched_state):
+    status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state), "name": "x", "objective": "o", "cron": "0 0 * * *",
     })
-    assert status == 400
-    assert "IANA" in body["error"]
+    assert status == 200
+    status, body = sched_api.post_schedules_update({"id": added["id"], "timezone": "UTC"})
+    assert status == 200
+    assert body["timezone"] == "UTC"
 
 
 def test_add_allows_empty_timezone_host_local(sched_state):
     status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state),
         "name": "local", "objective": "o", "cron": "0 0 * * *",
         "timezone": "",
     })
@@ -99,6 +97,7 @@ def test_add_allows_empty_timezone_host_local(sched_state):
 
 def test_remove_and_missing(sched_state):
     status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state),
         "name": "gone", "objective": "o", "cron": "* * * * *",
     })
     sid = added["id"]
@@ -158,6 +157,7 @@ def test_run_now_ok(sched_state, tmp_path, monkeypatch):
 
 def test_add_and_update_missed_policy(sched_state):
     status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state),
         "name": "all", "objective": "o", "cron": "0 * * * *",
         "missed_policy": "all",
     })
@@ -171,12 +171,13 @@ def test_add_and_update_missed_policy(sched_state):
     status, closed = sched_api.post_schedules_update({
         "id": added["id"], "missed_policy": "bogus",
     })
-    assert status == 200
-    assert closed["missed_policy"] == "once"
+    assert status == 400
+    assert "missed_policy" in closed["error"]
 
 
 def test_add_and_update_continuity_and_failure_deliver(sched_state):
     status, added = sched_api.post_schedules_add({
+        "repo": str(sched_state),
         "name": "watch", "objective": "o", "cron": "0 * * * *",
         "monitor_mode": True,
         "notepad": "watch flake rate",
@@ -200,8 +201,8 @@ def test_add_and_update_continuity_and_failure_deliver(sched_state):
     status, closed = sched_api.post_schedules_update({
         "id": added["id"], "failure_deliver": "bogus",
     })
-    assert status == 200
-    assert closed["failure_deliver"] == "route"
+    assert status == 400
+    assert "failure_deliver" in closed["error"]
 
 
 def test_history_requires_id(sched_state):

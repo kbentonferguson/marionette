@@ -10,7 +10,8 @@ from harness.prompt_queue import PromptQueueMixin
 
 
 MOVED_METHODS = (
-    "_save_prompt_queue",
+    "bind_prompt_queue",
+    "_commit_queue",
     "_load_prompt_queue",
     "enqueue_prompt",
     "list_prompts",

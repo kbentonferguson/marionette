@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
+import sqlite3
+from uuid import UUID
 from typing import Any, Dict, List, Optional, Union
 
 from ..schedule_core import (
@@ -13,12 +16,15 @@ from ..schedule_core import (
     parse_failure_deliver,
     parse_missed_policy,
     timezone_mode,
+    validate_timezone,
+    schedule_wall,
 )
 from ..schedule_store import (
     REMOVE_CANCEL_REQUESTED,
     REMOVE_REMOVED,
     REMOVE_STALE_RECOVERED,
     ScheduleStore,
+    ScheduleConflict,
     default_db_path,
 )
 
@@ -30,12 +36,15 @@ def _store() -> ScheduleStore:
 
 
 def _next_fire_previews(schedule: Schedule, count: int = 3) -> List[str]:
-    """Host-local ISO minute previews (IANA per-schedule zones deferred)."""
+    """Wall time with UTC offset for IANA schedules; empty when paused/invalid."""
+    if not schedule.enabled:
+        return []
     try:
         cron = CronExpr.parse(schedule.cron)
+        validate_timezone(schedule.timezone)
+        cur = schedule_wall(schedule, datetime.now())
     except ValueError:
         return []
-    cur = datetime.now()
     out: List[str] = []
     for _ in range(count):
         try:
@@ -55,11 +64,13 @@ def _schedule_payload(schedule: Schedule) -> Dict[str, Any]:
         "repo": schedule.repo,
         "swarm_adapter": schedule.swarm_adapter,
         "driver": schedule.driver,
+        "delivery_mode": schedule.delivery_mode,
         "enabled": schedule.enabled,
         "max_tokens": schedule.max_tokens,
         "max_seconds": schedule.max_seconds,
         "max_swarms": schedule.max_swarms,
-        "timezone": "",
+        "timezone": schedule.timezone,
+        "revision": schedule.revision,
         "timezone_mode": timezone_mode(schedule),
         "display_status": schedule.display_status(),
         "last_status": schedule.last_status,
@@ -77,20 +88,50 @@ def _schedule_payload(schedule: Schedule) -> Dict[str, Any]:
 
 
 def _require_id(body: dict) -> Optional[str]:
-    sid = (body.get("id") or "").strip()
+    raw = body.get("id")
+    sid = raw.strip() if isinstance(raw, str) else ""
     return sid or None
 
 
-def _reject_timezone_if_set(body: dict) -> Optional[tuple[int, JsonPayload]]:
-    """IANA per-schedule zones are deferred; HTTP stays host-local only."""
-    if "timezone" not in body:
-        return None
-    raw = body.get("timezone")
-    if raw is None:
-        return None
-    if str(raw).strip():
-        return 400, {"error": "IANA timezone deferred; use host-local (omit timezone)"}
-    return None
+def _write_fields(body: dict, *, creating: bool = False) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {}
+    for key in ("name", "objective", "cron", "repo", "driver", "swarm_adapter",
+                "timezone", "notepad", "missed_policy", "failure_deliver"):
+        if key not in body:
+            continue
+        value = body[key]
+        if not isinstance(value, str):
+            raise ValueError("%s must be text" % key)
+        fields[key] = value.strip() if key != "notepad" else clip_notepad(value)
+    for key in ("name", "objective", "cron"):
+        if (creating or key in fields) and not fields.get(key):
+            raise ValueError("%s is required" % key)
+    if "swarm_adapter" in fields and not fields["swarm_adapter"]:
+        raise ValueError("swarm_adapter is required when supplied")
+    if creating or "repo" in fields:
+        repo = fields.get("repo", "")
+        if not repo or not os.path.isabs(repo):
+            raise ValueError("repo must be an explicit absolute project path; each run starts a fresh session")
+    if "cron" in fields:
+        CronExpr.parse(fields["cron"])
+    if "timezone" in fields:
+        fields["timezone"] = validate_timezone(fields["timezone"])
+    for key in ("max_tokens", "max_seconds", "max_swarms", "revision"):
+        if key in body:
+            value = body[key]
+            if type(value) is not int or value < 0 or value > 9223372036854775807:
+                raise ValueError("%s must be a non-negative 64-bit integer" % key)
+            fields[key] = value
+    for key in ("enabled", "monitor_mode"):
+        if key in body:
+            if not isinstance(body[key], bool):
+                raise ValueError("%s must be true or false" % key)
+            fields[key] = body[key]
+    for key, choices in (("missed_policy", ("skip", "once", "all")),
+                         ("failure_deliver", ("route", "suppress"))):
+        if key in fields and fields[key] not in choices:
+            raise ValueError("%s must be one of: %s" % (key, ", ".join(choices)))
+    return fields
 
 
 def get_schedules() -> tuple[int, JsonPayload]:
@@ -128,43 +169,31 @@ def get_schedules_history(
 
 def post_schedules_add(body: dict) -> tuple[int, JsonPayload]:
     """POST /api/schedules/add."""
-    rejected = _reject_timezone_if_set(body)
-    if rejected is not None:
-        return rejected
-    name = (body.get("name") or "").strip()
-    objective = (body.get("objective") or "").strip()
-    cron = (body.get("cron") or "").strip()
-    if not name:
-        return 400, {"error": "name is required"}
-    if not objective:
-        return 400, {"error": "objective is required"}
-    if not cron:
-        return 400, {"error": "cron is required"}
     try:
-        CronExpr.parse(cron)
+        fields = _write_fields(body, creating=True)
+        fields.pop("revision", None)
+        request_id = body.get("request_id")
+        if request_id is not None:
+            if not isinstance(request_id, str):
+                raise ValueError("request_id must be a UUID")
+            try:
+                request_id = UUID(request_id).hex
+            except ValueError:
+                raise ValueError("request_id must be a UUID")
+        sched = Schedule(id=request_id or "", **fields)
     except ValueError as exc:
         return 400, {"error": str(exc)}
-    sched = Schedule(
-        id="",
-        name=name,
-        objective=objective,
-        cron=cron,
-        repo=str(body.get("repo") or ""),
-        swarm_adapter=str(body.get("swarm_adapter") or "agentic"),
-        driver=str(body.get("driver") or ""),
-        enabled=bool(body.get("enabled", True)),
-        max_tokens=int(body.get("max_tokens") or 0),
-        max_seconds=int(body.get("max_seconds") or 0),
-        max_swarms=int(body.get("max_swarms") or 0),
-        timezone="",
-        missed_policy=parse_missed_policy(body.get("missed_policy")),
-        notepad=clip_notepad(body.get("notepad")),
-        monitor_mode=bool(body.get("monitor_mode")),
-        failure_deliver=parse_failure_deliver(body.get("failure_deliver")),
-    )
     store = _store()
     try:
-        store.add(sched)
+        try:
+            store.add(sched)
+        except sqlite3.IntegrityError:
+            existing = store.get(sched.id)
+            if not request_id or existing is None:
+                raise
+            if any(getattr(existing, key) != value for key, value in fields.items()):
+                return 409, {"error": "This request already created a schedule; refresh and edit that schedule"}
+            return 200, _schedule_payload(existing)
         payload = _schedule_payload(sched)
     except ValueError as exc:
         return 400, {"error": str(exc)}
@@ -175,33 +204,27 @@ def post_schedules_add(body: dict) -> tuple[int, JsonPayload]:
 
 def post_schedules_update(body: dict) -> tuple[int, JsonPayload]:
     """POST /api/schedules/update."""
-    rejected = _reject_timezone_if_set(body)
-    if rejected is not None:
-        return rejected
     sid = _require_id(body)
     if not sid:
         return 400, {"error": "missing schedule id"}
-    fields: Dict[str, Any] = {}
-    for key in (
-        "name", "objective", "cron", "repo", "driver", "swarm_adapter",
-        "max_tokens", "max_seconds", "max_swarms", "missed_policy",
-        "notepad", "monitor_mode", "failure_deliver",
-    ):
-        if key in body:
-            fields[key] = body[key]
-    # Empty timezone is a no-op clear to host-local; non-empty already rejected.
-    if "timezone" in body:
-        fields["timezone"] = ""
-    if not fields:
-        return 400, {"error": "nothing to update"}
+    try:
+        fields = _write_fields(body)
+        revision = fields.pop("revision", None)
+        fields.pop("enabled", None)
+        if not fields:
+            raise ValueError("nothing to update")
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     store = _store()
     try:
         if store.get(sid) is None:
             return 404, {"error": "schedule not found"}
-        updated = store.update_fields(sid, **fields)
+        updated = store.update_fields(sid, expected_revision=revision, **fields)
         if updated is None:
             return 404, {"error": "schedule not found"}
         payload = _schedule_payload(updated)
+    except ScheduleConflict as exc:
+        return 409, {"error": str(exc)}
     except ValueError as exc:
         return 400, {"error": str(exc)}
     finally:
@@ -216,11 +239,17 @@ def post_schedules_enable(body: dict) -> tuple[int, JsonPayload]:
         return 400, {"error": "missing schedule id"}
     store = _store()
     try:
-        if not store.set_enabled(sid, True):
+        revision = _write_fields({"revision": body["revision"]}).get("revision") if "revision" in body else None
+        if not store.set_enabled(sid, True, expected_revision=revision):
             return 404, {"error": "schedule not found"}
         sched = store.get(sid)
-        assert sched is not None
+        if sched is None:
+            return 404, {"error": "schedule not found"}
         payload = _schedule_payload(sched)
+    except ScheduleConflict as exc:
+        return 409, {"error": str(exc)}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     finally:
         store.close()
     return 200, payload
@@ -233,11 +262,17 @@ def post_schedules_disable(body: dict) -> tuple[int, JsonPayload]:
         return 400, {"error": "missing schedule id"}
     store = _store()
     try:
-        if not store.set_enabled(sid, False):
+        revision = _write_fields({"revision": body["revision"]}).get("revision") if "revision" in body else None
+        if not store.set_enabled(sid, False, expected_revision=revision):
             return 404, {"error": "schedule not found"}
         sched = store.get(sid)
-        assert sched is not None
+        if sched is None:
+            return 404, {"error": "schedule not found"}
         payload = _schedule_payload(sched)
+    except ScheduleConflict as exc:
+        return 409, {"error": str(exc)}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     finally:
         store.close()
     return 200, payload
@@ -269,12 +304,18 @@ def post_schedules_run_now(body: dict) -> tuple[int, JsonPayload]:
     try:
         if store.get(sid) is None:
             return 404, {"error": "schedule not found"}
-        run = _sched.run_one_now(store, sid)
+        revision = _write_fields({"revision": body["revision"]}).get("revision") if "revision" in body else None
+        run = _sched.run_one_now(store, sid, expected_revision=revision)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     finally:
         store.close()
     if run is None:
         return 404, {"error": "schedule not found"}
-    return 200, {"ok": True, "run": run}
+    run["id"] = run.get("run_id", "")
+    if run["status"] == "blocked":
+        return 409, {"ok": False, "error": "Schedule is already running or changed; refresh before retrying", "run": run}
+    return 200, {"ok": run["status"] == "ok", "run": run}
 
 
 # Re-export remove outcomes for tests / callers.

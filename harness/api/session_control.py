@@ -11,10 +11,13 @@ from __future__ import annotations
 import os
 import tempfile as _tf
 from contextlib import nullcontext
+from functools import wraps
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
+from ..pilot_replacement import input_admission, input_publication
 from ..delivery_mode import apply_delivery, normalize_delivery_mode, realized_steer_action
+from ..prompt_queue import ORIGINAL_TEXT_UNSET, PromptQueueError, PromptQueueMixin
 from ..session_actions import (
     ActionKind,
     SessionActionIllegalTransition,
@@ -37,7 +40,7 @@ class SessionControlServices:
     get_pilot: Callable[[], Any]
     get_runners: Callable[[], Any]
     gate_active_pilot_ready: Callable[[], Optional[dict]]
-    stash_put: Callable[[str, Any], str]
+    stash_put: Callable[..., str]
     save_active_transcript: Callable[[], None]
     upload_dir: str
     diag: Callable[..., Any]
@@ -62,12 +65,24 @@ JsonPayload = Union[dict, list]
 
 
 def _validate_upload_images(
-    images: list, upload_dir: str
+    images: list, upload_dir: str, *, session=None
 ) -> tuple[Optional[list], Optional[tuple[int, dict]]]:
+    if not isinstance(images, (list, tuple)):
+        return None, (400, {'ok': False, 'code': 'input_attachment_invalid', 'error': 'Images must be a list.'})
     valid_imgs = []
     upload_dir_real = os.path.realpath(upload_dir)
     for p in images:
         if not p:
+            continue
+        if not isinstance(p, str):
+            return None, (400, {'ok': False, 'code': 'input_attachment_invalid', 'error': 'Image references must be strings.'})
+        if p.startswith('input:'):
+            if session is None:
+                return None, (403, {'ok': False, 'code': 'input_owner_required', 'error': 'A bound session is required.'})
+            from ..input_receipts import session_input_store
+            with input_publication(session):
+                session_input_store(session).attachment(p)
+            valid_imgs.append(p)
             continue
         real_p = os.path.realpath(p)
         try:
@@ -383,6 +398,12 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
     """
     pilot = svc.get_pilot()
     runners = svc.get_runners()
+    if pilot is None:
+        return 200, {
+            "state": "idle", "pending_swarms": False, "resume_pending": False,
+            "runners": runners.statuses(), "active_view_id": None,
+            "goal": {}, "todos": {},
+        }
     state = pilot.state()
     idle = state == "idle"
     resume_pending = False
@@ -619,9 +640,16 @@ def post_chat_stash(body: dict, svc: SessionControlServices) -> tuple[int, JsonP
     images = body.get("images") or []
     if isinstance(images, str):
         images = [p for p in images.split("|") if p]
-    if not message and not images:
-        return 400, {"error": "missing message"}
-    mid = svc.stash_put(message, images)
+    documents = body.get("documents")
+    metadata = {key: body[key] for key in ("documents", "retry_key", "input_id", "handoff_token", "session_id", "original_text")
+                if key in body and (body[key] is not None or key == "original_text")}
+    if (not isinstance(message, str) or not isinstance(images, list)
+            or (documents is not None and not isinstance(documents, list))
+            or any(not isinstance(value, str) or (not value and key != "original_text") for key, value in metadata.items() if key != "documents")):
+        return 400, {"ok": False, "code": "input_invalid", "error": "Invalid input submission."}
+    if not message and not images and not documents:
+        return 400, {"ok": False, "error": "missing message"}
+    mid = svc.stash_put(message, images, **metadata)
     return 200, {"id": mid}
 
 
@@ -660,6 +688,9 @@ def post_session_interrupt(
     payload: dict = {"ok": True}
     if notices:
         payload["notices"] = notices
+    input_error = getattr(target, '_input_stop_error', None) if target is not None else None
+    if input_error:
+        return 503, {**payload, **input_error, 'stopped': True}
     return 200, payload
 
 
@@ -744,9 +775,6 @@ def _optional_expected_turn_id(body: dict) -> Optional[str]:
 
 
 def _pilot_action_store(pilot: Any) -> Optional[SessionActionStore]:
-    store = getattr(pilot, "_session_actions", None)
-    if isinstance(store, SessionActionStore):
-        return store
     getter = getattr(pilot, "_action_store", None)
     if callable(getter):
         got = getter()
@@ -762,23 +790,79 @@ def _is_recover_turn(body: dict) -> bool:
     return kind == "recover"
 
 
-def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+def _input_admission_response(pilot, payload):
+    if not payload.get('ok') or not isinstance(pilot, PromptQueueMixin):
+        return payload
+    input_id = payload.get('input_id') or (payload.get('item') or {}).get('input_id')
+    if not input_id:
+        return payload
+    from ..input_receipts import session_input_store
+    row = session_input_store(pilot).get(input_id)
+    return {**payload, 'input_id': input_id, 'status': row['status'], 'reason': row['reason']}
+
+
+def _queue_failure_response(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except PromptQueueError as exc:
+            return 503, exc.payload()
+    return wrapped
+
+
+def _owned_input_route(fn):
+    @wraps(fn)
+    def owned(body, svc):
+        from ..input_receipts import InputReceiptError
+        pilot = svc.get_pilot()
+        if pilot is None:
+            return fn(body, svc, pilot)
+        not_ready = svc.gate_active_pilot_ready()
+        if not_ready is not None:
+            return 409, not_ready
+        pilot = svc.get_pilot()
+        if pilot is None:
+            return 404, {'error': 'no active session'}
+        sid = getattr(pilot, 'harness_session_id', '')
+        if body.get('session_id') is not None and body['session_id'] != sid:
+            return 409, {'ok': False, 'code': 'session_changed',
+                         'error': 'Active session changed. Your queue was not modified.'}
+        def validate():
+            if (svc.get_pilot() is not pilot
+                    or getattr(pilot, 'harness_session_id', '') != sid
+                    or (sid and svc.get_runners().get(sid) is not pilot)
+                    or (sid and svc.get_sessions is not None and svc.get_sessions().active != sid)):
+                raise InputReceiptError('input_session_changed', 'The active session changed; keep your draft.')
+        try:
+            with input_admission(pilot, svc.pilot_swap_lock, validate):
+                return fn(body, svc, pilot)
+        except InputReceiptError as exc:
+            return (409 if exc.code == 'input_session_changed' else 503), exc.payload()
+    return owned
+
+
+@_queue_failure_response
+@_owned_input_route
+def post_session_steer(body: dict, svc: SessionControlServices, pilot=None) -> tuple[int, JsonPayload]:
     """POST /api/session/steer."""
-    text = (body.get("text") or "").strip()
+    text = body.get("text") or ""
     images = body.get("images") or []
     if isinstance(images, str):
         images = [p for p in images.split("|") if p]
-    if not text and not images:
+    if not isinstance(text, str) or (not text.strip() and not images and not body.get("documents")):
         return 400, {"error": "missing text"}
     if not svc.get_pilot():
         return 404, {"error": "no active session"}
-    not_ready = svc.gate_active_pilot_ready()
-    if not_ready is not None:
-        return 409, not_ready
-    pilot = svc.get_pilot()
+    if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+    if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
         return 404, {"error": "no active session"}
-    valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
+    if isinstance(pilot, PromptQueueMixin):
+        pilot._input_upload_root = svc.upload_dir
+    valid_imgs, err = _validate_upload_images(images, svc.upload_dir, session=pilot)
     if err is not None:
         return err
 
@@ -789,6 +873,16 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
         if normalized_turn_mode is None:
             return 400, {"ok": False, "error": "invalid turn_input_mode"}
     expected_turn_id = _optional_expected_turn_id(body)
+    receipt_args = {}
+    receipt = None
+    if isinstance(pilot, PromptQueueMixin):
+        from ..input_receipts import session_input_store
+        with input_publication(pilot):
+            receipt = session_input_store(pilot).admit(text, original_text=body.get('original_text', ORIGINAL_TEXT_UNSET), images=valid_imgs,
+                        documents=body.get('documents'), retry_key=body.get('retry_key'), upload_root=svc.upload_dir)
+        receipt_args['input_id'] = receipt['id']
+        if receipt['status'] != 'accepted' or receipt['owner_instance'] != session_input_store(pilot).instance:
+            return 200, _input_admission_response(pilot, {'ok': True, 'input_id': receipt['id'], 'status': receipt['status'], 'held': True})
     # RecoverTurn is admit(kind=recover) on this same endpoint — not a new UI.
     if _is_recover_turn(body):
         try:
@@ -798,6 +892,7 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
                     text,
                     images=valid_imgs,
                     expected_turn_id=expected_turn_id,
+                    **receipt_args,
                 )
             else:
                 store = _pilot_action_store(pilot)
@@ -812,14 +907,16 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
                     text,
                     images=valid_imgs,
                     expected_turn_id=expected_turn_id,
+                    **receipt_args,
                 )
         except SessionActionIllegalTransition as exc:
             return 400, {"ok": False, "error": str(exc), "code": exc.code}
-        return 200, {
+        return 200, _input_admission_response(pilot, {
             "ok": True,
             "action": "recover",
+            **receipt_args,
             "kind": action.kind.value,
-        }
+        })
     # Optional delivery_mode: when set, route via shared DeliveryMode resolver.
     delivery_mode = body.get("delivery_mode")
     if delivery_mode:
@@ -828,84 +925,107 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
         busy = _pilot_turn_busy(pilot)
         result = apply_delivery(
             pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs,
+            **receipt_args,
         )
-        code = 200 if result.get("ok") else 400
-        return code, result
+        code = 200 if result.get("ok") else (503 if str(result.get("code", "")).startswith("queue_") else 400)
+        if receipt is not None:
+            result["input_id"] = receipt["id"]
+        return code, _input_admission_response(pilot, result)
     if normalized_turn_mode is not None:
         busy = _pilot_turn_busy(pilot)
-        try:
-            store = _pilot_action_store(pilot)
-            if store is None:
-                return 400, {
-                    "ok": False,
-                    "error": "session lacks action store",
-                    "code": "missing_action_store",
-                }
-            action = store.admit_turn_input(
-                text,
-                normalized_turn_mode,
-                expected_turn_id=expected_turn_id,
-                idle=not busy,
-                images=valid_imgs,
-            )
-        except SessionActionIllegalTransition as exc:
-            return 400, {"ok": False, "error": str(exc), "code": exc.code}
-        result = {
-            "ok": True,
-            "action": action.kind.value,
-            "kind": action.kind.value,
-            "turn_input_mode": normalized_turn_mode,
-        }
-        if action.kind is ActionKind.START and hasattr(pilot, "enqueue_prompt"):
-            result["item"] = pilot.enqueue_prompt(text, images=valid_imgs)
-            if not busy:
-                result["deferred"] = True
-        return 200, result
+        store = _pilot_action_store(pilot)
+        if store is None:
+            return 400, {"ok": False, "error": "session lacks action store", "code": "missing_action_store"}
+        # START admission and its playlist write publish together. Hold the
+        # action lock so a failed write can restore the prior action snapshot
+        # without erasing a concurrent steer or Stop.
+        delivery_text = text
+        if receipt is not None and not valid_imgs:
+            delivery_text, _ = session_input_store(pilot).delivery_content(receipt['id'], text)
+        convert_images = False
+        with input_publication(pilot), getattr(pilot, "_steer_lock", None) or nullcontext():
+            previous = store.snapshot()
+            try:
+                action = store.admit_turn_input(
+                    delivery_text, normalized_turn_mode, expected_turn_id=expected_turn_id,
+                    idle=not busy, images=valid_imgs, **receipt_args,
+                )
+                result = {"ok": True, "action": action.kind.value,
+                          "kind": action.kind.value, "turn_input_mode": normalized_turn_mode, **receipt_args}
+                if action.kind is ActionKind.STEER and valid_imgs and hasattr(pilot, 'steer_with_images'):
+                    store.restore(previous)
+                    convert_images = True
+                if action.kind is ActionKind.START and hasattr(pilot, "enqueue_prompt"):
+                    result["item"] = pilot.enqueue_prompt(text, images=valid_imgs, **({"input_id": action.id} if isinstance(pilot, PromptQueueMixin) else {}))
+                    if not busy:
+                        result["deferred"] = True
+            except PromptQueueError:
+                store.restore(previous)
+                raise
+            except SessionActionIllegalTransition as exc:
+                return 400, {"ok": False, "error": str(exc), "code": exc.code}
+        if convert_images:
+            try:
+                result['action'] = realized_steer_action(pilot.steer_with_images(
+                    text, valid_imgs, **receipt_args, expected_turn_id=expected_turn_id))
+            except SessionActionIllegalTransition as exc:
+                return 400, {'ok': False, 'code': exc.code, 'error': str(exc)}
+        return 200, _input_admission_response(pilot, result)
     if valid_imgs and hasattr(pilot, "steer_with_images"):
-        actual = realized_steer_action(pilot.steer_with_images(text, valid_imgs))
-        return 200, {"ok": True, "action": actual}
+        try:
+            extra = {'expected_turn_id': expected_turn_id} if expected_turn_id is not None and isinstance(pilot, PromptQueueMixin) else {}
+            actual = realized_steer_action(pilot.steer_with_images(text, valid_imgs, **receipt_args, **extra))
+        except SessionActionIllegalTransition as exc:
+            return 400, {'ok': False, 'code': exc.code, 'error': str(exc)}
+        return 200, _input_admission_response(pilot, {"ok": True, "action": actual, **receipt_args})
     if expected_turn_id is not None and hasattr(pilot, "enqueue_steer"):
         try:
-            pilot.enqueue_steer(text, expected_turn_id=expected_turn_id)
+            pilot.enqueue_steer(text, expected_turn_id=expected_turn_id, **receipt_args)
         except TypeError:
-            pilot.enqueue_steer(text)
+            pilot.enqueue_steer(text, **receipt_args)
         except SessionActionIllegalTransition as exc:
             return 400, {"ok": False, "error": str(exc), "code": exc.code}
-        return 200, {"ok": True, "action": "enqueue_steer"}
-    pilot.enqueue_steer(text)
-    return 200, {"ok": True, "action": "enqueue_steer"}
+        return 200, _input_admission_response(pilot, {"ok": True, "action": "enqueue_steer", **receipt_args})
+    pilot.enqueue_steer(text, **receipt_args)
+    return 200, _input_admission_response(pilot, {"ok": True, "action": "enqueue_steer", **receipt_args})
 
 
-def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
+@_queue_failure_response
+@_owned_input_route
+def post_session_queue(body: dict, svc: SessionControlServices, pilot=None) -> tuple[int, JsonPayload]:
     """POST /api/session/queue."""
     if not svc.get_pilot():
         return 404, {"error": "no active session"}
-    not_ready = svc.gate_active_pilot_ready()
-    if not_ready is not None:
-        return 409, not_ready
-    pilot = svc.get_pilot()
+    if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+    if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
         return 404, {"error": "no active session"}
+    if body.get('handoff'):
+        with input_publication(pilot):
+            item = pilot.handoff_prompt(str(body['handoff']))
+        if not item:
+            return 409, {'ok': False, 'code': 'input_held', 'error': 'No live input is available for handoff.'}
+        return 200, _input_admission_response(pilot, {'ok': True, 'item': item})
     if body.get("clear") is True:
-        try:
+        with input_publication(pilot):
             n = pilot.clear_prompts()
-        except Exception:
-            n = 0
         return 200, {"ok": True, "cleared": n}
     rid = (body.get("id") or "").strip() if isinstance(body.get("id"), str) else ""
     if rid:
-        try:
+        with input_publication(pilot):
             ok = pilot.remove_prompt(rid)
-        except Exception:
-            ok = False
         return 200, {"ok": bool(ok), "id": rid}
-    text = (body.get("text") or "").strip()
-    if not text:
+    text = body.get("text") or ""
+    if not isinstance(text, str) or (not text.strip() and not body.get("images") and not body.get("documents")):
         return 400, {"error": "missing text"}
     images = body.get("images") or []
     if isinstance(images, str):
         images = [p for p in images.split("|") if p]
-    valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
+    if isinstance(pilot, PromptQueueMixin):
+        pilot._input_upload_root = svc.upload_dir
+    valid_imgs, err = _validate_upload_images(images, svc.upload_dir, session=pilot)
     if err is not None:
         return err
     delivery_mode = body.get("delivery_mode")
@@ -917,47 +1037,74 @@ def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, Js
             busy = bool(pilot.is_turn_busy()) if hasattr(pilot, "is_turn_busy") else False
         except Exception:
             busy = False
+        receipt_args = {}
+        if isinstance(pilot, PromptQueueMixin):
+            from ..input_receipts import session_input_store
+            store = session_input_store(pilot)
+            with input_publication(pilot):
+                receipt = store.admit(text, original_text=body.get('original_text', ORIGINAL_TEXT_UNSET), images=valid_imgs, documents=body.get('documents'),
+                                      retry_key=body.get('retry_key'), upload_root=svc.upload_dir)
+            if receipt['status'] != 'accepted' or receipt['owner_instance'] != store.instance:
+                return 200, _input_admission_response(pilot, {'ok': True, 'input_id': receipt['id'], 'status': receipt['status'], 'held': True})
+            receipt_args['input_id'] = receipt['id']
         result = apply_delivery(
-            pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs,
+            pilot, text, session_busy=busy, requested=delivery_mode, images=valid_imgs, **receipt_args,
         )
-        code = 200 if result.get("ok") else 400
-        return code, result
+        result.update(receipt_args)
+        code = 200 if result.get("ok") else (503 if str(result.get("code", "")).startswith("queue_") else 400)
+        return code, _input_admission_response(pilot, result)
     try:
         item = pilot.enqueue_prompt(
-            text, images=valid_imgs, model=svc.cfg.driver,
+            text, images=valid_imgs, model=getattr(pilot, "config", svc.cfg).driver,
+            **({"original_text": body.get("original_text", ORIGINAL_TEXT_UNSET), "retry_key": body.get("retry_key"), "documents": body.get("documents"), "upload_root": svc.upload_dir} if isinstance(pilot, PromptQueueMixin) else {}),
         )
+    except PromptQueueError:
+        raise
     except Exception as e:
-        return 500, {"error": str(e)}
+        return 500, {"ok": False, "error": str(e)}
     if not item or not item.get("id"):
         return 400, {"error": "enqueue failed"}
-    return 200, {"ok": True, "item": item}
+    return 200, _input_admission_response(pilot, {"ok": True, "item": item})
 
 
+@_queue_failure_response
 def post_session_queue_reorder(
     body: dict, svc: SessionControlServices
 ) -> tuple[int, JsonPayload]:
     """POST /api/session/queue/reorder."""
+    not_ready = svc.gate_active_pilot_ready()
+    if not_ready is not None:
+        return 409, not_ready
     pilot = svc.get_pilot()
+    if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+    if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
         return 404, {"error": "no active session"}
     ids = body.get("ids") or []
     if not isinstance(ids, list):
         return 400, {"error": "ids must be a list"}
-    try:
-        items = pilot.reorder_prompts([str(x) for x in ids])
-    except Exception:
-        try:
-            items = pilot.list_prompts()
-        except Exception:
-            items = []
+    items = pilot.reorder_prompts([str(x) for x in ids])
     return 200, {"ok": True, "items": items}
 
 
+@_queue_failure_response
 def get_session_queue(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """GET /api/session/queue."""
     pilot = svc.get_pilot()
+    if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+    if pilot is not None and not hasattr(pilot, "list_prompts"):
+        return 409, {"ok": False, "code": "pilot_not_ready", "error": "Session queue is not ready."}
+    session_id = getattr(pilot, "harness_session_id", "")
+    recovery = pilot.prompt_queue_recovery() if hasattr(pilot, "prompt_queue_recovery") else []
     try:
         items = pilot.list_prompts() if pilot else []
-    except Exception:
-        items = []
-    return 200, {"items": items}
+    except PromptQueueError as exc:
+        return 200, {**exc.payload(), "recovery": recovery, "session_id": session_id}
+    try:
+        receipts = pilot.input_receipts() if hasattr(pilot, "input_receipts") else []
+    except PromptQueueError as exc:
+        return 503, exc.payload()
+    return 200, {"ok": True, "items": items, "receipts": receipts, "held_items": pilot.held_prompts() if hasattr(pilot, "held_prompts") else [], "recovery": recovery, "session_id": session_id}

@@ -42,6 +42,13 @@ _GOOD_SUMMARY = (
 
 
 class _RecordingPilot:
+    def fork_for_compaction(self, *, model):
+        from copy import copy
+        local = copy(self)
+        if model:
+            local.model = model
+        return local
+
     name = "recording-pilot"
 
     def __init__(self, return_text: str = _GOOD_SUMMARY, model: str = "session-model"):

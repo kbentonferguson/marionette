@@ -6,6 +6,7 @@ driver returns text + token accounting; parsing/validation/scoring is the
 harness's job, identically for every model.
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
@@ -34,17 +35,92 @@ def stamp_assistant_phase(msg: dict, value: Any) -> dict:
     return msg
 
 
-def chat_completions_messages(messages: list) -> list:
-    """Project history for Chat Completions: drop Responses-only phase.
+_SUCCESS_STATUSES = frozenset({"ok", "success", "completed", "done", "no_op", "native_image"})
+_FAILURE_STATUSES = frozenset({
+    "error", "failed", "failure", "exception", "timeout", "timed_out",
+    "cancelled", "canceled", "blocked", "denied", "interrupted", "aborted",
+    "validation_error", "stale_anchor", "repo_not_open", "path_traversal",
+    "invalid_arguments", "stale_generation", "read_only_role", "disabled",
+    "not_found", "is_directory", "not_a_directory", "filenotfound",
+    "corrupt_store", "cap_exceeded", "verification_failed", "ambiguous",
+    "internal_uri_error",
+})
 
-    Chat Completions cannot represent assistant phase. Copies only rows that
-    carry ``phase`` so live ``_history`` dicts stay intact.
-    """
+
+def tool_result_semantics(content: str, *, ok: Optional[bool] = None) -> dict:
+    """Capture receipt truth before compaction; absent outcome stays absent."""
+    try:
+        receipt = json.loads(content)
+    except (ValueError, TypeError):
+        receipt = None
+    receipt = receipt if isinstance(receipt, dict) else {}
+    status = receipt.get("status")
+    explicit_error = (
+        ok is False or receipt.get("ok") is False
+        or receipt.get("is_error") is True or receipt.get("isError") is True
+        or bool(receipt.get("error"))
+    )
+    if not isinstance(status, str) or not status.strip():
+        if explicit_error:
+            status = "error"
+        elif (
+            ok is True or receipt.get("ok") is True
+            or receipt.get("is_error") is False or receipt.get("isError") is False
+        ):
+            status = "ok"
+        else:
+            return {}
+    fields = {"status": status}
+    normalized = status.strip().lower()
+    if explicit_error or normalized in _FAILURE_STATUSES:
+        fields["is_error"] = True
+    elif normalized in _SUCCESS_STATUSES:
+        fields["is_error"] = False
+    return fields
+
+
+def tool_result_content(msg: dict):
+    """Expose otherwise lost outcome metadata using provider-supported content."""
+    content = msg.get("content") or ""
+    original = tool_result_semantics(content)
+    canonical = tool_result_semantics(json.dumps({
+        key: msg[key] for key in ("status", "is_error") if key in msg
+    }))
+    semantics = {**original, **canonical}
+    if original.get("is_error") is True or canonical.get("is_error") is True:
+        semantics["is_error"] = True
+    if not semantics or (
+        semantics.get("is_error") is not True
+        and semantics.get("status", "").strip().lower() in _SUCCESS_STATUSES
+    ):
+        return content
+    if all(original.get(key) == value for key, value in semantics.items()):
+        return content
+    try:
+        receipt = json.loads(content)
+    except (ValueError, TypeError):
+        receipt = None
+    # Preserve the original object and its output instead of nesting receipts.
+    payload = dict(receipt) if isinstance(receipt, dict) else {"output": content}
+    payload.update(semantics)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def chat_completions_messages(messages: list) -> list:
+    """Drop canonical metadata unsupported by Chat Completions, without mutation."""
     out = []
     for msg in messages:
-        if isinstance(msg, dict) and "phase" in msg:
+        if isinstance(msg, dict) and (
+            "phase" in msg or (msg.get("role") == "tool" and (
+                "status" in msg or "is_error" in msg
+            ))
+        ):
             copy = dict(msg)
             copy.pop("phase", None)
+            if msg.get("role") == "tool":
+                copy["content"] = tool_result_content(msg)
+                copy.pop("status", None)
+                copy.pop("is_error", None)
             out.append(copy)
         else:
             out.append(msg)

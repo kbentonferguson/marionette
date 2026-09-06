@@ -141,6 +141,7 @@ def test_append_to_buffer_caps_at_256kb():
 def test_read_since_offset_clamping():
     s = object.__new__(PtySession)
     s._buffer = bytearray(b"hello")
+    s._total_output = 5
     s._lock = threading.Lock()
     data, off = s.read_since(-5)
     assert data == b"hello" and off == 5

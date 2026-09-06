@@ -461,10 +461,11 @@ def test_perform_pilot_swap_preserves_deferred_transcript(tmp_path, monkeypatch)
 
         replacement = _idle_runner(sid=sid)
 
-        def _make_replacement(*_a, **_k):
-            return replacement
+        class Replacement:
+            def __new__(cls, *_a, **_k):
+                return replacement
 
-        with patch.object(srv, "ConversationalSession", side_effect=_make_replacement):
+        with patch.object(srv, "ConversationalSession", Replacement):
             srv._perform_pilot_swap(srv._cfg.driver or "test-driver")
 
         assert srv._pilot is replacement
@@ -778,9 +779,12 @@ def test_deferred_cold_attach_restores_pending_command_approval(tmp_path, monkey
         assert real.harness_session_id == sid
         assert command_hash in real._pending_command_approvals
         assert command_hash not in real._approved_commands
+        from harness.command_approval_identity import ApprovalExpectation
+        pending_identity = real._pending_command_approvals[command_hash]
         decided = real.decide_command_approval(
             command_hash=command_hash,
             workspace_root=workspace,
+            expected=ApprovalExpectation(pending_identity["action_id"], pending_identity["approval_id"]),
             approve=True,
         )
         assert decided is not None

@@ -1,125 +1,48 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../lib/api";
-import { gatherSessionArtifacts } from "../components/conversation/sessionArtifacts";
-
-vi.mock("../lib/api", () => ({
-  api: {
-    artifacts: vi.fn(),
-  },
+import { afterEach, expect, it, vi } from 'vitest';
+import type { Job } from '../lib/api';
+import { fetchJobArtifacts } from '../lib/jobArtifacts';
+import { gatherSessionArtifacts } from '../components/conversation/sessionArtifacts';
+vi.mock('../lib/jobArtifacts', async importOriginal => ({
+  ...await importOriginal<typeof import('../lib/jobArtifacts')>(), fetchJobArtifacts: vi.fn(),
 }));
-
-const mockArtifacts = vi.mocked(api.artifacts);
-
-afterEach(() => {
-  vi.clearAllMocks();
+afterEach(() => vi.resetAllMocks());
+const job: Job = { id: 'job_one', goal: 'Review', status: 'completed', source: 'harness',
+  session_id: 'A', job_ref: { job_id: 'job_one', state_id: 'state_a' } };
+const opts = { display: [{ type: 'card', result: { artifacts: [{ type: 'note', headline: 'display' }] } }],
+  jobIds: [job.id], jobs: [job], repo: '/A', sessionId: 'A', stillCurrent: () => true };
+it('keeps the display-only path synchronous', () => {
+  expect(gatherSessionArtifacts({ ...opts, jobIds: [] })).toEqual([{ type: 'note', headline: 'display' }]);
+  expect(fetchJobArtifacts).not.toHaveBeenCalled();
 });
-
-function displayCards(
-  artifacts: Array<{ type: string; headline: string }>,
-) {
-  return [
-    {
-      type: "card",
-      result: { artifacts },
-    },
-  ];
-}
-
-describe("gatherSessionArtifacts", () => {
-  it("returns a sync unique merge when jobIds is missing", () => {
-    const result = gatherSessionArtifacts({
-      display: displayCards([
-        { type: "diff", headline: "a" },
-        { type: "diff", headline: "a" },
-        { type: "note", headline: "b" },
-      ]),
-      jobIds: undefined,
-      stillCurrent: () => true,
-    });
-
-    expect(result).not.toBeInstanceOf(Promise);
-    expect(result).toEqual([
-      { type: "diff", headline: "a" },
-      { type: "note", headline: "b" },
-    ]);
-    expect(mockArtifacts).not.toHaveBeenCalled();
-  });
-
-  it("returns a sync unique merge when jobIds is empty", () => {
-    const result = gatherSessionArtifacts({
-      display: displayCards([
-        { type: "diff", headline: "a" },
-        { type: "note", headline: "b" },
-        { type: "note", headline: "b" },
-      ]),
-      jobIds: [],
-      stillCurrent: () => true,
-    });
-
-    expect(result).not.toBeInstanceOf(Promise);
-    expect(result).toEqual([
-      { type: "diff", headline: "a" },
-      { type: "note", headline: "b" },
-    ]);
-    expect(mockArtifacts).not.toHaveBeenCalled();
-  });
-
-  it("merges display artifacts with fetched job artifacts", async () => {
-    mockArtifacts.mockImplementation(async (jobId: string) => {
-      if (jobId === "job-1") return [{ type: "patch", headline: "c" }];
-      if (jobId === "job-2") return [{ type: "note", headline: "d" }];
-      return [];
-    });
-
-    const pending = gatherSessionArtifacts({
-      display: displayCards([{ type: "diff", headline: "a" }]),
-      jobIds: ["job-1", "job-2"],
-      stillCurrent: () => true,
-    });
-
-    expect(pending).toBeInstanceOf(Promise);
-    await expect(pending).resolves.toEqual([
-      { type: "diff", headline: "a" },
-      { type: "patch", headline: "c" },
-      { type: "note", headline: "d" },
-    ]);
-    expect(mockArtifacts).toHaveBeenCalledWith("job-1");
-    expect(mockArtifacts).toHaveBeenCalledWith("job-2");
-  });
-
-  it("returns [] when stillCurrent is false after fetches", async () => {
-    mockArtifacts.mockResolvedValue([{ type: "patch", headline: "c" }]);
-
-    const result = await gatherSessionArtifacts({
-      display: displayCards([{ type: "diff", headline: "a" }]),
-      jobIds: ["job-1"],
-      stillCurrent: () => false,
-    });
-
-    expect(result).toEqual([]);
-    expect(mockArtifacts).toHaveBeenCalledWith("job-1");
-  });
-
-  it("treats a rejected job fetch as [] and still merges the rest", async () => {
-    mockArtifacts.mockImplementation(async (jobId: string) => {
-      if (jobId === "job-bad") throw new Error("network");
-      return [{ type: "patch", headline: "c" }];
-    });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    await expect(
-      gatherSessionArtifacts({
-        display: displayCards([{ type: "diff", headline: "a" }]),
-        jobIds: ["job-bad", "job-ok"],
-        stillCurrent: () => true,
-      }),
-    ).resolves.toEqual([
-      { type: "diff", headline: "a" },
-      { type: "patch", headline: "c" },
-    ]);
-
-    expect(mockArtifacts).toHaveBeenCalledWith("job-bad");
-    expect(mockArtifacts).toHaveBeenCalledWith("job-ok");
-    errorSpy.mockRestore();
-  });
+it('uses the captured live reference and distinguishes genuine loaded empty', async () => {
+  vi.mocked(fetchJobArtifacts).mockResolvedValue([]);
+  expect(await gatherSessionArtifacts(opts)).toEqual([{ type: 'note', headline: 'display' }]);
+  expect(fetchJobArtifacts).toHaveBeenCalledWith({ job_ref: job.job_ref, source: 'harness', repo: '/A', session_id: 'A' });
+});
+it.each([
+  { jobs: [] },
+  { jobs: [{ ...job, job_ref: undefined }] },
+  { jobs: [job, { ...job, source: 'cli', job_ref: { job_id: job.id, state_id: 'state_b' } }] },
+  { sessionId: 'B' },
+  { jobs: [{ ...job, cross_project: true }] },
+])('labels missing, ambiguous or foreign selections unavailable', async override => {
+  const result = await gatherSessionArtifacts({ ...opts, ...override });
+  expect(result.at(-1)?.headline).toContain('Artifact preview unavailable');
+  expect(fetchJobArtifacts).not.toHaveBeenCalled();
+});
+it('does not cache failed reads as loaded empty and permits another gather', async () => {
+  vi.mocked(fetchJobArtifacts).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([{ type: 'note', headline: 'recovered' }]);
+  expect((await gatherSessionArtifacts(opts)).at(-1)?.headline).toContain('unavailable');
+  expect((await gatherSessionArtifacts(opts)).at(-1)?.headline).toBe('recovered');
+});
+it('fences old responses and does not start already stale reads', async () => {
+  let release: (value: []) => void = () => {};
+  vi.mocked(fetchJobArtifacts).mockReturnValue(new Promise(resolve => { release = resolve; }));
+  let current = true;
+  const pending = gatherSessionArtifacts({ ...opts, stillCurrent: () => current });
+  current = false;
+  release([]);
+  expect(await pending).toEqual([]);
+  expect(gatherSessionArtifacts({ ...opts, stillCurrent: () => false })).toEqual([]);
+  expect(fetchJobArtifacts).toHaveBeenCalledTimes(1);
 });

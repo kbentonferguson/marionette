@@ -16,11 +16,13 @@ Resolution Order keeps behavior identical:
 ConvEvent kinds via inheritance.
 """
 
+import copy
 import os
 import re
 import threading
 import time
 import uuid
+from contextlib import ExitStack, nullcontext
 from typing import Iterator, Optional
 
 from .context_budget import age_history_images
@@ -76,6 +78,7 @@ REASON_CACHE_DEFERRED = "cache_deferred"
 REASON_RESIDUAL_OFF = "residual_off"
 REASON_WATERMARK_FENCE = "watermark_fence"
 REASON_IDLE_UNGROWN = "idle_ungrown"
+REASON_ARCHIVE_FAILED = "archive_failed"
 
 
 def _active_message_id(message, index: int) -> int:
@@ -1074,16 +1077,42 @@ class CompactionContextMixin:
             RESIDUAL_OFF,
             compaction_residual_mode,
         )
-        # 413 recovery is a byte problem: drop stale data-URL images before
-        # any residual/trigger gate so emergency compact actually frees payload.
+        # Byte relief is a durable rewrite even when residuals are disabled.
         if emergency:
             try:
-                aged = age_history_images(self._history, keep_last_user=True)
-                if aged:
-                    self._history[:] = aged
-                    self._invalidate_ctx_cache()
+                with getattr(self, "_busy_meta", nullcontext()):
+                    from .history_compaction_journal import commit_image_aged_transcript
+                    from .compaction_archive import json_digest
+
+                    generation = getattr(self, "_busy_gen", None)
+                    revision = json_digest(self._history)
+                    aged = self._history[:1] + age_history_images(
+                        self._history[1:], keep_last_user=True,
+                    )
+                    if aged != self._history:
+                        source = {
+                            "history": copy.deepcopy(self._history[1:]),
+                            "display": self.export_display_transcript(),
+                            "job_ids": list(self._session_job_ids),
+                        }
+                        target = dict(source, history=copy.deepcopy(aged[1:]))
+                        if (generation != getattr(self, "_busy_gen", None)
+                                or revision != json_digest(self._history)):
+                            self._set_compaction_attempt("source_revision_changed")
+                            return
+                        commit_image_aged_transcript(
+                            getattr(self, "state_dir", "") or "",
+                            self._compaction_journal_session_id(), source, target,
+                        )
+                        self._history[:] = aged
+                        self._invalidate_ctx_cache()
             except Exception:
-                pass
+                self._set_compaction_attempt(REASON_ARCHIVE_FAILED)
+                yield ConvEvent("compaction", {
+                    "aborted": True, "reason": REASON_ARCHIVE_FAILED,
+                    "summarized_messages": 0,
+                })
+                return
 
         residual_mode = compaction_residual_mode()
         # Explicit off only — empty/invalid env values stay on catalog.
@@ -1192,7 +1221,8 @@ class CompactionContextMixin:
             )
             return
 
-        middle_block = self._history[1:split_idx]
+        original_middle = copy.deepcopy(self._history[1:split_idx])
+        middle_block = original_middle
         recent_block = self._history[split_idx:]
         # Non-emergency: strip images from the summarized/dropped middle only.
         # Live tail (including the latest user image) stays intact.
@@ -1298,6 +1328,11 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+        from .compaction_archive import json_digest
+
+        source_length = len(self._history)
+        source_digest = json_digest(self._history)
+        source_generation = getattr(self, "_busy_gen", None)
         start_watermark = self.get_active_message_watermark()
         try:
             self._compaction_start_watermark = start_watermark
@@ -1359,9 +1394,8 @@ class CompactionContextMixin:
             _compact_timeout = 45.0
         _compact_cooldown = _compaction_cooldown_s()
 
-        # Cheap compaction model knob. Driver.chat/complete have no model=
-        # kwarg today; when set we temporarily swap pilot.model if present
-        # (openai-compat seam). Empty default leaves the session pilot alone.
+        # Driver.chat/complete have no model keyword. Select the model on a
+        # request-local driver below, never on the session's active pilot.
         _compaction_model = compaction_model_override()
 
         def _fallback() -> str:
@@ -1403,31 +1437,32 @@ class CompactionContextMixin:
             try:
                 box: dict = {}
 
+                # Capture before starting the worker: timeout and pilot replacement
+                # must never make a late completion restore or overwrite live state.
+                from pmharness.drivers.compaction import compaction_driver
+
+                resources = ExitStack()
+                try:
+                    summary_pilot = compaction_driver(self.pilot, _compaction_model, resources)
+                except BaseException:
+                    resources.close()
+                    raise
+
                 def _run_summarizer():
-                    prev_model = None
                     try:
-                        if _compaction_model and hasattr(self.pilot, "model"):
-                            prev_model = getattr(self.pilot, "model", None)
-                            self.pilot.model = _compaction_model
-                        if hasattr(self.pilot, "chat"):
-                            # Seam: if Driver.chat gains model=, pass
-                            # _compaction_model here instead of swapping .model.
-                            box["resp"] = self.pilot.chat(
+                        if hasattr(summary_pilot, "chat"):
+                            box["resp"] = summary_pilot.chat(
                                 [{"role": "user", "content": content_to_summarize}],
                                 system=sys_msg,
                             )
                         else:
-                            box["resp"] = self.pilot.complete(
+                            box["resp"] = summary_pilot.complete(
                                 content_to_summarize, system=sys_msg,
                             )
                     except Exception as ex:
                         box["err"] = ex
                     finally:
-                        if prev_model is not None:
-                            try:
-                                self.pilot.model = prev_model
-                            except Exception:
-                                pass
+                        resources.close()
 
                 # Daemon thread + join timeout by design: never block shutdown on
                 # a hung summarizer (ThreadPoolExecutor.__exit__ would wait
@@ -1438,7 +1473,11 @@ class CompactionContextMixin:
                 # summarizer would be cleaner but is not worth the complexity
                 # for desktop-app risk.
                 t = threading.Thread(target=_run_summarizer, daemon=True)
-                t.start()
+                try:
+                    t.start()
+                except BaseException:
+                    resources.close()
+                    raise
                 t.join(timeout=max(5.0, _compact_timeout))
                 if t.is_alive():
                     raise TimeoutError("compaction summarizer timed out")
@@ -1651,21 +1690,56 @@ class CompactionContextMixin:
             })
             return
 
-        # Persist the elided middle before the rewrite so peek_history can
-        # still address those rows after residual transcript persist. Fail
-        # closed: archive I/O must not block or crash Compact Now.
+        sid = getattr(self, "harness_session_id", None) or "default"
+        state_dir = getattr(self, "state_dir", "") or ""
+        failure_reason = REASON_ARCHIVE_FAILED
+        committed = False
+        # Reaping takes this same lock. A stale summarizer cannot publish over
+        # a new turn; same-length edits must also invalidate its source.
+        with getattr(self, "_busy_meta", nullcontext()):
+            if (
+                getattr(self, "_busy_gen", None) != source_generation
+                or json_digest(self._history[:source_length]) != source_digest
+            ):
+                failure_reason = "source_revision_changed"
+            else:
+                proposed = self._plan_compacted_history(
+                    summary_msg, recent_block, start_watermark,
+                )
+                if proposed is None:
+                    failure_reason = REASON_WATERMARK_FENCE
+                else:
+                    try:
+                        from .history_compaction_journal import commit_compacted_transcript
+
+                        source = {
+                            "history": copy.deepcopy(self._history[1:]),
+                            "display": self.export_display_transcript(),
+                            "job_ids": list(self._session_job_ids),
+                        }
+                        target = dict(source, history=copy.deepcopy(proposed[1:]))
+                        commit_compacted_transcript(state_dir, sid, source, target, original_middle)
+                        self._history[:] = proposed
+                        committed = True
+                    except Exception:
+                        committed = False
+        if not committed:
+            self._set_compaction_attempt(failure_reason, before_tokens=before_tokens)
+            yield ConvEvent("compaction", {
+                "before_tokens": before_tokens,
+                "after_tokens": before_tokens,
+                "summarized_messages": 0,
+                "aborted": True,
+                "reason": failure_reason,
+            })
+            return
         try:
-            from .compaction_archive import append_compaction_archive
             from .compaction_vault import index_elided_messages
 
-            sid = getattr(self, "harness_session_id", None) or "default"
-            state_dir = getattr(self, "state_dir", "") or ""
-            append_compaction_archive(state_dir, sid, middle_block)
             index_elided_messages(state_dir, sid, middle_block)
         except Exception:
             pass
 
-        self._history[:] = proposed
         # Compaction replaces the middle with a summary; new length usually
         # differs but not guaranteed (a tiny middle replaced by a summary_msg
         # could land at the same length). Explicitly invalidate.

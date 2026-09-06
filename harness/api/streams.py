@@ -8,6 +8,9 @@ top level. ``server.Handler`` keeps thin wrappers that inject live globals.
 
 from __future__ import annotations
 
+from ..prompt_queue import ORIGINAL_TEXT_UNSET
+from ..pilot_replacement import input_admission, input_projection
+
 import json
 import os
 import time
@@ -85,30 +88,20 @@ class StreamServices:
     upload_dir: str
     # Call-time lookup so tests can patch harness.server.AutoBudget.
     auto_budget_from_env: Callable[[], Any]
+    pilot_swap_lock: Any = None
+    get_runners: Optional[Callable[[], Any]] = None
 
 
 def validate_upload_image_paths(
-    raw_images: str, upload_dir: str
+    raw_images: str, upload_dir: str, *, session=None
 ) -> tuple[Optional[list], Optional[tuple[int, dict]]]:
     """Validate pipe-separated image paths are under ``upload_dir``.
 
     Used by ``GET /api/run`` and ``GET /api/chat`` query parsing. Returns
     ``(paths, None)`` on success or ``(None, (status, payload))`` on error.
     """
-    imgs: list = []
-    upload_dir_real = os.path.realpath(upload_dir)
-    for p in (raw_images or "").split("|"):
-        if not p:
-            continue
-        real_p = os.path.realpath(p)
-        try:
-            if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
-                imgs.append(p)
-            else:
-                return None, (400, {"error": f"Invalid image path: {p}"})
-        except ValueError:
-            return None, (400, {"error": f"Invalid image path: {p}"})
-    return imgs, None
+    from .session_control import _validate_upload_images
+    return _validate_upload_images([p for p in (raw_images or '').split('|') if p], upload_dir, session=session)
 
 
 def resolve_stashed_chat_message(
@@ -181,33 +174,102 @@ def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
         run_hooks("postRun", ctx)
 
 
-def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None) -> Any:
+def _stream_session_pilot(svc, session_id):
+    from ..input_receipts import InputReceiptError
+    pilot = svc.get_pilot()
+    if session_id is not None and (
+        not isinstance(session_id, str) or not session_id
+        or getattr(pilot, 'harness_session_id', None) != session_id
+        or svc.sessions.active != session_id
+    ):
+        raise InputReceiptError('input_session_changed', 'The active session changed. Your input was not admitted; keep your draft.')
+    return pilot
+
+
+@input_projection
+def _admit_stream_input(pilot, text, images, upload_dir, *, documents=None,
+                        retry_key=None, input_id=None, handoff_token=None, original_text=ORIGINAL_TEXT_UNSET):
+    from ..prompt_queue import PromptQueueMixin
+    from ..input_receipts import session_input_store, InputReceiptError
+    if original_text is not ORIGINAL_TEXT_UNSET and not isinstance(original_text, str):
+        raise InputReceiptError('input_invalid', 'Original text must be a string.')
+    if not isinstance(pilot, PromptQueueMixin):
+        return None, {}, text, images
+    if not getattr(pilot, 'harness_session_id', ''):
+        raise InputReceiptError('input_owner_required', 'Choose a session before submitting input.')
+    pilot._input_upload_root = upload_dir
+    store = session_input_store(pilot)
+    if input_id:
+        receipt = store.get(input_id)
+        accepted = receipt['status'] == 'accepted' and not handoff_token
+        handed_off = (receipt['status'] == 'delivering' and handoff_token
+                      and receipt.get('handoff_token') == handoff_token and not receipt.get('handoff_claimed'))
+        if receipt['owner_instance'] != store.instance or not (accepted or handed_off):
+            raise InputReceiptError('input_handoff_conflict', 'Input is held or already attempted; inspect its receipt.')
+        text = receipt.get('delivery_text', receipt['original_text'])
+    else:
+        if handoff_token:
+            raise InputReceiptError('input_handoff_conflict', 'A handoff requires its input ID.')
+        receipt = store.admit(text, original_text=original_text, images=images, documents=documents, upload_root=upload_dir, retry_key=retry_key)
+        if receipt['status'] != 'accepted' or receipt['owner_instance'] != store.instance:
+            raise InputReceiptError('input_held', 'Input is held or already attempted; inspect its receipt.')
+        input_id = receipt['id']
+    images = [a['ref'] for a in receipt['attachments'] if a['kind'] == 'image']
+    return receipt, {'input_id': input_id, 'handoff_token': handoff_token}, text, images
+
+
+def _admit_owned_stream_input(svc, pilot, session_id, *args, **kwargs):
+    from ..input_receipts import InputReceiptError
+    sid = getattr(pilot, 'harness_session_id', '')
+    def validate():
+        if (_stream_session_pilot(svc, session_id) is not pilot
+                or getattr(pilot, 'harness_session_id', '') != sid
+                or (sid and svc.get_runners is not None and svc.sessions.active != sid)
+                or (sid and svc.get_runners is not None and svc.get_runners().get(sid) is not pilot)):
+            raise InputReceiptError('input_session_changed', 'The input owner changed; keep your draft.')
+    with input_admission(pilot, svc.pilot_swap_lock, validate):
+        return _admit_stream_input(pilot, *args, **kwargs)
+
+
+def stream_auto(handler: Any, objective: str, svc: StreamServices, images=None, *, documents=None, retry_key=None, input_id=None, handoff_token=None, session_id=None, original_text=ORIGINAL_TEXT_UNSET) -> Any:
     """Stream the fully-auto loop (governor-bounded) over SSE."""
+    from ..input_receipts import InputReceiptError
     try:
+        _stream_session_pilot(svc, session_id)
         svc.ensure_pilot_matches_driver()
+    except InputReceiptError as exc:
+        return handler._send(409, json.dumps(exc.payload()))
     except Exception as e:
         return handler._send(500, json.dumps({"error": str(e)}))
+    try:
+        turn_pilot = _stream_session_pilot(svc, session_id)
+        receipt, receipt_args, objective, images = _admit_owned_stream_input(
+            svc, turn_pilot, session_id, objective, images, svc.upload_dir, documents=documents,
+            retry_key=retry_key, input_id=input_id, handoff_token=handoff_token, original_text=original_text)
+    except InputReceiptError as exc:
+        return handler._send(409 if exc.code == "input_session_changed" else 503, json.dumps(exc.payload()))
+    turn_sid = getattr(turn_pilot, "harness_session_id", "") or svc.sessions.active or ""
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
     handler._cors()
     handler.end_headers()
+    if receipt_args:
+        sse_write(handler.wfile, ('data: ' + json.dumps({'kind': 'input_receipt', 'data': {'input_id': receipt['id'], 'status': receipt['status']}}) + '\n\n').encode())
 
-    if svc.sessions.active and objective:
+    if turn_sid and objective:
         from ..sessions import derive_title
-        svc.sessions.set_title_if_default(svc.sessions.active, derive_title(objective))
+        svc.sessions.set_title_if_default(turn_sid, derive_title(objective))
 
     if svc.cfg.repo and os.path.isdir(svc.cfg.repo):
         svc.maybe_refresh_codegraph(svc.cfg.repo)
 
     from ..hooks import run_hooks
     # Bind turn identity before any view switch can reassign globals.
-    turn_pilot = svc.get_pilot()
-    turn_sid = svc.sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
     ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot}
     run_hooks("preRun", ctx)
     budget = svc.auto_budget_from_env()
-    gen = turn_pilot.run_auto(objective, budget, images=images or None)
+    gen = turn_pilot.run_auto(objective, budget, images=images or None, **receipt_args)
     last_ckpt = time.monotonic()
 
     def _maybe_checkpoint(ev):
@@ -246,6 +308,12 @@ def stream_chat(
     *,
     plan: bool = False,
     resume: bool = False,
+    input_id=None,
+    handoff_token=None,
+    documents=None,
+    retry_key=None,
+    session_id=None,
+    original_text=ORIGINAL_TEXT_UNSET,
 ) -> Any:
     """Stream the conversational PILOT loop: prose messages + collapsible
     action cards (run_swarm) + assistant_done.
@@ -253,20 +321,38 @@ def stream_chat(
     ``resume=True`` runs a keep-alive continuation turn: no new user message
     is appended -- the pilot generates off the history that drain_swarm_results
     already extended with the finished job's result + continuation."""
+    from ..input_receipts import InputReceiptError
     try:
+        _stream_session_pilot(svc, session_id)
         svc.ensure_pilot_matches_driver()
+        turn_pilot = _stream_session_pilot(svc, session_id)
+    except InputReceiptError as exc:
+        return handler._send(409, json.dumps(exc.payload()))
     except Exception as e:
         return handler._send(500, json.dumps({"error": str(e)}))
+    receipt_args = {}
+    if not resume:
+        from ..input_receipts import InputReceiptError
+        try:
+            receipt, receipt_args, message, images = _admit_owned_stream_input(
+                svc, turn_pilot, session_id, message, images, svc.upload_dir, documents=documents,
+                retry_key=retry_key, input_id=input_id, handoff_token=handoff_token, original_text=original_text)
+            input_id = receipt_args.get('input_id')
+        except InputReceiptError as exc:
+            return handler._send(409 if exc.code == "input_session_changed" else 503, json.dumps(exc.payload()))
+    turn_sid = getattr(turn_pilot, "harness_session_id", "") or svc.sessions.active or ""
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
     handler.send_header("Connection", "keep-alive")
     handler._cors()
     handler.end_headers()
+    if receipt_args:
+        sse_write(handler.wfile, ('data: ' + json.dumps({'kind': 'input_receipt', 'data': {'input_id': input_id, 'status': receipt['status']}}) + '\n\n').encode())
 
-    if svc.sessions.active and message:
+    if turn_sid and message:
         from ..sessions import derive_title
-        svc.sessions.set_title_if_default(svc.sessions.active, derive_title(message))
+        svc.sessions.set_title_if_default(turn_sid, derive_title(message))
 
     # Self-healing CodeGraph: debounced staleness check at the start of every
     # turn, so an index that drifted (files edited/added/DELETED since the last
@@ -303,6 +389,13 @@ def stream_chat(
         tokens = extract_mention_tokens(message)
         seen_tokens = set()
         for token in tokens:
+            if receipt_args and os.path.isabs(token):
+                try:
+                    if os.path.commonpath([os.path.realpath(svc.upload_dir), os.path.realpath(token)]) == os.path.realpath(svc.upload_dir):
+                        # The native receipt supplies these bytes at delivery.
+                        continue
+                except ValueError:
+                    pass
             if token in seen_tokens:
                 continue
             seen_tokens.add(token)
@@ -602,8 +695,6 @@ def stream_chat(
 
     from ..hooks import run_hooks
     # Bind turn identity before any view switch can reassign globals.
-    turn_pilot = svc.get_pilot()
-    turn_sid = svc.sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
     ctx = {"session_id": turn_sid, "message": message, "pilot": turn_pilot}
     run_hooks("preRun", ctx)
     # Detach != cancel: if the client closes the EventSource mid-turn we keep
@@ -611,7 +702,7 @@ def stream_chat(
     # early (old behavior) aborted the turn via GeneratorExit; cancel() on
     # BrokenPipe (auto path) stopped the governor for a mere view switch.
     # Explicit Stop still uses /api/session/interrupt.
-    gen = turn_pilot.send(message, images=images or None, plan=plan, resume=resume)
+    gen = turn_pilot.send(message, images=images or None, plan=plan, resume=resume, **receipt_args)
     last_ckpt = time.monotonic()
 
     def _maybe_checkpoint(ev):

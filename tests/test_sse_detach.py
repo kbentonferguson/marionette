@@ -16,6 +16,10 @@ from unittest.mock import MagicMock, patch
 
 from harness.conversation import ConvEvent
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("owned_server")
+
 
 def _server():
     import harness.server as srv
@@ -54,7 +58,7 @@ def _slow_turn_events(gate: threading.Event, finished: list, n: int = 5):
         finished.append(True)
 
 
-def test_chat_stream_client_disconnect_does_not_cancel_turn():
+def test_chat_stream_client_disconnect_does_not_cancel_turn(owned_server, monkeypatch):
     """Closing the chat SSE mid-turn must not set _cancel; the turn must finish."""
     first_frame = threading.Event()
     finished = []
@@ -63,20 +67,18 @@ def test_chat_stream_client_disconnect_does_not_cancel_turn():
     def send_side_effect(*_a, **_k):
         return _slow_turn_events(first_frame, finished)
 
-    mock_pilot = MagicMock()
+    mock_pilot = owned_server._pilot
+    monkeypatch.setattr(mock_pilot, "send", MagicMock())
+    monkeypatch.setattr(mock_pilot, "cancel", MagicMock())
+    monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock(return_value=[]))
     mock_pilot.send.side_effect = send_side_effect
     mock_pilot.drain_swarm_results.return_value = []
     mock_pilot.cancel.side_effect = lambda: cancel_calls.append("cancel")
-    mock_pilot._cancel = threading.Event()
-    mock_pilot._busy = threading.Lock()
 
-    with patch("harness.server._pilot", mock_pilot), \
-         patch("harness.server._pilot_preflight", return_value=None), \
+    with patch("harness.server._pilot_preflight", return_value=None), \
          patch("harness.server._finalize_turn"):
         httpd, port, srv = _server()
         try:
-            sess = srv._sessions.create()
-            srv._sessions._active = sess["id"]
             url = f"http://127.0.0.1:{port}/api/chat?message=hi"
             req = urllib.request.Request(
                 url,
@@ -102,7 +104,7 @@ def test_chat_stream_client_disconnect_does_not_cancel_turn():
             httpd.shutdown()
 
 
-def test_auto_stream_client_disconnect_does_not_cancel_turn():
+def test_auto_stream_client_disconnect_does_not_cancel_turn(owned_server, monkeypatch):
     """Closing /api/auto SSE must not call _pilot.cancel() (the old BrokenPipe path)."""
     first_frame = threading.Event()
     finished = []
@@ -111,20 +113,17 @@ def test_auto_stream_client_disconnect_does_not_cancel_turn():
     def run_auto_side_effect(*_a, **_k):
         return _slow_turn_events(first_frame, finished)
 
-    mock_pilot = MagicMock()
+    mock_pilot = owned_server._pilot
+    monkeypatch.setattr(mock_pilot, "run_auto", MagicMock())
+    monkeypatch.setattr(mock_pilot, "cancel", MagicMock())
     mock_pilot.run_auto.side_effect = run_auto_side_effect
     mock_pilot.cancel.side_effect = lambda: cancel_calls.append("cancel")
-    mock_pilot._cancel = threading.Event()
-    mock_pilot.export_transcript_data.return_value = {"history": []}
 
-    with patch("harness.server._pilot", mock_pilot), \
-         patch("harness.server._finalize_turn"), \
+    with patch("harness.server._finalize_turn"), \
          patch("harness.server.AutoBudget") as mock_budget:
         mock_budget.from_env.return_value = MagicMock()
         httpd, port, srv = _server()
         try:
-            sess = srv._sessions.create()
-            srv._sessions._active = sess["id"]
             url = f"http://127.0.0.1:{port}/api/auto?objective=go"
             req = urllib.request.Request(
                 url,

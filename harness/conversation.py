@@ -41,9 +41,11 @@ import subprocess
 import re
 from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Iterator, Literal, Optional, Any, get_args
+from uuid import uuid4
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
 from .paths import git_toplevel, path_within
+from .command_approval_identity import ApprovalExpectation, require_current_approval
 
 from pmharness import registry as reg
 from . import providers as prov
@@ -59,6 +61,7 @@ from .pilot import (
     parse_pilot_turn,
 )
 from .wiki import WikiClient
+from .history_display import display_from_history
 from .text_clean import clean_say
 from .checkpoints import CheckpointStore
 from .tool_dispatch import (
@@ -799,7 +802,7 @@ class ConversationalSession(
         # completion boundary AFTER any pending steers so steer keeps priority.
         # Shape: [{"id": str, "text": str}, ...]. Never raises.
         self._prompt_queue: list[dict] = []
-        self._prompt_queue_lock = threading.Lock()
+        self._prompt_queue_lock = threading.RLock()
         # self-learning: accumulate this session's real findings for distillation
         self._session_findings: list = []
         self._first_objective: str = ""
@@ -1000,7 +1003,7 @@ class ConversationalSession(
         # On-disk mirror of the server-side prompt queue so queued prompts
         # survive a backend restart (transcripts and swarm_local_jobs already
         # persist; the in-memory _prompt_queue was the only piece lost).
-        self._prompt_queue_path = os.path.join(self.state_dir, "prompt_queue.json")
+        self._prompt_queue_path = ""  # Bound after the real session ID is known.
         # In-flight implement objectives, so the same objective cannot be
         # dispatched concurrently (audit finding #2). The "one objective -> one
         # worker / disjoint file sets" rule lived only in the system prompt; this
@@ -1073,9 +1076,7 @@ class ConversationalSession(
         # terminal receipt are never reopened or rerun solely because SSE
         # disappeared. Stale provider 'running' jobs are marked interrupted.
         self._load_local_jobs()
-        # Reload any persisted prompt queue from a prior process so queued
-        # prompts survive a backend restart. Tolerates a missing/corrupt file.
-        self._load_prompt_queue()
+        # Prompt playlist binding happens at attach, after session identity exists.
 
     def state(self) -> str:
         if self._state == "thinking":
@@ -1161,7 +1162,7 @@ class ConversationalSession(
         # Avoid stacking duplicate goal reminders in the playlist.
         marker = "Continue working toward the session goal"
         try:
-            for item in list(getattr(self, "_prompt_queue", None) or []):
+            for item in self.list_prompts():
                 if isinstance(item, dict) and marker in str(item.get("text") or ""):
                     return None
         except Exception:
@@ -1266,6 +1267,9 @@ class ConversationalSession(
         """Serialize a durable display-transcript command-approval card."""
         row = {
             "type": "command_approval",
+            "approval_protocol": 1,
+            "approval_id": pending.get("approval_id") or "",
+            "action_id": pending.get("action_id") or "",
             "id": pending.get("action_id") or pending.get("command_hash") or "",
             "command": pending.get("command") or "",
             "command_hash": pending.get("command_hash") or "",
@@ -1328,7 +1332,9 @@ class ConversationalSession(
             "workspace_root": os.path.realpath(self.config.repo or ""),
             "command": command,
             "command_hash": command_hash,
-            "action_id": str(row.get("action_id") or row.get("id") or ""),
+            "action_id": str(row.get("action_id") or row.get("id") or uuid4().hex),
+            "approval_protocol": 1,
+            "approval_id": str(row.get("approval_id") or uuid4().hex),
             "category": str(row.get("category") or ""),
             "reason": str(row.get("reason") or ""),
             "matched": str(row.get("matched") or ""),
@@ -1377,6 +1383,8 @@ class ConversationalSession(
         with self._command_approval_lock_guard():
             self._pending_command_approvals = restored
             self._approved_commands.clear()
+            for pending in restored.values():
+                self._upsert_display_command_approval(pending, status="pending")
 
     def _upsert_display_command_approval(
         self,
@@ -1434,7 +1442,9 @@ class ConversationalSession(
             "workspace_root": workspace_root,
             "command": command,
             "command_hash": command_hash,
-            "action_id": action_id,
+            "action_id": action_id or uuid4().hex,
+            "approval_protocol": 1,
+            "approval_id": uuid4().hex,
             "category": category or "",
             "reason": reason or "",
             "matched": matched or "",
@@ -1461,6 +1471,7 @@ class ConversationalSession(
         command_hash: str,
         workspace_root: str,
         approve: bool,
+        expected: Optional[ApprovalExpectation] = None,
     ) -> Optional[dict]:
         """Apply a one-shot operator decision to this session's pending command."""
         from .approval_identity import approval_turn, get_approval_turn_id
@@ -1480,6 +1491,7 @@ class ConversationalSession(
                     raise PermissionError("command approval workspace does not match")
                 if pending.get("session_id") != self.harness_session_id:
                     raise PermissionError("command approval session does not match")
+                require_current_approval(pending, expected)
                 self._pending_command_approvals.pop(command_hash, None)
                 if approve:
                     self._approved_commands.add(command_hash)
@@ -1506,6 +1518,7 @@ class ConversationalSession(
         *,
         command_hash: str,
         workspace_root: str,
+        expected: Optional[ApprovalExpectation] = None,
     ) -> Optional[dict]:
         """Approve the suggested amendment instead of the original command.
 
@@ -1531,6 +1544,7 @@ class ConversationalSession(
                     raise PermissionError("command approval workspace does not match")
                 if pending.get("session_id") != self.harness_session_id:
                     raise PermissionError("command approval session does not match")
+                require_current_approval(pending, expected)
                 amendment = str(pending.get("suggested_amendment") or "").strip()
                 if not amendment:
                     amendment = (
@@ -1814,6 +1828,8 @@ class ConversationalSession(
         """True when the transcript ends on a user turn with no assistant reply
         after it -- i.e. a reply is owed. Used to auto-resume across a backend
         restart (self-edit apply) so an in-flight turn is not silently dropped."""
+        if getattr(self, '_cold_input_hold', False):
+            return False
         return bool(len(self._history) > 1 and self._history[-1].get("role") == "user")
 
     def export_transcript_data(self) -> dict:
@@ -1849,9 +1865,15 @@ class ConversationalSession(
         cleaned = [m for m in history_list
                    if m.get("role") != "system" or m.get("source") == "goal_mode"]
         self._history = [system_prompt] + cleaned
+        self._cold_input_hold = bool(cleaned and cleaned[-1].get('role') == 'user'
+                                     and (cleaned[-1].get('input_id') or cleaned[-1].get('input_ids')))
         # Heal a previously-corrupted transcript (dangling or non-adjacent
         # tool_use) on load so we never send an invalid history to the model.
         self._sanitize_tool_pairs()
+        # Seed history-only legacy/fork prefixes before the first display event
+        # makes display authoritative on reload. Never merge a complete display.
+        if not self._display_transcript:
+            self._display_transcript = display_from_history(cleaned)
         # Durable pending DANGER cards must remain decidable after cold
         # attach/restart — rebuild decision state from validated display rows.
         self._restore_pending_command_approvals_from_display()
@@ -2848,6 +2870,12 @@ class ConversationalSession(
             return False
         for i in range(len(self._history) - 1, -1, -1):
             existing = self._history[i]
+            if existing.get("role") == "assistant" and any(
+                tc.get("id") == tool_call_id for tc in existing.get("tool_calls") or []
+            ):
+                # Results belong to this occurrence, not an earlier call that
+                # reused the logical action id. Wire ids are normalized later.
+                return False
             if existing.get("role") != "tool":
                 continue
             if existing.get("tool_call_id") != tool_call_id:
@@ -2967,6 +2995,8 @@ class ConversationalSession(
             if m.get("role") == "system" and m.get("source") == "goal_mode" else m
             for m in outbound
         ]
+        outbound = [{key: value for key, value in message.items()
+                     if key not in ('input_id', 'input_ids')} for message in outbound]
         return canonicalize_outbound_tool_call_ids(outbound)
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
@@ -3071,9 +3101,12 @@ class ConversationalSession(
             return ""
 
     def _append_action_result(
-        self, act: Any, aid: str, content: str, is_native: bool, *, ok: bool = True,
+        self, act: Any, aid: str, content: str, is_native: bool, *, ok: Optional[bool] = None,
         force_inline: bool = False,
     ) -> None:
+        from pmharness.drivers.base import tool_result_semantics
+
+        semantics = tool_result_semantics(content, ok=ok)
         tc_id = getattr(act, "tool_call_id", None) or aid
         clamped_content = content if force_inline else self._turn_economy.persist_tool_result(
             content, tc_id, tool_name=getattr(act, "kind", None),
@@ -3102,6 +3135,7 @@ class ConversationalSession(
 
         if is_native:
             msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}
+            msg.update(semantics)
             if read_path:
                 msg["_read_path"] = read_path
             # Crash/resume race: an interruption stub may already answer this
@@ -3128,9 +3162,12 @@ class ConversationalSession(
             gs = getattr(self, "_turn_guard_state", None)
             kind = getattr(act, "kind", "") or ""
             if gs is not None and kind:
-                if not ok:
+                if semantics.get("is_error") is True:
                     note_kernel_recovery_from_result(gs, kind, clamped_content or "")
-                else:
+                elif semantics.get("is_error") is False or (
+                    ok is None and not semantics
+                    and not content.lstrip().startswith("{")
+                ):
                     head = (clamped_content or "")[:24]
                     if (
                         not is_invalid_action(act)
@@ -4142,7 +4179,7 @@ class ConversationalSession(
     def run_auto(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True,
                  analysis_mode: bool = False,
-                 images: Optional[list] = None):
+                 images: Optional[list] = None, input_id=None, handoff_token=None):
         """FULL-AUTO entry point. Thin wrapper that marks unattended mode for the
         duration of the run (so run_command applies the safety guard) and always
         resets it, even on exception or early return, so the next interactive
@@ -4156,13 +4193,17 @@ class ConversationalSession(
         ``images``: optional upload paths for the first user turn (same native /
         sidecar path as ``send``). Later governor cycles are text-only.
         """
+        if input_id is None:
+            from .input_receipts import session_input_store
+            input_id = session_input_store(self).admit(objective, images=images,
+                upload_root=getattr(self, '_input_upload_root', None))['id']
         self._auto_mode = True
         try:
             yield from self._run_auto_inner(
                 objective, budget,
                 require_codegraph=require_codegraph,
                 analysis_mode=analysis_mode,
-                images=images,
+                images=images, input_id=input_id, handoff_token=handoff_token,
             )
         finally:
             self._auto_mode = False
@@ -4173,7 +4214,7 @@ class ConversationalSession(
     def _run_auto_inner(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True,
                  analysis_mode: bool = False,
-                 images: Optional[list] = None):
+                 images: Optional[list] = None, input_id=None, handoff_token=None):
         """FULLY-AUTO (unattended) mode: pursue an objective across many pilot
         turns WITHOUT user re-prompting, bounded by an AutoBudget governor. Yields
         the same ConvEvents as send(), plus 'auto_status' (governor snapshots) and
@@ -4247,7 +4288,8 @@ class ConversationalSession(
             })
             turn_images = pending_images
             pending_images = None
-            for ev in self.send(loop_msg, images=turn_images):
+            receipt_args = {"input_id": input_id, "handoff_token": handoff_token} if cycle == 1 and input_id else {}
+            for ev in self.send(loop_msg, images=turn_images, **receipt_args):
                 # meter the governor off the stream
                 if ev.kind == "message":
                     _msg = (ev.data.get("text") or "").strip()

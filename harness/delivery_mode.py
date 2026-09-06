@@ -7,6 +7,7 @@ Actions: run_auto | enqueue_steer | enqueue_prompt | interrupt_then_queue
 """
 
 from enum import Enum
+from .prompt_queue import PromptQueueError
 from typing import Any, Optional, Sequence, Tuple
 
 from .schedule_core import schedule_fire_prompt
@@ -50,13 +51,13 @@ def normalize_delivery_mode(requested: Optional[str]) -> Optional[str]:
     return None
 
 
-def _try_interrupt_session(session: Any) -> bool:
+def _try_interrupt_session(session: Any, input_id=None) -> bool:
     """Call the first available stop/interrupt hook. Never raises."""
     for name in ("interrupt", "request_interrupt", "stop"):
         fn = getattr(session, name, None)
         if callable(fn):
             try:
-                fn()
+                fn(**({'preserve_input_id': input_id} if name == 'interrupt' and input_id else {}))
             except Exception:
                 pass
             return True
@@ -165,71 +166,91 @@ def resolve_delivery(session_busy: bool, requested: Optional[str]) -> str:
     return DeliveryAction.RUN_AUTO.value
 
 
-def apply_delivery(
+def apply_delivery(session: Any, text: str, *, session_busy: bool,
+                   requested: Optional[str] = None, images: Optional[list] = None, input_id=None) -> dict:
+    try:
+        return _apply_delivery(session, text, session_busy=session_busy,
+                               requested=requested, images=images, input_id=input_id)
+    except PromptQueueError as exc:
+        return exc.payload()
+
+
+def _apply_delivery(
     session: Any,
     text: str,
     *,
     session_busy: bool,
     requested: Optional[str] = None,
     images: Optional[list] = None,
+    input_id=None,
 ) -> dict:
     """Apply resolve_delivery against a live session. Returns a result dict."""
+    receipt_args = {'input_id': input_id} if input_id else {}
     action = resolve_delivery(session_busy, requested)
     cleaned = (text or "").strip()
     imgs = list(images or [])
+    retained_content = False
+    if input_id:
+        from .input_receipts import session_input_store
+        receipt = session_input_store(session).get(input_id)
+        retained_content = bool(receipt.get('delivery_text', receipt['original_text']) or receipt['attachments'])
+        if not imgs:
+            imgs = [a['ref'] for a in receipt['attachments'] if a['kind'] == 'image']
     if action == DeliveryAction.ENQUEUE_STEER.value:
-        if not cleaned and not imgs:
+        if not cleaned and not imgs and not retained_content:
             return {"ok": False, "error": "missing text", "action": action}
         if imgs and hasattr(session, "steer_with_images"):
-            actual = realized_steer_action(session.steer_with_images(cleaned, imgs))
+            actual = realized_steer_action(session.steer_with_images(text, imgs, **receipt_args))
             result = {"ok": True, "action": actual}
             if actual != action:
                 result["requested_action"] = action
             return result
         elif hasattr(session, "enqueue_steer"):
-            session.enqueue_steer(cleaned)
+            session.enqueue_steer(text, **receipt_args)
         else:
             return {"ok": False, "error": "session lacks enqueue_steer", "action": action}
-        if not _steer_text_already_admitted(session, cleaned):
+        if not input_id and not _steer_text_already_admitted(session, cleaned):
             _admit_delivery_kinds(
                 session, delivery_mode_action_kinds(requested), cleaned, imgs,
             )
         return {"ok": True, "action": action}
     if action == DeliveryAction.ENQUEUE_PROMPT.value:
-        if not cleaned:
+        if not cleaned and not imgs and not retained_content:
             return {"ok": False, "error": "missing text", "action": action}
         if not hasattr(session, "enqueue_prompt"):
             return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
-        item = session.enqueue_prompt(cleaned, images=imgs)
-        _admit_delivery_kinds(
-            session, delivery_mode_action_kinds(requested), cleaned, imgs,
-        )
+        item = session.enqueue_prompt(text, images=imgs, **receipt_args)
+        if not item.get('input_id'):
+            _admit_delivery_kinds(
+                session, delivery_mode_action_kinds(requested), cleaned, imgs,
+            )
         return {"ok": True, "action": action, "item": item}
     if action == DeliveryAction.INTERRUPT_THEN_QUEUE.value:
-        if not cleaned:
+        if not cleaned and not imgs and not retained_content:
             return {"ok": False, "error": "missing text", "action": action}
         interrupted = False
         if session_busy:
-            interrupted = _try_interrupt_session(session)
+            interrupted = _try_interrupt_session(session, input_id=input_id)
         if not hasattr(session, "enqueue_prompt"):
             return {"ok": False, "error": "session lacks enqueue_prompt", "action": action}
         # Domain: redirect, then mailbox the text. HTTP still uses the existing
         # interrupt hook + prompt playlist (no second interrupt path).
-        _admit_delivery_kinds(
-            session, delivery_mode_action_kinds(requested), cleaned, imgs,
-        )
-        item = session.enqueue_prompt(cleaned, images=imgs)
+        item = session.enqueue_prompt(text, images=imgs, **receipt_args)
+        if not item.get('input_id'):
+            _admit_delivery_kinds(
+                session, delivery_mode_action_kinds(requested), cleaned, imgs,
+            )
         result: dict = {"ok": True, "action": action, "item": item}
         if interrupted:
             result["interrupted"] = True
         return result
     # run_auto
-    if not cleaned:
+    if not cleaned and not imgs and not retained_content:
         return {"ok": False, "error": "missing text", "action": action}
     if session_busy:
         # Cannot start run_auto on a busy session; stage as follow-up prompt.
         if hasattr(session, "enqueue_prompt"):
-            item = session.enqueue_prompt(cleaned, images=imgs)
+            item = session.enqueue_prompt(text, images=imgs, **receipt_args)
             return {
                 "ok": True,
                 "action": DeliveryAction.ENQUEUE_PROMPT.value,

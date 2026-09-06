@@ -111,8 +111,9 @@ def owned_command_pids_for_tests(owner: Any = None) -> list[int]:
 def kill_process_group(proc: Any) -> bool:
     """Kill a process group spawned by run_cancellable. Best-effort; never raises.
 
-    Mirrors the Windows CREATE_NEW_PROCESS_GROUP + taskkill /T pattern and the
-    POSIX start_new_session + killpg pattern already used inside run_cancellable.
+    Windows uses CREATE_NEW_PROCESS_GROUP + taskkill /T. POSIX hard deadlines
+    use SIGKILL immediately, with no additional cooperative SIGTERM grace.
+    Requires the dedicated group created by run_cancellable.
     Returns True when a kill was attempted.
     """
     if proc is None:
@@ -144,43 +145,27 @@ def kill_process_group(proc: Any) -> bool:
             pass
         try:
             proc.kill()
+            proc.wait(timeout=1)
         except Exception:
             pass
         return True
 
-    try:
-        pgid = os.getpgid(pid_i)
-    except Exception:
-        pgid = None
-
-    if pgid is not None and pgid > 1:
+    # Popen.poll/wait use this same lock. Keep the child unreaped until
+    # signaling: once reaped, its PID/group ID can be reused by a foreign job.
+    with proc._waitpid_lock:
+        if proc.returncode is not None:
+            return False
         try:
-            os.killpg(pgid, signal.SIGTERM)
-        except Exception:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-    else:
-        try:
-            proc.terminate()
-        except Exception:
+            os.killpg(pid_i, signal.SIGKILL)
+        except ProcessLookupError:
             pass
-
+        except OSError:
+            return False
     try:
-        proc.wait(timeout=3)
-    except Exception:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
         pass
 
-    if pgid is not None and pgid > 1:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except Exception:
-            pass
-    try:
-        proc.kill()
-    except Exception:
-        pass
     return True
 
 
@@ -498,8 +483,11 @@ def run_cancellable(
     it exits or times out. With timeouts now optionally unbounded, that means
     Stop could not kill a long/infinite command. This runner instead launches the
     process in its OWN process group and polls cancel_event (and the deadline)
-    while waiting, killing the whole group (so shell=True children die too, not
-    just the parent shell) the moment either fires. Spawned handles are also
+    while waiting, killing the owned group when either fires. On POSIX the
+    hard boundary covers an unreaped leader and descendants still in its group;
+    detached descendants and descendants left after leader exit are not contained.
+    Windows taskkill is best effort. Killing a process cannot undo external effects.
+    Spawned handles are also
     registered under ``cancel_event`` so ``BusyControlMixin.interrupt`` can
     hard-cancel owned trees immediately (registry-only; never cwd scan).
 
@@ -627,22 +615,32 @@ def _run_cancellable_wait(
     # blocks until the child exits -- which would starve the cancel/timeout
     # polling below and make Stop a no-op. Drain the pipe from a daemon
     # thread instead so the poll loop stays responsive.
-    _threaded_chunks: list = []
+    import queue
+
+    _threaded_chunks = queue.Queue(maxsize=32)
+    _drain_stop = threading.Event()
     _drain_thread = None
     if proc.stdout and not nonblocking:
-        import threading as _threading
-
         def _drain_pipe():
             try:
-                while True:
+                while not _drain_stop.is_set():
                     chunk = proc.stdout.read(65536)
                     if not chunk:
                         break
-                    _threaded_chunks.append(chunk)
+                    while not _drain_stop.is_set():
+                        try:
+                            _threaded_chunks.put(chunk, timeout=0.05)
+                            break
+                        except queue.Full:
+                            pass
             except Exception:
                 pass
+            finally:
+                # Only the reader closes this stream: closing it from the
+                # polling thread can block on TextIOWrapper's read lock.
+                proc.stdout.close()
 
-        _drain_thread = _threading.Thread(target=_drain_pipe, daemon=True)
+        _drain_thread = threading.Thread(target=_drain_pipe, daemon=True)
         _drain_thread.start()
 
     def _kill_group():
@@ -655,8 +653,11 @@ def _run_cancellable_wait(
     while proc.poll() is None:
         if _drain_thread is not None:
             # Reader thread owns the pipe; harvest what it has collected so far.
-            while _threaded_chunks:
-                chunk = _threaded_chunks.pop(0)
+            for _ in range(32):
+                try:
+                    chunk = _threaded_chunks.get_nowait()
+                except queue.Empty:
+                    break
                 output_chunks.append(chunk)
                 total_read += len(chunk)
         elif proc.stdout:
@@ -682,23 +683,33 @@ def _run_cancellable_wait(
             _kill_group()
             status = "timeout"
             break
-        _time.sleep(poll_interval)
+        remaining = timeout - (_time.monotonic() - start) if timeout is not None else poll_interval
+        _time.sleep(max(0, min(poll_interval, remaining)))
 
     # One final read to drain the pipe after the process has exited.
     if _drain_thread is not None:
         _drain_thread.join(timeout=2)
-        while _threaded_chunks:
-            chunk = _threaded_chunks.pop(0)
+        _drain_stop.set()
+        for _ in range(32):
+            try:
+                chunk = _threaded_chunks.get_nowait()
+            except queue.Empty:
+                break
             output_chunks.append(chunk)
             total_read += len(chunk)
     elif proc.stdout:
         try:
-            chunk = proc.stdout.read()
-            if chunk:
+            drain_until = _time.monotonic() + 0.1
+            while total_read <= MAX_CAPTURED_OUTPUT and _time.monotonic() < drain_until:
+                chunk = proc.stdout.read(min(65536, MAX_CAPTURED_OUTPUT + 1 - total_read))
+                if not chunk:
+                    break
                 output_chunks.append(chunk)
                 total_read += len(chunk)
         except (IOError, TypeError):
             pass
+        finally:
+            proc.stdout.close()
 
     # External Stop may have group-killed us while we slept in poll_interval.
     # Honor a clear->set cancel that outlived the child even if the loop
@@ -712,20 +723,20 @@ def _run_cancellable_wait(
         status = "cancelled"
 
     output = "".join(output_chunks)
-    if status != "truncated" and total_read > MAX_CAPTURED_OUTPUT:
+    if status == "ok" and total_read > MAX_CAPTURED_OUTPUT:
         status = "truncated"
 
-    if status == "truncated":
+    if total_read > MAX_CAPTURED_OUTPUT or status == "truncated":
         output = output[:MAX_CAPTURED_OUTPUT]
         output += f"\n\n[output truncated at {int(MAX_CAPTURED_OUTPUT / 1024 / 1024)} MiB cap]"
+    exit_code = proc.returncode if proc.returncode is not None else -1
+    if status == "truncated":
         exit_code = -1
-    else:
-        exit_code = proc.returncode if proc.returncode is not None else -1
-        if status == "cancelled":
-            output = (output or "") + "\n\n[interrupted by user]"
-            exit_code = 130  # conventional SIGINT exit code
-        elif status == "timeout":
-            output = (output or "") + f"\n\n[TimeoutExpired after {timeout} seconds]"
-            exit_code = -1
+    elif status == "cancelled":
+        output += "\n\n[interrupted by user; external effects unknown, do not retry automatically]"
+        exit_code = 130
+    elif status == "timeout":
+        output += f"\n\n[TimeoutExpired after {timeout} seconds; external effects unknown, do not retry automatically]"
+        exit_code = -1
 
     return (output, exit_code, status)

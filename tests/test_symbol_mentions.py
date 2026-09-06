@@ -111,7 +111,7 @@ def test_symbols_endpoint_error_handling():
         httpd.shutdown()
 
 
-def test_at_symbol_resolution_on_send():
+def test_at_symbol_resolution_on_send(owned_server, monkeypatch):
     import harness.server as srv
     from unittest.mock import patch, MagicMock
     
@@ -126,12 +126,13 @@ def test_at_symbol_resolution_on_send():
             f.write("def myfunc():\n")
             f.write("    return 42\n")
 
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
         
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_query") as mock_query:
@@ -159,10 +160,6 @@ def test_at_symbol_resolution_on_send():
                     "X-Harness-Token": srv_inst._TOKEN
                 }
 
-                # Start the active session so title-derivation doesn't cause issues
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
-
                 res = _get(port, "/api/chat?message=Check+out+@symbol:myfunc", headers)
                 
                 # Consume line by line until we hit 'done'
@@ -184,7 +181,7 @@ def test_at_symbol_resolution_on_send():
                 httpd.shutdown()
 
 
-def test_at_symbol_resolution_confinement():
+def test_at_symbol_resolution_confinement(owned_server, monkeypatch):
     import harness.server as srv
     from unittest.mock import patch, MagicMock
     
@@ -192,12 +189,13 @@ def test_at_symbol_resolution_confinement():
         real_tmp = os.path.realpath(tmpdir)
         srv._cfg.repo = real_tmp
 
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
         
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_query") as mock_query:
@@ -225,10 +223,6 @@ def test_at_symbol_resolution_confinement():
                     "X-Harness-Token": srv_inst._TOKEN
                 }
 
-                # Start active session
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
-
                 res = _get(port, "/api/chat?message=@symbol:outside_func", headers)
                 
                 # Consume line by line until we hit 'done'
@@ -247,16 +241,17 @@ def test_at_symbol_resolution_confinement():
                 httpd.shutdown()
 
 
-def test_at_symbol_miss_empty_hits_honesty():
+def test_at_symbol_miss_empty_hits_honesty(owned_server, monkeypatch):
     """Empty CodeGraph hits must append a Symbol skip note (never silent)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
 
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_query") as mock_query:
@@ -270,8 +265,6 @@ def test_at_symbol_miss_empty_hits_honesty():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
 
                 res = _get(port, "/api/chat?message=@symbol:MissingThing", headers)
                 while True:
@@ -287,16 +280,17 @@ def test_at_symbol_miss_empty_hits_honesty():
                 httpd.shutdown()
 
 
-def test_at_symbol_miss_not_ready_honesty():
+def test_at_symbol_miss_not_ready_honesty(owned_server, monkeypatch):
     """!codegraph_ready must append a Symbol skip note (never silent)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
 
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_ready", return_value=False):
 
@@ -307,8 +301,6 @@ def test_at_symbol_miss_not_ready_honesty():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
 
                 res = _get(port, "/api/chat?message=@symbol:NotReadyYet", headers)
                 while True:
@@ -325,16 +317,17 @@ def test_at_symbol_miss_not_ready_honesty():
                 httpd.shutdown()
 
 
-def test_at_symbol_miss_exception_honesty():
+def test_at_symbol_miss_exception_honesty(owned_server, monkeypatch):
     """CodeGraph exceptions must append a Symbol failure note (never silent)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
 
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
              patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
              patch(
@@ -349,8 +342,6 @@ def test_at_symbol_miss_exception_honesty():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
 
                 res = _get(port, "/api/chat?message=@symbol:BoomSym", headers)
                 while True:
@@ -366,16 +357,17 @@ def test_at_symbol_miss_exception_honesty():
                 httpd.shutdown()
 
 
-def test_at_path_like_missing_file_skip_before_symbol_search():
+def test_at_path_like_missing_file_skip_before_symbol_search(owned_server, monkeypatch):
     """Missing path-like @tokens get a File skip — not a silent symbol fallthrough."""
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
+        mock_pilot = owned_server._pilot
+        monkeypatch.setattr(mock_pilot, "send", MagicMock())
+        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
 
-        with patch("harness.server._pilot", mock_pilot), \
-             patch("harness.server._pilot_preflight", return_value=None), \
+        with patch("harness.server._pilot_preflight", return_value=None), \
              patch("puppetmaster.codegraph.codegraph_available") as mock_avail, \
              patch("puppetmaster.codegraph.codegraph_query") as mock_query:
 
@@ -388,8 +380,6 @@ def test_at_path_like_missing_file_skip_before_symbol_search():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
 
                 res = _get(
                     port,

@@ -500,6 +500,8 @@ def test_tokens_cached_swarm_dedupes_per_task():
 
 def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monkeypatch):
     """Mid-run /api/swarm/live job cards need per-job savings, not just spend."""
+    monkeypatch.setattr("pmharness.registry.resolve_price", lambda _: (3.0, 2.0))
+    monkeypatch.setattr("pmharness.registry.price_with_source", lambda _: (3.0, 2.0, "catalog"))
     from harness.sessions import SessionStore
 
     repo = tmp_path / "repo"
@@ -568,14 +570,10 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
                 ),
             ],
         )
-        monkeypatch.setattr(
-            server,
-            "_job_savings_fields",
-            lambda jid: {
-                "tool_output_tokens_saved": 1200,
-                "tool_output_savings_usd": 0.0036,
-                "tool_output_compactions": 1,
-            },
+        from harness.tool_output_savings import get_ledger
+        get_ledger(str(harness_store.root)).record(
+            session_id=sid, tool_call_id="live-savings-call", job_id=job.id,
+            original_chars=4800, compact_chars=0,
         )
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)

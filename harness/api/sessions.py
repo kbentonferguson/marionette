@@ -9,13 +9,17 @@ builds services from its module globals and re-exports the historical names
 from __future__ import annotations
 
 import json
+import copy
 import os
 import re
 import secrets
 import tempfile
 import time
 from dataclasses import dataclass
+from contextlib import nullcontext, ExitStack
+from ..pilot_replacement import replacement_gate
 from typing import Any, Callable
+from ..prompt_queue import ORIGINAL_TEXT_UNSET
 from ..diag import note as _diag_default
 from ..sessions import load_transcript, session_stored_root, session_visible_for_workspace
 from ..session_runners import LeaseExhaustedError
@@ -29,9 +33,20 @@ _CHAT_STASH: dict[str, dict] = {}
 _CHAT_STASH_MAX = 32
 
 
-def stash_put(message: str, images=None) -> str:
+def stash_put(message: str, images=None, *, documents=None, retry_key=None,
+              input_id=None, handoff_token=None, session_id=None, original_text=ORIGINAL_TEXT_UNSET) -> str:
+    if original_text is not ORIGINAL_TEXT_UNSET and not isinstance(original_text, str):
+        raise ValueError('Original text must be a string.')
     mid = secrets.token_hex(8)
-    _CHAT_STASH[mid] = {"message": message, "images": images or []}
+    payload = {"message": message, "images": images or []}
+    for key, value in (("documents", documents), ("retry_key", retry_key),
+                       ("input_id", input_id), ("handoff_token", handoff_token),
+                       ("session_id", session_id)):
+        if value is not None:
+            payload[key] = value
+    if original_text is not ORIGINAL_TEXT_UNSET:
+        payload['original_text'] = original_text
+    _CHAT_STASH[mid] = copy.deepcopy(payload)
     # Evict oldest entries beyond the cap (insertion order == age in a dict).
     while len(_CHAT_STASH) > _CHAT_STASH_MAX:
         try:
@@ -42,7 +57,7 @@ def stash_put(message: str, images=None) -> str:
 
 
 def stash_pop(mid: str):
-    """Returns the stashed {'message', 'images'} dict, or None if unknown/expired."""
+    """Consume one complete submission, or return None if unknown/expired."""
     return _CHAT_STASH.pop(mid, None)
 
 
@@ -78,6 +93,8 @@ class SessionServices:
     parse_bool: Callable[[Any], bool]
     # (status,) leaves reason untouched; (status, reason) sets both (reason may be None).
     set_codegraph_status: Callable[..., None]
+    clear_active_pilot: Callable[[], None]
+    pilot_swap_lock: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -120,28 +137,31 @@ def remove_session_transcript(
 def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
     if not sid:
         return 400, {"error": "missing session id"}
-    is_active = (svc.sessions.active == sid)
+    with svc.pilot_swap_lock or nullcontext():
+        runner = svc.runners.get(sid)
+        with replacement_gate(runner) if runner is not None else nullcontext():
+            if runner is not None and getattr(runner, '_input_admissions', 0):
+                return 409, {'ok': False, 'code': 'input_admission_busy',
+                             'error': 'Input admission is in progress; retry deleting the session.'}
+            is_active = (svc.sessions.active == sid)
+            new_active = svc.sessions.delete(sid)
+            if runner is not None:
+                runner._replacement_retired = True
+            remove_session_transcript(sid, state_dir=svc.sessions_state_dir(), diag=svc.diag)
     from ..hooks import run_hooks
     run_hooks("sessionEnd", {"session_id": sid})
-    new_active = svc.sessions.delete(sid)
-    remove_session_transcript(sid, state_dir=svc.sessions_state_dir(), diag=svc.diag)
     try:
         svc.runners.drop(sid)
     except Exception as e:
         svc.diag("server.session_delete_drop_runner", e)
     if is_active:
-        pilot = svc.get_pilot()
+        svc.clear_active_pilot()
         if new_active:
             try:
                 svc.attach_view(new_active)
-            except LeaseExhaustedError:
-                # Fall back to loading into the current global pilot pointer.
-                history = load_transcript(svc.sessions_state_dir(), new_active)
-                svc.sync_pilot_session_id()
-                pilot.load_history(history)
-        else:
-            svc.sync_pilot_session_id()
-            pilot.load_history([])
+            except LeaseExhaustedError as exc:
+                return 409, {**svc.lease_exhausted_body(exc),
+                             "deleted": sid, "active": new_active}
     return 200, {"ok": True, "active": new_active}
 
 
@@ -184,14 +204,15 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
     except Exception:
         pass
 
-    relocated = svc.sessions.relocate(
-        sid,
-        target_repo,
-        repo=target_repo,
-        branch=branch,
-        title=title if isinstance(title, str) else None,
-        make_active=True,
-    )
+    with svc.pilot_swap_lock or nullcontext():
+        relocated = svc.sessions.relocate(
+            sid,
+            target_repo,
+            repo=target_repo,
+            branch=branch,
+            title=title if isinstance(title, str) else None,
+            make_active=True,
+        )
     if not relocated:
         return 404, {"ok": False, "error": "unknown session"}
 
@@ -225,7 +246,8 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
     except LeaseExhaustedError as e:
         if prev_active:
             try:
-                svc.sessions.switch(prev_active)
+                with svc.pilot_swap_lock or nullcontext():
+                    svc.sessions.switch(prev_active)
             except Exception as roll_e:
                 svc.diag("server.session_relocate_lease_rollback", roll_e)
         if svc.cfg.repo != prev_repo:
@@ -278,7 +300,8 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
                     branch = proc_branch.stdout.strip()
         except Exception:
             pass
-    res = svc.sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
+    with svc.pilot_swap_lock or nullcontext():
+        res = svc.sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
     sid = res.get("id", "")
     if sid:
         try:
@@ -292,12 +315,14 @@ def post_sessions_create(body: dict, svc: SessionServices) -> tuple[int, dict]:
             svc.get_pilot().load_history([])
         except LeaseExhaustedError as e:
             try:
-                svc.sessions.delete(sid)
+                with svc.pilot_swap_lock or nullcontext():
+                    svc.sessions.delete(sid)
             except Exception as roll_e:
                 svc.diag("server.session_create_lease_delete", roll_e)
             if prev_active:
                 try:
-                    svc.sessions.switch(prev_active)
+                    with svc.pilot_swap_lock or nullcontext():
+                        svc.sessions.switch(prev_active)
                 except Exception as roll_e:
                     svc.diag("server.session_create_lease_rollback", roll_e)
             return 409, svc.lease_exhausted_body(e)
@@ -318,7 +343,8 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
     prev_active = svc.sessions.active
     prev_repo = svc.cfg.repo
     prev_env_repo = os.environ.get("HARNESS_REPO")
-    res = svc.sessions.switch(target_id)
+    with svc.pilot_swap_lock or nullcontext():
+        res = svc.sessions.switch(target_id)
     if res.get("ok") and svc.sessions.active:
         target_sess = None
         for s in svc.sessions.list():
@@ -379,7 +405,8 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
         except LeaseExhaustedError as e:
             if prev_active:
                 try:
-                    svc.sessions.switch(prev_active)
+                    with svc.pilot_swap_lock or nullcontext():
+                        svc.sessions.switch(prev_active)
                 except Exception as roll_e:
                     svc.diag("server.session_switch_lease_rollback", roll_e)
             if svc.cfg.repo != prev_repo:
@@ -414,8 +441,21 @@ def post_sessions_delete(body: dict, svc: SessionServices) -> tuple[int, dict]:
 def post_sessions_clear(svc: SessionServices) -> tuple[int, dict]:
     repo_root = svc.cfg.repo or ""
     state_dir = svc.sessions_state_dir()
-    prior_active = svc.sessions.active
-    deleted_ids, new_active = svc.sessions.clear_for_workspace(repo_root, state_dir)
+    with svc.pilot_swap_lock or nullcontext(), ExitStack() as gates:
+        candidates = [row['id'] for row in svc.sessions.rows()
+                      if session_visible_for_workspace(row, repo_root, state_dir)]
+        runners = [svc.runners.get(sid) for sid in candidates]
+        for runner in runners:
+            if runner is not None:
+                gates.enter_context(replacement_gate(runner))
+                if getattr(runner, '_input_admissions', 0):
+                    return 409, {'ok': False, 'code': 'input_admission_busy',
+                                 'error': 'Input admission is in progress; retry clearing the workspace.'}
+        prior_active = svc.sessions.active
+        deleted_ids, new_active = svc.sessions.clear_for_workspace(repo_root, state_dir)
+        for runner in runners:
+            if runner is not None:
+                runner._replacement_retired = True
     from ..hooks import run_hooks
     for sid in deleted_ids:
         run_hooks("sessionEnd", {"session_id": sid})
@@ -425,17 +465,13 @@ def post_sessions_clear(svc: SessionServices) -> tuple[int, dict]:
         except Exception as e:
             svc.diag("server.session_clear_drop_runner", e)
     if prior_active in deleted_ids:
-        pilot = svc.get_pilot()
+        svc.clear_active_pilot()
         if new_active:
             try:
                 svc.attach_view(new_active)
-            except LeaseExhaustedError:
-                history = load_transcript(state_dir, new_active)
-                svc.sync_pilot_session_id()
-                pilot.load_history(history)
-        else:
-            svc.sync_pilot_session_id()
-            pilot.load_history([])
+            except LeaseExhaustedError as exc:
+                return 409, {**svc.lease_exhausted_body(exc),
+                             "deleted": len(deleted_ids), "active": new_active}
     return 200, {
         "ok": True,
         "deleted": len(deleted_ids),
@@ -448,6 +484,21 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
     if not sid:
         return 400, {"error": "missing session id"}
     archived = svc.parse_bool(body.get("archived"))
+    if not archived:
+        try:
+            from ..chat_archive import restore_pruned_transcript, _raw_transcript, _is_pruned_stub, _has_archived_transcript
+            restored = restore_pruned_transcript(svc.sessions_state_dir(), sid)
+            if not restored:
+                try:
+                    raw = _raw_transcript(svc.sessions_state_dir(), sid)
+                except FileNotFoundError:
+                    if _has_archived_transcript(svc.sessions_state_dir(), sid):
+                        return 409, {"ok": False, "error": "Archive restore failed; session remains archived"}
+                    raw = []
+                if _is_pruned_stub(raw):
+                    return 409, {"ok": False, "error": "Archive restore failed; session remains archived"}
+        except Exception:
+            return 409, {"ok": False, "error": "Archive restore failed; session remains archived"}
     svc.sessions.archive(sid, archived)
     if archived:
         try:
@@ -460,12 +511,6 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
                 workspace=str(row.get("workspace_root") or row.get("repo") or ""),
                 updated_at=int(row.get("created") or 0),
             )
-        except Exception:
-            pass
-    else:
-        try:
-            from ..chat_archive import restore_pruned_transcript
-            restore_pruned_transcript(svc.sessions_state_dir(), sid)
         except Exception:
             pass
     return 200, {"ok": True}
@@ -744,12 +789,21 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
     if not target_id:
         return 400, {"ok": False, "error": "session id required"}
     svc.save_active_transcript()
-    res = svc.sessions.switch(target_id)
+    previous_active = svc.sessions.active
+    with svc.pilot_swap_lock or nullcontext():
+        res = svc.sessions.switch(target_id)
     if not res.get("ok"):
         return 404, res
     try:
         svc.attach_view(svc.sessions.active, defer_cold_build=True)
     except LeaseExhaustedError as exc:
+        if previous_active:
+            with svc.pilot_swap_lock or nullcontext():
+                svc.sessions.switch(previous_active)
+        else:
+            with svc.pilot_swap_lock or nullcontext(), svc.sessions._lock:
+                svc.sessions._active = None
+                svc.sessions._save(immediate=True)
         return 409, svc.lease_exhausted_body(exc)
     transcript = svc.attach_view_transcript_payload(svc.get_pilot(), target_id)
     return 200, {
@@ -763,30 +817,36 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
 
 
 def post_session_fork(body: dict, svc: SessionServices) -> tuple[int, dict]:
-    """POST /api/session/fork — {session_id, event_id}. 404 unknown; 400 bad id."""
-    body = body or {}
-    session_id = (body.get("session_id") or body.get("id") or "").strip()
-    if not session_id:
+    """Preview or fork an explicit persisted source; never snapshot live state."""
+    from ..sessions import ForkConflict
+
+    session_id = body.get("session_id", body.get("id"))
+    if not isinstance(session_id, str) or not session_id.strip():
         return 404, {"ok": False, "error": "unknown session"}
-    raw_event = body.get("event_id", body.get("at_event_id"))
-    try:
-        event_id = int(raw_event)
-    except (TypeError, ValueError):
+    state_dir = svc.sessions_state_dir()
+    if body.get("preview") is True:
+        preview = svc.sessions.fork_preview(session_id, state_dir)
+        if preview is None:
+            return 404, {"ok": False, "error": "unknown session"}
+        return 200, {"ok": True, **preview}
+    event_id = body.get("event_id", body.get("at_event_id"))
+    if type(event_id) is not int or event_id < 1:
         return 400, {"ok": False, "error": "bad event_id"}
-    state_dir = ""
+    revision = body.get("revision")
+    request_id = body.get("request_id")
+    if revision is not None and (not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision)):
+        return 400, {"ok": False, "error": "bad revision"}
+    if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id) or revision is None):
+        return 400, {"ok": False, "error": "request_id requires a revision and at most 80 identifier characters"}
     try:
-        state_dir = svc.sessions_state_dir() or ""
-    except Exception:
-        state_dir = ""
-    if not state_dir:
-        try:
-            state_dir = str(getattr(svc.cfg, "state_dir", "") or "")
-        except Exception:
-            state_dir = ""
-    try:
-        child = svc.sessions.fork_at(session_id, event_id, state_dir)
+        child = svc.sessions.fork_at(session_id, event_id, state_dir,
+                                     revision=revision, request_id=request_id)
+    except ForkConflict as exc:
+        return 409, {"ok": False, "error": str(exc)}
     except ValueError:
         return 400, {"ok": False, "error": "bad event_id"}
+    except OSError:
+        return 500, {"ok": False, "error": "Could not persist fork transcript"}
     if child is None:
         return 404, {"ok": False, "error": "unknown session"}
     return 200, {"ok": True, **child}
@@ -806,4 +866,3 @@ def post_sessions_detach(body: dict, svc: SessionServices) -> tuple[int, dict]:
         "runners": svc.runners.statuses(),
         "active_view_id": svc.runners.active_view_id,
     }
-

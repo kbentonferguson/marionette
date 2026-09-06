@@ -10,6 +10,8 @@ function pendingApproval(overrides: Partial<CommandApprovalItem> = {}): CommandA
   return {
     kind: "command_approval",
     id: "call-1",
+    actionId: "call-1",
+    approvalId: "approval-1",
     command: "ssh prod reboot",
     commandHash: "a".repeat(64),
     sessionId: "session-a",
@@ -107,4 +109,11 @@ describe("full-auto command approval card", () => {
     renderApproval();
     expect(screen.queryByRole("button", { name: "Approve suggested amendment" })).toBeNull();
   });
+});
+
+it("requires refresh for historical cards without identity", () => {
+  const decide = renderApproval(pendingApproval({ approvalId: undefined }));
+  expect(screen.getByText("Refresh this conversation to decide this approval.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve once and retry" })).toBeNull();
+  expect(decide).not.toHaveBeenCalled();
 });

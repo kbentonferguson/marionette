@@ -433,3 +433,141 @@ def test_reviews_endpoints_403_without_token():
             assert e.code == 403
     finally:
         httpd.shutdown()
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+def test_scoped_review_api_preserves_sibling_file(temp_git_repo, tmp_path, monkeypatch, decision):
+    from pathlib import Path
+    from harness.api.reviews import ReviewServices, post_reviews_apply, get_reviews
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "state"))
+    cfg.repo = temp_git_repo
+    session = ConversationalSession(cfg)
+    files = parse_unified_diff(
+        "diff --git a/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n"
+        "@@ -1,3 +1,4 @@\n Line A\n+Added\n Line B\n Line C\n"
+        "diff --git a/file2.txt b/file2.txt\n--- a/file2.txt\n+++ b/file2.txt\n"
+        "@@ -1,3 +1,4 @@\n Alpha\n+Extra\n Beta\n Gamma\n"
+    )
+    session._pending_reviews["scoped"] = {
+        "id": "scoped", "job_id": "", "target_repo": temp_git_repo,
+        "objective": "two files", "created_at": 123, "files": files,
+    }
+    svc = ReviewServices(cfg, lambda: session, lambda *a: None, lambda s: s)
+    a_id = files[0]["hunks"][0]["decision_id"]
+    b_id = files[1]["hunks"][0]["decision_id"]
+    code, result = post_reviews_apply({
+        "id": "scoped", "scope": "selected", "decisions": {a_id: decision},
+    }, svc)
+    assert code == 200 and result["ok"], result
+    assert (Path(temp_git_repo) / "file2.txt").read_text() == "Alpha\nBeta\nGamma\n"
+    assert ("Added" in (Path(temp_git_repo) / "file1.txt").read_text()) == (decision == "accept")
+    pending = get_reviews(svc)[1]
+    assert len(pending) == 1, "selected action consumed untouched sibling file"
+    assert pending[0]["id"] == "scoped"
+    assert pending[0]["created_at"] == 123
+    assert pending[0]["files"][0]["hunks"][0]["decision_id"] == b_id
+    assert pending[0]["files"][0]["hunks"][0]["status"] == "pending"
+    code, result = post_reviews_apply({"id": "scoped", "decisions": {b_id: "accept"}}, svc)
+    assert result["ok"], result
+    assert "Extra" in (Path(temp_git_repo) / "file2.txt").read_text()
+    assert get_reviews(svc)[1] == []
+
+
+@pytest.fixture
+def scoped_review(temp_git_repo, tmp_path, monkeypatch):
+    from pathlib import Path
+    from harness.api.reviews import ReviewServices, post_reviews_apply
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    repo = Path(temp_git_repo)
+    base = "".join(f"line {i}\n" for i in range(30))
+    target = repo / "multi.txt"
+    target.write_text(base)
+    subprocess.run(["git", "add", "multi.txt"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "multi"], cwd=repo, check=True, capture_output=True)
+    target.write_text(base.replace("line 2\n", "line 2\ninserted\n").replace("line 25\n", "changed\n"))
+    diff = subprocess.run(["git", "diff"], cwd=repo, check=True, capture_output=True, text=True).stdout
+    target.write_text(base)
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "state"))
+    cfg.repo = str(repo)
+    session = ConversationalSession(cfg)
+    files = parse_unified_diff(diff)
+    assert len(files[0]["hunks"]) == 2
+    session._pending_reviews["r"] = {
+        "id": "r", "job_id": "", "target_repo": str(repo), "files": files,
+    }
+    svc = ReviewServices(cfg, lambda: session, lambda *a: None, lambda s: s)
+
+    def apply(decisions, scope="selected"):
+        return post_reviews_apply({"id": "r", "scope": scope, "decisions": decisions}, svc)[1]
+
+    return session, files, target, base, apply
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+def test_scoped_review_sequential_hunks(scoped_review, first, decision, legacy):
+    session, files, target, base, apply = scoped_review
+    hunks = files[0]["hunks"]
+    if legacy:
+        from harness.diffreview import resolve_hunk_decision_id
+        for h in hunks:
+            h.pop("decision_id")
+        counts = {}
+        ids = [resolve_hunk_decision_id(h, "multi.txt", counts) for h in hunks]
+    else:
+        ids = [h["decision_id"] for h in hunks]
+    selected_id = ids[first]
+    remaining_id = ids[1 - first]
+    assert apply({selected_id: decision})["ok"]
+    remaining = session._pending_reviews["r"]["files"][0]["hunks"]
+    assert len(remaining) == 1
+    assert remaining[0]["decision_id"] == remaining_id
+    if first == 0 and decision == "accept":
+        old_start = int(hunks[1]["header"].split("-")[1].split(",")[0])
+        assert remaining[0]["header"].startswith(f"@@ -{old_start + 1},")
+    assert not apply({selected_id: "accept"})["ok"], "stale click must not consume pending sibling"
+    assert apply({remaining_id: "accept"})["ok"]
+    expected = base
+    if first != 0 or decision == "accept":
+        expected = expected.replace("line 2\n", "line 2\ninserted\n")
+    if first != 1 or decision == "accept":
+        expected = expected.replace("line 25\n", "changed\n")
+    assert target.read_text() == expected
+    assert "r" not in session._pending_reviews
+
+
+def test_scoped_review_failure_preserves_all_then_retry(scoped_review):
+    session, files, target, base, apply = scoped_review
+    first, second = [h["decision_id"] for h in files[0]["hunks"]]
+    drift = base.replace("line 25\n", "user edit\n")
+    target.write_text(drift)
+    result = apply({first: "reject", second: "accept"})
+    assert not result["ok"]
+    assert target.read_text() == drift
+    assert len(session._pending_reviews["r"]["files"][0]["hunks"]) == 2
+    assert session._pending_reviews["r"]["error"]
+    target.write_text(base)
+    assert apply({second: "accept"})["ok"]
+    assert "error" not in session._pending_reviews["r"]
+    assert apply({first: "reject"})["ok"]
+    assert target.read_text() == base.replace("line 25\n", "changed\n")
+
+
+@pytest.mark.parametrize("decisions", [{}, {"missing": "accept"}, {"0:0": "reject"}])
+def test_scoped_review_rejects_invalid_selection(scoped_review, decisions):
+    session, files, target, base, apply = scoped_review
+    assert not apply(decisions)["ok"]
+    assert target.read_text() == base
+    assert session._pending_reviews["r"]["files"] == files
+
+
+def test_scoped_review_rejects_invalid_value_and_scope(scoped_review):
+    session, files, target, base, apply = scoped_review
+    did = files[0]["hunks"][0]["decision_id"]
+    assert not apply({did: "pending"})["ok"]
+    assert apply({did: "accept"}, "typo")["error"] == "Invalid review scope"
+    assert target.read_text() == base

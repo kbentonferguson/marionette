@@ -13,6 +13,8 @@ import os
 import shutil
 import stat
 import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 # Offline full-auto safety invariants (Wave 6). Keep live-key / @network /
@@ -115,6 +117,19 @@ def force_throwaway_harness_state_dir() -> str:
 
 
 force_throwaway_harness_state_dir()
+
+# Checkpoint metadata uses Path.home independently of HARNESS_STATE_DIR.
+# Bind only that module's path facade before collection constructs any stores.
+from harness import checkpoints as _checkpoint_module
+
+_checkpoint_paths = _checkpoint_module.Path
+_checkpoint_module.Path = SimpleNamespace(
+    home=lambda: Path(os.environ["HARNESS_STATE_DIR"]) / "checkpoint-home",
+)
+
+
+def pytest_unconfigure(config):
+    _checkpoint_module.Path = _checkpoint_paths
 
 
 def _clear_live_puppetmaster_state_dir() -> None:
@@ -353,11 +368,8 @@ def _isolate_provider_state(monkeypatch, tmp_path_factory):
     fresh per-test subdir on top so state never bleeds between tests. Tests that
     set their own HARNESS_STATE_DIR in the test body still override it there.
 
-    Also rebinds ``harness.server._sessions`` (when the module is already
-    loaded) to a fresh SessionStore under this test's state root. The module
-    global binds its path once at import; env-only isolation cannot retarget
-    it, so ``srv._sessions.create(...)`` would otherwise keep writing the
-    import-time ``harness_sessions.json`` (including a live ~/.pmharness path).
+    Replaces the loaded server's config, store, registry, tracker, and pilot
+    together. A pilot's permanent queue owner must never outlive its store.
     """
     import sys
 
@@ -365,53 +377,46 @@ def _isolate_provider_state(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(d))
 
     server_mod = sys.modules.get("harness.server")
-    original_sessions = None
-    original_pilot_store = None
-    test_sessions = None
+    test_store = None
     if server_mod is not None:
-        try:
-            from harness.sessions import SessionStore
-
-            original_sessions = getattr(server_mod, "_sessions", None)
-            if original_sessions is not None:
-                try:
-                    original_sessions.flush()
-                except Exception:
-                    pass
-            test_sessions = SessionStore(
-                os.path.join(str(d), "harness_sessions.json")
-            )
-            server_mod._sessions = test_sessions
-            pilot = getattr(server_mod, "_pilot", None)
-            if pilot is not None:
-                original_pilot_store = getattr(pilot, "_session_store", None)
-                try:
-                    pilot._session_store = test_sessions
-                except Exception:
-                    pass
-        except Exception:
-            test_sessions = None
-            original_sessions = None
-            original_pilot_store = None
+        test_store = _isolate_server_session_state(server_mod, d, monkeypatch)
 
     yield
 
-    if server_mod is None or test_sessions is None:
-        return
-    try:
-        current = getattr(server_mod, "_sessions", None)
-        if current is not None:
-            try:
-                current.flush()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    if original_sessions is not None:
-        server_mod._sessions = original_sessions
-    pilot = getattr(server_mod, "_pilot", None)
-    if pilot is not None and original_pilot_store is not None:
-        try:
-            pilot._session_store = original_pilot_store
-        except Exception:
-            pass
+    if test_store is not None:
+        test_store.flush()
+
+
+def _isolate_server_session_state(server, state_dir, monkeypatch):
+    from dataclasses import replace
+    from harness.sessions import SessionStore
+    from harness.session import Session
+    from harness.session_runners import SessionRunnerRegistry
+
+    # Queue ownership includes the state root and cannot follow a replaced store.
+    server._sessions.flush()
+    monkeypatch.setattr(server, "_cfg", replace(server._cfg, state_dir=str(state_dir)))
+    monkeypatch.setattr(server, "_sessions", SessionStore(str(state_dir / "harness_sessions.json")))
+    monkeypatch.setattr(server, "_runners", SessionRunnerRegistry(
+        on_drop=server._fold_runner_meters_into_boot_carry,
+    ))
+    monkeypatch.setattr(server, "_session", Session(server._cfg))
+    monkeypatch.setattr(server, "_pilot", server._build_conversational_pilot())
+    return server._sessions
+
+
+@pytest.fixture
+def owned_server(_isolate_provider_state, monkeypatch):
+    import sys
+
+    already_loaded = "harness.server" in sys.modules
+    import harness.server as server
+
+    if not already_loaded:
+        _isolate_server_session_state(server, Path(os.environ["HARNESS_STATE_DIR"]), monkeypatch)
+    session = server._sessions.create()
+    server._attach_view(session["id"], load_transcript_on_create=False)
+    assert server._ensure_active_pilot_ready() is server._runners.get(session["id"])
+    store = server._sessions
+    yield server
+    store.flush()

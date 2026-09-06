@@ -19,6 +19,13 @@ def _allow_small_fixture_compaction(monkeypatch):
 
 
 class _HangPilot:
+    def fork_for_compaction(self, *, model):
+        from copy import copy
+        local = copy(self)
+        if model:
+            local.model = model
+        return local
+
     name = "hang-pilot"
     base_url = "http://localhost:11434/v1"
 
@@ -40,14 +47,25 @@ _OK_SUMMARY = (
 
 
 class _OkPilot:
+    def fork_for_compaction(self, *, model):
+        from copy import copy
+        local = copy(self)
+        if model:
+            local.model = model
+        return local
+
     name = "ok-pilot"
     base_url = "http://localhost:11434/v1"
 
     def __init__(self):
-        self.calls = 0
+        self.requests = []
+
+    @property
+    def calls(self):
+        return len(self.requests)
 
     def complete(self, prompt, *, system=None):
-        self.calls += 1
+        self.requests.append(prompt)
         from pmharness.drivers.openai_compat import DriverResponse
         return DriverResponse(text=_OK_SUMMARY, tokens_out=5, latency_ms=1.0)
 

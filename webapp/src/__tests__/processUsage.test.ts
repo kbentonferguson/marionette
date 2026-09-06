@@ -92,3 +92,41 @@ describe("processUsage store", () => {
     expect(getProcessUsage().session?.tokens_used).toBe(0);
   });
 });
+
+it("does not swallow incomplete zero and accepts successful retry", async () => {
+  _resetProcessUsageForTests();
+  mockGetUsage.mockResolvedValue(session(2));
+  await refreshProcessUsage();
+  mockGetUsage.mockResolvedValue({ ...session(0, 0), session: { ...session(0, 0).session, read_status: "unavailable" } });
+  await refreshProcessUsage();
+  expect(getProcessUsage().readStatus).toBe("unavailable");
+  mockGetUsage.mockResolvedValue(session(0, 0));
+  await refreshProcessUsage();
+  expect(getProcessUsage().readStatus).toBeUndefined();
+  expect(getProcessUsage().session?.est_cost_usd).toBe(0);
+});
+
+it("accepts provider-attested zero after positive spend", async () => {
+  _resetProcessUsageForTests();
+  mockGetUsage.mockResolvedValue(session(2));
+  await refreshProcessUsage();
+  mockGetUsage.mockResolvedValue({ ...session(0, 0), session: { ...session(0, 0).session, cost_source: "provider" } });
+  await refreshProcessUsage();
+  expect(getProcessUsage().session?.est_cost_usd).toBe(0);
+});
+
+it("fences an old-scope response while the new request fails", async () => {
+  _resetProcessUsageForTests();
+  let resolveOld!: (value: ReturnType<typeof session>) => void;
+  mockGetUsage.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+  const off = subscribeProcessUsage(() => {});
+  const old = refreshProcessUsage();
+  mockGetUsage.mockRejectedValueOnce(new Error("offline"));
+  window.dispatchEvent(new Event("harness-project-selected"));
+  await refreshProcessUsage();
+  resolveOld(session(99));
+  await old;
+  expect(getProcessUsage().session).toBeNull();
+  expect(getProcessUsage().readStatus).toBe("unavailable");
+  off();
+});

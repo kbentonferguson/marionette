@@ -122,7 +122,7 @@ def test_workspace_files_includes_folders():
         httpd.shutdown()
 
 
-def test_at_folder_resolution_on_send():
+def test_at_folder_resolution_on_send(owned_server):
     import harness.server as srv
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -132,9 +132,9 @@ def test_at_folder_resolution_on_send():
         open(os.path.join(pkg, "one.py"), "w").write("ONE")
         open(os.path.join(pkg, "two.py"), "w").write("TWO")
 
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -146,8 +146,7 @@ def test_at_folder_resolution_on_send():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(
                     port,
@@ -161,6 +160,10 @@ def test_at_folder_resolution_on_send():
 
                 mock_pilot.send.assert_called_once()
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == "Look at @folder:pkg"
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced folders:" in sent_msg
                 assert "--- Folder: pkg ---" in sent_msg
                 assert "pkg/one.py" in sent_msg
@@ -172,14 +175,14 @@ def test_at_folder_resolution_on_send():
                 httpd.shutdown()
 
 
-def test_at_folder_resolution_confinement():
+def test_at_folder_resolution_confinement(owned_server):
     import harness.server as srv
 
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -193,8 +196,7 @@ def test_at_folder_resolution_confinement():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(
                     port,
@@ -207,6 +209,10 @@ def test_at_folder_resolution_confinement():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == "@folder:../outside"
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced folders:" in sent_msg
                 assert "--- Folder: ../outside ---" in sent_msg
                 assert "... skipped: not found in workspace" in sent_msg
@@ -215,7 +221,7 @@ def test_at_folder_resolution_confinement():
                 httpd.shutdown()
 
 
-def test_at_folder_budget_skip_honesty(monkeypatch):
+def test_at_folder_budget_skip_honesty(monkeypatch, owned_server):
     """Over-budget @folder must emit a skip note, never silent-drop."""
     monkeypatch.setattr(
         "harness.mention_context.MENTION_TOTAL_BUDGET",
@@ -229,9 +235,9 @@ def test_at_folder_budget_skip_honesty(monkeypatch):
         for name in ("a.py", "b.py", "c.py", "d.py", "e.py"):
             open(os.path.join(pkg, name), "w").write("x")
 
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -245,8 +251,7 @@ def test_at_folder_budget_skip_honesty(monkeypatch):
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(
                     port,
@@ -259,6 +264,10 @@ def test_at_folder_budget_skip_honesty(monkeypatch):
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == "@folder:pkg"
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced folders:" in sent_msg
                 assert "... skipped:" in sent_msg
                 assert "budget exhausted" in sent_msg

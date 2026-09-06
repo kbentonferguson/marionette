@@ -12,6 +12,7 @@ as provider workers.
 from __future__ import annotations
 
 import threading
+from functools import wraps
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from harness.command_jobs import (
     COMMAND_TERMINAL_STATES,
     command_fingerprint,
+    command_job_outcome,
     launch_registered_command_job,
     lookup_command_job,
     secret_free_command_preview,
@@ -40,6 +42,20 @@ _CHILD_COMMAND_LOCK = threading.Lock()
 # Aggregate → stop flag (stop-before-start for children not yet launched).
 _BATCH_STOP_EVENTS: Dict[str, threading.Event] = {}
 _BATCH_STOP_LOCK = threading.Lock()
+
+
+# Serialize registration of a logical action inside the owning backend process.
+_BATCH_ACTION_LOCK = threading.RLock()
+_BATCH_SUPERVISORS: set = set()
+_BATCH_SUPERVISOR_LOCK = threading.Lock()
+
+
+def _serialize_batch_action(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _BATCH_ACTION_LOCK:
+            return fn(*args, **kwargs)
+    return locked
 
 
 def is_command_batch_action(act: Any) -> bool:
@@ -159,6 +175,9 @@ def project_command_batch_fields(job: Dict[str, Any]) -> Dict[str, Any]:
             "command_preview": str(child.get("command_preview") or ""),
             "status": str(child.get("status") or ""),
         }
+        for key in ("recovery_state", "recovery_receipt"):
+            if key in child:
+                entry[key] = child[key]
         if child.get("terminal_receipt") is not None:
             entry["terminal_receipt"] = child.get("terminal_receipt")
         if child.get("exit_code") is not None:
@@ -175,8 +194,9 @@ def project_command_batch_fields(job: Dict[str, Any]) -> Dict[str, Any]:
         "started_at": job.get("started_at") or job.get("created_at"),
         "mixed_terminal": bool(job.get("mixed_terminal")),
     }
-    if job.get("terminal_receipt") is not None:
-        out["terminal_receipt"] = job.get("terminal_receipt")
+    for key in ("terminal_receipt", "recovery_state", "recovery_receipt"):
+        if key in job:
+            out[key] = job[key]
     return out
 
 
@@ -214,6 +234,9 @@ def build_batch_pending_receipt(job: Dict[str, Any]) -> Dict[str, Any]:
             "each child owns its own terminal receipt."
         ),
     }
+    for key in ("recovery_state", "recovery_receipt"):
+        if key in job:
+            receipt[key] = job[key]
     return receipt
 
 
@@ -230,6 +253,7 @@ def resolve_batch_max_concurrency(session: Any, command_count: int) -> int:
     return max(1, min(n, max_workers, MAX_COMMAND_BATCH_SIZE))
 
 
+@_serialize_batch_action
 def start_command_batch(
     session: Any,
     commands: Sequence[str],
@@ -239,10 +263,9 @@ def start_command_batch(
 ) -> Dict[str, Any]:
     """Register/reuse a durable command batch and return a pending receipt.
 
-    Replay with the same ``action_id`` reuses completed children (never reruns
-    them), keeps running children as-is, and deterministically restarts
-    failed / cancelled / unstarted children for fingerprints present in
-    ``commands``.
+    Replay with the same ``action_id`` preserves every observed outcome. Only
+    registered children without a launch checkpoint may start. Commands and
+    cwd are immutable for an action; intentional retries need a new action ID.
     """
     normalized = normalize_batch_commands(commands)
     aid = str(action_id or "").strip()
@@ -263,6 +286,17 @@ def start_command_batch(
     else:
         concurrency = max(1, min(concurrency, len(normalized), MAX_COMMAND_BATCH_SIZE))
 
+    existing = find_command_batch_by_action(session, aid)
+    if existing is not None:
+        return _replay_command_batch(
+            session,
+            existing,
+            normalized,
+            cwd=repo,
+            max_concurrency=concurrency,
+        )
+
+
     # Resource-pressure admit once per logical batch (optional host hook).
     admit = getattr(session, "_resource_pressure_admit", None)
     if callable(admit):
@@ -275,16 +309,6 @@ def start_command_batch(
                 getattr(session, "_resource_pressure_capacity_message", lambda: "")()
                 or "Resource capacity constrained; not dispatching command batch."
             )
-
-    existing = find_command_batch_by_action(session, aid)
-    if existing is not None:
-        return _replay_command_batch(
-            session,
-            existing,
-            normalized,
-            cwd=repo,
-            max_concurrency=concurrency,
-        )
 
     short = uuid.uuid4().hex[:8]
     batch_id = f"local-cmdbatch-{short}"
@@ -319,7 +343,7 @@ def start_command_batch(
             "idempotency_key": batch_idempotency_key(
                 str(getattr(session, "harness_session_id", "") or ""),
                 aid,
-                fp,
+                f"{index}:{fp}",
             ),
         })
         launch_plan.append((child_id, command))
@@ -404,166 +428,69 @@ def _replay_command_batch(
     cwd: str,
     max_concurrency: int,
 ) -> Dict[str, Any]:
-    """Idempotent replay: reuse completed, restart failed/unstarted deterministically."""
+    """Reconcile each original occurrence; never retry an uncertain effect."""
     batch_id = str(existing.get("id") or "")
-    aid = str(existing.get("action_id") or "")
-    register_child = session._register_command_job
-    children_meta = [
-        dict(c) for c in (existing.get("children") or []) if isinstance(c, dict)
-    ]
-    by_fp: Dict[str, Dict[str, Any]] = {
-        str(c.get("command_fingerprint") or ""): c for c in children_meta
-    }
-    launch_plan: List[Tuple[str, str]] = []
-    child_ids = list(existing.get("child_job_ids") or [])
+    children = existing.get("children") or []
+    expected = [command_fingerprint(command) for command in commands]
+    if (
+        str(existing.get("cwd") or "") != cwd
+        or len(children) != len(expected)
+        or any(
+            not isinstance(child, dict)
+            or child.get("index") != index
+            or child.get("command_fingerprint") != expected[index]
+            for index, child in enumerate(children)
+        )
+    ):
+        raise ValueError("Command batch action identity conflict: commands or cwd changed")
 
-    for index, command in enumerate(commands):
-        fp = command_fingerprint(command)
-        preview = secret_free_command_preview(command)
-        prior = by_fp.get(fp)
-        if prior is not None:
-            child_id = str(prior.get("job_id") or "")
-            live = lookup_command_job(session, child_id) if child_id else None
-            status = str((live or prior).get("status") or "")
-            live_receipt = (
-                live.get("terminal_receipt")
-                if live and live.get("terminal_receipt") is not None
-                else prior.get("terminal_receipt")
-            )
-            # Wave 4: completed children (status or first-wins receipt) must
-            # never rerun — SSE/renderer loss must not discard settled work.
-            # Intentional replay of failed/cancelled still allocates a *new*
-            # child below.
-            if status == "completed" or (
-                isinstance(live_receipt, dict)
-                and str(live_receipt.get("status") or "") == "completed"
+    launch_plan = []
+    reconciled = []
+    for prior, command in zip(children, commands):
+        child_id = str(prior.get("job_id") or "")
+        live = lookup_command_job(session, child_id)
+        child = dict(prior)
+        if live is not None:
+            if (
+                live.get("action_id") != existing.get("action_id")
+                or live.get("batch_id") != batch_id
+                or live.get("batch_index") != prior.get("index")
+                or live.get("command_fingerprint") != prior.get("command_fingerprint")
+                or live.get("cwd") != cwd
             ):
-                # Reuse completed — do not rerun.
-                prior["status"] = "completed"
-                if isinstance(live_receipt, dict):
-                    prior["terminal_receipt"] = live_receipt
-                if live and live.get("exit_code") is not None:
-                    prior["exit_code"] = live.get("exit_code")
-                continue
-            if status == "running":
-                # Deterministic: leave the in-flight child alone.
-                prior["status"] = "running"
-                continue
-            if status == "registered":
-                # Already checkpointed/settled rows must not be relaunched.
-                if isinstance(live_receipt, dict):
-                    prior["status"] = str(live_receipt.get("status") or status)
-                    prior["terminal_receipt"] = live_receipt
-                    continue
-                # Unstarted: launch the existing registered row.
-                with _CHILD_COMMAND_LOCK:
-                    _CHILD_COMMAND_TEXT[child_id] = command
+                raise ValueError("Command batch child identity conflict")
+            if (
+                live.get("status") == "registered"
+                and live.get("launch_checkpoint") is None
+                and live.get("terminal_receipt") is None
+            ):
                 launch_plan.append((child_id, command))
-                prior["status"] = "registered"
-                continue
-            # failed / cancelled / timeout / truncated → new child for this fingerprint
-            child_short = uuid.uuid4().hex[:8]
-            new_id = f"local-cmd-{child_short}"
-            register_child(
-                new_id,
-                command=command,
-                action_id=aid,
-                command_fingerprint=fp,
-                command_preview=preview,
-                cwd=cwd,
-                batch_id=batch_id,
-                batch_index=index,
-            )
-            with _CHILD_COMMAND_LOCK:
-                _CHILD_COMMAND_TEXT[new_id] = command
-            prior.update({
-                "job_id": new_id,
-                "index": index,
-                "command_fingerprint": fp,
-                "command_preview": preview,
-                "status": "registered",
-                "terminal_receipt": None,
-                "exit_code": None,
-                "idempotency_key": batch_idempotency_key(
-                    str(getattr(session, "harness_session_id", "") or ""),
-                    aid,
-                    fp,
-                ),
-            })
-            if child_id in child_ids:
-                child_ids = [new_id if x == child_id else x for x in child_ids]
-            else:
-                child_ids.append(new_id)
-            launch_plan.append((new_id, command))
-            continue
+            child.update(command_job_outcome(live))
+            if child["status"] == "unknown":
+                child.pop("exit_code", None)
+        elif not isinstance(prior.get("terminal_receipt"), dict):
+            child["status"] = "unknown"
+            child["recovery_state"] = "unknown"
+        reconciled.append(child)
 
-        # New fingerprint not in prior batch — append a child.
-        child_short = uuid.uuid4().hex[:8]
-        new_id = f"local-cmd-{child_short}"
-        register_child(
-            new_id,
-            command=command,
-            action_id=aid,
-            command_fingerprint=fp,
-            command_preview=preview,
-            cwd=cwd,
-            batch_id=batch_id,
-            batch_index=index,
-        )
-        with _CHILD_COMMAND_LOCK:
-            _CHILD_COMMAND_TEXT[new_id] = command
-        meta = {
-            "job_id": new_id,
-            "index": index,
-            "command_fingerprint": fp,
-            "command_preview": preview,
-            "status": "registered",
-            "idempotency_key": batch_idempotency_key(
-                str(getattr(session, "harness_session_id", "") or ""),
-                aid,
-                fp,
-            ),
-        }
-        children_meta.append(meta)
-        child_ids.append(new_id)
-        by_fp[fp] = meta
-        launch_plan.append((new_id, command))
-
-    update = getattr(session, "_update_command_batch_children", None)
-    if callable(update):
-        update(
-            batch_id,
-            children=children_meta,
-            child_job_ids=child_ids,
-            max_concurrency=max_concurrency,
-        )
-
-    with _BATCH_STOP_LOCK:
-        stop_ev = _BATCH_STOP_EVENTS.get(batch_id)
-        if stop_ev is None:
-            stop_ev = threading.Event()
-            _BATCH_STOP_EVENTS[batch_id] = stop_ev
-        else:
-            stop_ev.clear()
-
+    # Never clear a prior Stop request or rewrite settled journal receipts.
     if launch_plan:
-        mark = getattr(session, "_mark_command_batch_running", None)
-        if callable(mark):
-            mark(batch_id)
         _start_batch_supervisor(
-            session,
-            batch_id,
-            launch_plan,
-            cwd=cwd,
-            max_concurrency=max_concurrency,
+            session, batch_id, launch_plan, cwd=cwd,
+            max_concurrency=int(existing.get("max_concurrency") or max_concurrency),
         )
-    else:
-        sync = getattr(session, "_sync_command_batch_from_children", None)
-        if callable(sync):
-            sync(batch_id)
-
-    refreshed = lookup_command_batch(session, batch_id) or existing
-    receipt = build_batch_pending_receipt(refreshed)
+    sync = getattr(session, "_sync_command_batch_from_children", None)
+    if callable(sync):
+        sync(batch_id)
+    view = dict(lookup_command_batch(session, batch_id) or existing)
+    view["children"] = reconciled
+    receipt = build_batch_pending_receipt(view)
+    if any(child.get("status") == "unknown" for child in reconciled):
+        receipt["status"] = "unknown"
+        receipt["recovery_state"] = "unknown"
+        receipt["recovery_receipt"] = view.get("recovery_receipt") or receipt.pop("terminal_receipt", None)
+        receipt["terminal_receipt"] = None
+        receipt["message"] = "Command outcome unknown; replay did not repeat checkpointed work."
     receipt["replayed"] = True
     return receipt
 
@@ -577,6 +504,11 @@ def _start_batch_supervisor(
     max_concurrency: int,
 ) -> None:
     """Daemon supervisor: bounded concurrency, stop-before-start, per-child cancel."""
+    owner = (id(session), batch_id)
+    with _BATCH_SUPERVISOR_LOCK:
+        if owner in _BATCH_SUPERVISORS:
+            return
+        _BATCH_SUPERVISORS.add(owner)
     mark = getattr(session, "_mark_command_batch_running", None)
     if callable(mark):
         mark(batch_id)
@@ -607,15 +539,15 @@ def _start_batch_supervisor(
                 child = lookup_command_job(session, job_id)
                 if child and str(child.get("status") or "") in COMMAND_TERMINAL_STATES:
                     return
-                launch_registered_command_job(session, job_id, command, cwd)
+                if not launch_registered_command_job(session, job_id, command, cwd):
+                    return
                 # Wait until this child leaves non-terminal states so the
                 # semaphore truly bounds concurrent processes.
-                deadline = time.time() + 3600.0
-                while time.time() < deadline:
+                while True:
                     live = lookup_command_job(session, job_id)
                     if live is None:
                         break
-                    if str(live.get("status") or "") in COMMAND_TERMINAL_STATES:
+                    if str(live.get("status") or "") in COMMAND_TERMINAL_STATES or live.get("status") == "unknown":
                         break
                     if str(live.get("status") or "") == "registered":
                         # Thread may not have flipped to running yet.
@@ -663,8 +595,15 @@ def _start_batch_supervisor(
             for job_id, _cmd in launch_plan:
                 _CHILD_COMMAND_TEXT.pop(job_id, None)
 
+    def _owned_supervise() -> None:
+        try:
+            _supervise()
+        finally:
+            with _BATCH_SUPERVISOR_LOCK:
+                _BATCH_SUPERVISORS.discard(owner)
+
     threading.Thread(
-        target=_supervise,
+        target=_owned_supervise,
         daemon=True,
         name=f"pmh-cmdbatch-{batch_id[-8:]}",
     ).start()

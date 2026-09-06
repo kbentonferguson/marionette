@@ -4,10 +4,9 @@ import type { TranscriptViewportHandle } from "./sessionViewport";
  * Conversation owns all state; this is a presentational peel.
  */
 
-import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
-import { feedBottomClearancePx, FEED_CHROME_CLEARANCE_VAR } from "./feedScroll";
 import {
   TranscriptList,
   countPaintableTranscriptItems,
@@ -84,32 +83,17 @@ export default function ConversationChatColumn({
   onJumpToBottom?: () => void;
   sessionId?: string;
 }) {
-  const chromeRef = useRef<HTMLDivElement>(null);
-  const [clearancePx, setClearancePx] = useState(96);
-  useLayoutEffect(() => {
-    const node = chromeRef.current;
-    if (!node) return;
-    const sync = () => {
-      setClearancePx(feedBottomClearancePx(node.getBoundingClientRect().height));
-    };
-    sync();
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(sync) : null;
-    ro?.observe(node);
-    return () => ro?.disconnect();
-  }, []);
-
   return (
     <div
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
-      style={{ [FEED_CHROME_CLEARANCE_VAR]: `${clearancePx}px` } as CSSProperties}
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={feedRef}
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] [scroll-padding-bottom:var(--feed-chrome-clearance,clamp(72px,12vh,144px))] ${panelOpacityClass(transcriptStale)}`}
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:auto] [scrollbar-gutter:stable] scroll-pb-6 ${panelOpacityClass(transcriptStale)}`}
         >
         {/* overflow-anchor:auto — browser tail anchoring during growth; scroll-padding-bottom
-            tracks composer chrome via --feed-chrome-clearance (ResizeObserver). nextFeedPinState
+            matches the feed padding; composer height is already outside the scrollport. nextFeedPinState
             hysteresis still owns stick/unstick. scrollbar-gutter avoids a 15px jump when the bar
             appears. overscroll-contain stops rubber-band from yanking the window.
             Composer sits outside this scrollport; do not move it inside. */}
@@ -174,7 +158,7 @@ export default function ConversationChatColumn({
         </button>
       ) : null}
       </div>
-      <div ref={chromeRef} className="transcript-fold-chrome select-none shrink-0 min-w-0" data-testid="composer-chrome">
+      <div className="transcript-fold-chrome select-none shrink-0 min-w-0" data-testid="composer-chrome">
         {composerDock}
       </div>
     </div>

@@ -1,3 +1,4 @@
+import type { InputDocument } from "../../lib/api";
 /**
  * Per-session composer attachment cache (parallel to composerDraftCache).
  * Survives activeSessionId switches so mid-compose thumbnails restore on return.
@@ -18,6 +19,7 @@ function copyAttachments(images: ComposerAttachedImage[]): ComposerAttachedImage
 /** Test helper: drop all attachment entries. */
 export function clearComposerAttachmentCache() {
   composerAttachmentsBySessionId.clear();
+  composerDocumentsBySessionId.clear();
 }
 
 /** Read cached attachments for a session (undefined on miss). */
@@ -73,4 +75,10 @@ export function releaseDroppedComposerAttachmentPreviews(
       /* ignore */
     }
   }
+}
+
+const composerDocumentsBySessionId = new Map<string, InputDocument[]>();
+export function resolveComposerDocumentsOnSwitch(prevId: string | null, nextId: string | null, documents: InputDocument[]): InputDocument[] {
+  composerDocumentsBySessionId.set(prevId || "_draft", documents);
+  return composerDocumentsBySessionId.get(nextId || "_draft") ?? [];
 }
