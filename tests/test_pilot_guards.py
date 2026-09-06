@@ -66,6 +66,9 @@ from harness.pilot_guards import (
     session_pending_swarm_active,
     session_pending_swarm_goal,
     swarm_gate_enabled,
+    take_unverified_land_user_notice,
+    UNVERIFIED_LAND_NOTICE_REASON,
+    UNVERIFIED_LAND_USER_MESSAGE,
     tiny_workspace_tool_budget,
     turn_tool_budget_cap,
     translate_puppetmaster_cli_action,
@@ -1558,6 +1561,18 @@ def test_unverified_diagnosis_budget_does_not_forbid_verification():
     assert "diagnosis" in verdict.message
     assert "do not launch more verification" not in verdict.message.lower()
     assert "until the user continues" in verdict.message
+
+
+def test_unverified_land_user_notice_is_once_per_land():
+    state = TurnGuardState()
+    assert take_unverified_land_user_notice(state) is None
+    state.implement_unverified_landed = True
+    first = take_unverified_land_user_notice(state)
+    assert first == UNVERIFIED_LAND_USER_MESSAGE
+    assert "I made this worse" in first
+    assert "I need your decision" in first
+    assert take_unverified_land_user_notice(state) is None
+    assert UNVERIFIED_LAND_NOTICE_REASON == "implement_unverified"
 
 
 def test_chrome_file_smoke_detection():

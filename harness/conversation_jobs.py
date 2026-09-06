@@ -1723,10 +1723,14 @@ class ConversationJobsMixin:
                     worker_provenance = res_job.get("worker_provenance") or {}
                     if worker_provenance:
                         display_result["worker_provenance"] = worker_provenance
+                    honesty = None
+                    honesty_reason = ""
                     try:
                         from harness.pilot_guards import (
+                            UNVERIFIED_LAND_NOTICE_REASON,
                             note_implement_exhausted_from_provenance,
                             note_implement_success_from_job_result,
+                            take_unverified_land_user_notice,
                         )
 
                         guard_state = getattr(self, "_turn_guard_state", None)
@@ -1737,8 +1741,21 @@ class ConversationJobsMixin:
                             note_implement_success_from_job_result(
                                 guard_state, res_job, stamped,
                             )
+                            honesty = take_unverified_land_user_notice(guard_state)
+                            if honesty:
+                                honesty_reason = UNVERIFIED_LAND_NOTICE_REASON
                     except Exception:
-                        pass
+                        honesty = None
+                        honesty_reason = ""
+                    if honesty:
+                        try:
+                            self._display_transcript.append({
+                                "type": "message",
+                                "role": "assistant",
+                                "text": honesty,
+                            })
+                        except Exception:
+                            pass
                     # Prefer fields already on the result; fall back to stamped
                     # local job so transcript hydrate keeps reuse provenance.
                     for _rk in (
@@ -1787,6 +1804,11 @@ class ConversationJobsMixin:
                         if landing_sid:
                             event_data["session_id"] = landing_sid
                     yield ConvEvent("swarm_result", event_data)
+                    if honesty:
+                        yield ConvEvent("notice", {
+                            "message": honesty,
+                            "reason": honesty_reason or "implement_unverified",
+                        })
 
                     pending_review = res_job.get("pending_review")
                     if pending_review:
