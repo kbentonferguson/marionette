@@ -136,6 +136,15 @@ def test_codex_stream_death_on_codex_driver_keeps_codex_host():
     assert "continue" in out.lower()
 
 
+def test_stream_idle_stuck_offers_continue():
+    from harness.send_loop_phases import STREAM_IDLE_STUCK_MESSAGE
+
+    s = _s()
+    out = s._humanize_pilot_error(STREAM_IDLE_STUCK_MESSAGE)
+    assert "silent" in out.lower()
+    assert "continue" in out.lower()
+
+
 def test_empty_error_has_message():
     s = _s()
     out = s._humanize_pilot_error("")

@@ -182,6 +182,43 @@ def test_drain_swarm_results_in_turn_skips_pilot_resume():
     )
 
 
+def test_drain_unverified_land_emits_user_honesty_notice():
+    from harness.pilot_guards import (
+        UNVERIFIED_LAND_NOTICE_REASON,
+        UNVERIFIED_LAND_USER_MESSAGE,
+        new_turn_guard_state,
+    )
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    session._turn_guard_state = new_turn_guard_state("land a patch")
+    session._swarm_results.put({
+        "job_id": "job_unverified",
+        "objective": "land a patch",
+        "result": {
+            "applied": True,
+            "files": ["a.py"],
+            "summary": "applied without proof",
+            "has_patch_art": True,
+        },
+    })
+    events = list(session.drain_swarm_results(
+        emit_resume=False, already_holding_busy=True,
+    ))
+    notices = [e for e in events if e.kind == "notice"]
+    assert len(notices) == 1
+    assert notices[0].data["reason"] == UNVERIFIED_LAND_NOTICE_REASON
+    assert notices[0].data["message"] == UNVERIFIED_LAND_USER_MESSAGE
+    assert any(
+        row.get("type") == "message"
+        and row.get("role") == "assistant"
+        and row.get("text") == UNVERIFIED_LAND_USER_MESSAGE
+        for row in session._display_transcript
+    )
+    kinds = [e.kind for e in events]
+    assert kinds.index("swarm_result") < kinds.index("notice")
+
+
 def test_run_provider_worker_background_finishes_local_job():
     """Provider-worker background path still finishes the local job + queues result."""
     from harness.worker import WorkerResult

@@ -1077,6 +1077,11 @@ export function noticeIsStopHonesty(reason?: string | null): boolean {
   return reason === "owned_command_orphan" || reason === "steer_dropped";
 }
 
+/** User-visible honesty rows: Stop plus unverified implement land (#323). */
+export function noticeIsHonestyTranscript(reason?: string | null): boolean {
+  return noticeIsStopHonesty(reason) || reason === "implement_unverified";
+}
+
 /** Append a Stop honesty assistant row when the message text is non-empty. */
 export function appendStopHonestyNotice(
   items: Item[],

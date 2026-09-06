@@ -467,7 +467,9 @@ export default function Conversation({
       || status === "streaming"
       || status === "awaiting_swarm";
     if (busy) {
-      setBusyStartedAt((prev) => prev ?? Date.now());
+      const now = Date.now();
+      setBusyNow(now);
+      setBusyStartedAt((prev) => prev ?? now);
     } else {
       setBusyStartedAt(null);
     }
@@ -597,8 +599,9 @@ export default function Conversation({
   waitingPhaseStartedAtRef.current = latchWaitingPhaseStartedAt(
     waitingPhaseStartedAtRef.current,
     chromePhase,
-    busyNow,
+    Date.now(),
     status,
+    busyStartedAt,
   );
   const phaseElapsedMs =
     waitingPhaseStartedAtRef.current != null
@@ -625,6 +628,7 @@ export default function Conversation({
     liveInvestigation,
     turnOpen,
     status,
+    turnLifecycle,
     awaitingSwarm: swarmPausePoint,
     agentLoopOpen,
   });

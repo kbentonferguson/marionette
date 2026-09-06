@@ -7,6 +7,7 @@ const STATUS_TEXT: Record<string, string> = {
   awaiting_swarm: "text-warn",
   done: "text-good",
   error: "text-risk",
+  interrupted: "text-warn",
   "switching…": "text-accent",
 };
 
@@ -19,6 +20,7 @@ const STATUS_DOT: Record<string, string> = {
   awaiting_swarm: "bg-warn animate-pulse",
   done: "bg-good",
   error: "bg-risk",
+  interrupted: "bg-warn",
   "switching…": "bg-accent animate-pulse",
 };
 
@@ -52,6 +54,7 @@ export function statusPillLabel(status: string, detail?: string): string {
   if (status === "thinking" || status === "streaming") return "Still working…";
   if (status === "idle") return "Ready";
   if (status === "done") return "Done";
+  if (status === "interrupted") return "Stopped";
   if (status === "error") return "Error";
   return status;
 }

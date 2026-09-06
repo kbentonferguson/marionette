@@ -253,6 +253,17 @@ describe("Wave 5: interrupted / done framing settle turn chrome", () => {
     })).toBe(false);
   });
 
+  it("does not let later assistant_done paint Done over Stop", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "interrupted", data: { reason: "session interrupted" } });
+    expect(state.turnSettledRef.current).toBe(true);
+    expect(state.status).toBe("idle");
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.status).toBe("idle");
+    expect(state.status).not.toBe("done");
+    expect(state.turnSettledRef.current).toBe(true);
+  });
+
   it("applies framing-only done by settling chrome when not already settled", () => {
     const { state, apply } = makeApplyDeps();
     apply({
@@ -580,5 +591,27 @@ describe("Wave 5: completed swarm plus idle pilot", () => {
     expect(card.card.running).toBe(false);
     expect(card.card.result?.status).toBe("timeout");
     expect(cardEffectivelyRunning(card.card)).toBe(false);
+  });
+});
+
+describe("Wave 5: unverified land honesty", () => {
+  it("paints I made this worse as a transcript row, not a wait hint", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({
+      kind: "notice",
+      data: {
+        reason: "implement_unverified",
+        message:
+          "I made this worse; I need your decision. A worker patch landed and acceptance is red or unproven. Continue before another paid implement or swarm.",
+      },
+    });
+    expect(state.waitHint).toBeNull();
+    const last = state.items[state.items.length - 1];
+    expect(last.kind).toBe("msg");
+    if (last.kind === "msg") {
+      expect(last.msg.role).toBe("assistant");
+      expect(last.msg.text).toContain("I made this worse");
+      expect(last.msg.text).toContain("I need your decision");
+    }
   });
 });
