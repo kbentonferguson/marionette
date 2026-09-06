@@ -1,7 +1,7 @@
 // Bootstrap a Marionette source checkout for the packaged thin Electron shell.
 // When the app is installed from a release build (DMG/NSIS/AppImage), it does NOT
 // bundle Python or a frozen backend. On first launch it clones the repo into
-// ~/.marionette/marionette, provisions uv + node + git as needed, builds the venv
+// ~/.marionette/release, provisions uv + node + git as needed, builds the venv
 // and renderer, then hands off to main.cjs for normal source-run operation.
 //
 // Node stdlib + child_process only. Progress is streamed via onProgress(message, pct).
@@ -31,6 +31,20 @@ const VERSIONS = {
 const DEFAULT_REPO = "https://github.com/professorpalmer/marionette.git";
 const crypto = require("node:crypto");
 const RECEIPT = "marionette-bootstrap.json";
+
+function usesDevelopmentCheckout(env = process.env) {
+  return !!(env.MARIONETTE_CHECKOUT || env.HARNESS_CHECKOUT ||
+    env.MARIONETTE_REPO_URL || env.MARIONETTE_BRANCH || env.MARIONETTE_REVISION ||
+    env.PMHARNESS_DEV_SERVER || /^(1|true|yes)$/i.test(env.MARIONETTE_SELF_DEV || ""));
+}
+
+function selectPackagedCheckout({ env = process.env, home = os.homedir(), selfDev = false, selfDevCheckout = null } = {}) {
+  const explicit = env.MARIONETTE_CHECKOUT || env.HARNESS_CHECKOUT;
+  if (explicit) return explicit;
+  if (selfDev && selfDevCheckout) return selfDevCheckout;
+  // One reusable release checkout; never move, clean, or execute the legacy tree.
+  return path.join(home, ".marionette", (selfDev || usesDevelopmentCheckout(env)) ? "marionette" : "release");
+}
 
 function bootstrapTarget(env = process.env) {
   const override = env.MARIONETTE_REPO_URL || env.MARIONETTE_BRANCH || env.MARIONETTE_REVISION;
@@ -424,6 +438,8 @@ function reinjectPortableTools() {
 }
 
 module.exports = {
+  selectPackagedCheckout,
+  usesDevelopmentCheckout,
   bootstrapTarget,
   isInstallComplete,
   runBootstrap,

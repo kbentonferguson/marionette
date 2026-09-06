@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import ShellSurface from "./ShellSurface";
 import { api, type Session, type SessionForkPreview } from "../lib/api";
 
 type ForkState =
@@ -12,8 +13,11 @@ type ForkState =
 const buttonClass = "min-h-11 px-2 rounded text-sm text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-accent disabled:opacity-50";
 
 /** Mount keyed by session.id, outside any session-row button. */
-export function SessionFork({ session, sessions, onSelect, onCreated }: {
-  session: Session;
+export function SessionFork({ session, sessions, onSelect, onCreated, open, onClose, returnFocus }: {
+  returnFocus?: HTMLElement | null;
+  open?: boolean;
+  onClose?: () => void;
+  session: Pick<Session, "id" | "title" | "forked_from">;
   sessions: Session[];
   onSelect: (id: string) => void;
   onCreated: (child: Session) => void;
@@ -27,8 +31,11 @@ export function SessionFork({ session, sessions, onSelect, onCreated }: {
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {
-    if (state.kind === "created") anotherButton.current?.focus();
-  }, [state.kind]);
+    if (state.kind === "created" && open !== false) anotherButton.current?.focus();
+  }, [state.kind, open]);
+  useEffect(() => {
+    if (open && state.kind === "closed") void preview();
+  }, [open]);
   const selectId = useId();
   const origin = session.forked_from;
   const parent = origin && sessions.find((row) => row.id === origin.parent_id);
@@ -73,7 +80,7 @@ export function SessionFork({ session, sessions, onSelect, onCreated }: {
     }
   }
 
-  return <section aria-label={`Fork ${session.title}`} className="space-y-2 rounded border border-edge p-2">
+  const content = <section aria-label={`Fork ${session.title}`} className="space-y-2 rounded border border-edge p-2">
     {origin && <div className="text-sm text-muted">
       Forked from {parent
         ? <button type="button" className={buttonClass} onClick={() => onSelect(parent.id)}>{parent.title}</button>
@@ -104,7 +111,7 @@ export function SessionFork({ session, sessions, onSelect, onCreated }: {
         </button>
       </>}
       <button type="button" className={buttonClass} disabled={state.kind === "creating"} onClick={() => void preview()}>Refresh boundaries</button>
-      <button type="button" className={buttonClass} disabled={state.kind === "creating"} onClick={() => setState({ kind: "closed" })}>Cancel</button>
+      <button type="button" className={buttonClass} disabled={state.kind === "creating"} onClick={() => onClose ? onClose() : setState({ kind: "closed" })}>Cancel</button>
       {state.kind === "ready" && state.error && <p role="alert">{state.error}</p>}
       {state.kind === "creating" && <span role="status" className="text-sm text-muted">Saving child session...</span>}
     </>}
@@ -113,4 +120,6 @@ export function SessionFork({ session, sessions, onSelect, onCreated }: {
       <button ref={anotherButton} type="button" className={buttonClass} onClick={() => void preview()}>Create another fork</button>
     </>}
   </section>;
+  return open === undefined ? content : <ShellSurface visible={open} presentation="modal"
+    label={`Fork ${session.title}`} returnFocus={returnFocus} onClose={() => onClose?.()}>{content}</ShellSurface>;
 }

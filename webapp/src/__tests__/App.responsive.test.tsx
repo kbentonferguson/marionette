@@ -81,3 +81,36 @@ it("keeps desktop preferences and chat mounted through real window resize events
   expect(localStorage.getItem("pmharness.leftOpen")).toBe("1");
   expect(localStorage.getItem("pmharness.rightOpen")).toBe("1");
 });
+
+it("keeps Sessions inline at 900px and uses a bounded right drawer for Panels", async () => {
+  resize(900);
+  await act(async () => { render(<App />); });
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toHaveAttribute("data-presentation", "inline");
+  const panels = screen.getByRole("dialog", { name: "Panels" });
+  expect(panels).toHaveAttribute("data-presentation", "right");
+  fireEvent.click(screen.getByRole("button", { name: "Close Panels" }));
+  expect(screen.getByRole("textbox", { name: "Chat editor" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Session item" })).toBeVisible();
+});
+
+it("closes phone drawers on native Escape cancellation and backdrop, restoring the trigger", async () => {
+  resize(390);
+  await act(async () => { render(<App />); });
+  const editor = screen.getByRole("textbox", { name: "Chat editor" });
+  fireEvent.change(editor, { target: { value: "phone draft" } });
+  const trigger = screen.getByRole("button", { name: "Sessions", exact: true });
+  trigger.focus();
+  fireEvent.click(trigger);
+  const drawer = screen.getByRole("dialog", { name: "Sessions" });
+  expect(drawer).toHaveAttribute("data-presentation", "left");
+  fireEvent(drawer, new Event("cancel", { cancelable: true }));
+  expect(trigger).toHaveFocus();
+  expect(editor).toBeVisible();
+  fireEvent.click(trigger);
+  fireEvent.click(drawer, { clientX: -1, clientY: -1 });
+  expect(trigger).toHaveFocus();
+  expect(editor).toHaveValue("phone draft");
+  resize(1280);
+  expect(screen.getByRole("button", { name: "Session item" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Panel item" })).toBeVisible();
+});

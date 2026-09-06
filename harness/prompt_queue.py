@@ -164,6 +164,12 @@ class PromptQueueMixin:
                     continue
                 except OSError:
                     content = None
+                if kind == 'legacy' and content is not None:
+                    try:
+                        if json.loads(content) == {'queue': []}:
+                            continue
+                    except ValueError:
+                        pass
                 recovery.append({'kind': kind, 'path': path, 'content': content})
             return recovery
 

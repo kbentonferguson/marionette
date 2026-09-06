@@ -5,6 +5,7 @@ import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
 import { clearDiagnostic, publishDiagnostic } from "./lib/operationalDiagnosticBus";
 import { setCorrelationId } from "./lib/correlationId";
+import ShellSurface from "./components/ShellSurface";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
@@ -78,7 +79,7 @@ export default function App() {
 
   const [leftW, setLeftW] = useState(() => num(LS.left, 248));
   const {
-    width, compact, view, setView, desktopLeftOpen, desktopRightOpen,
+    width, compact, rightDrawer, view, setView, desktopLeftOpen, desktopRightOpen,
     leftOpen, rightOpen, setLeftOpen, setRightOpen,
   } = useResponsiveShell(bool(LS.leftOpen, true), bool(LS.rightOpen, false) && hasStoredRightPaneCards());
   const previousSessionId = useRef<string | null>(null);
@@ -130,11 +131,11 @@ export default function App() {
     setRightOpen(!rightOpen);
   }, [rightOpen, setRightOpen]);
   const requestRightMinWidth = useCallback((minPx: number) => {
-    if (!compact) setRightW(previous => Math.max(previous, minPx));
-  }, [compact]);
+    if (!rightDrawer) setRightW(previous => Math.max(previous, minPx));
+  }, [rightDrawer]);
   // Reserve 480px for content plus the 68px dock, beyond railLayout's 360px center.
   // Clamp presentation only; resizing the window must not rewrite saved widths.
-  const displayed = reclampRailWidths(leftW, rightW, leftOpen, rightOpen, width - SHELL_EXTRA_CENTER_W);
+  const displayed = reclampRailWidths(leftW, rightW, leftOpen && !compact, rightOpen && !rightDrawer, width - SHELL_EXTRA_CENTER_W);
 
   const [showWizard, setShowWizard] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -368,27 +369,23 @@ export default function App() {
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          {(leftOpen || compact || desktopLeftOpen) && (
-            <>
-              <div data-shell-hidden={!leftOpen} style={{ width: compact ? "100%" : displayed.leftW, display: leftOpen ? undefined : "none" }} className="shell-inset-panel shrink-0 h-full min-w-0">
-                <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
-              </div>
-              {!compact && leftOpen && <Resizer
-                side="left"
-                onResize={(dx) => {
-                  const next = reclampRailWidths(
-                    displayed.leftW + dx,
-                    rightWRef.current,
-                    true,
-                    rightOpen,
-                    width - SHELL_EXTRA_CENTER_W,
-                  );
-                  setLeftW(next.leftW);
-                }}
-              />}
-            </>
-          )}
-          <div className="relative flex-1 min-w-0 min-h-0 flex" style={{ display: compact && view !== "chat" ? "none" : undefined }} data-shell-hidden={compact && view !== "chat"}>
+          <ShellSurface visible={leftOpen} presentation={compact ? "left" : "inline"} label="Sessions" width={displayed.leftW} onClose={() => setLeftOpen(false)}>
+            <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
+          </ShellSurface>
+          {!compact && leftOpen && <Resizer
+            side="left"
+            onResize={(dx) => {
+              const next = reclampRailWidths(
+                displayed.leftW + dx,
+                rightWRef.current,
+                true,
+                rightOpen && !rightDrawer,
+                width - SHELL_EXTRA_CENTER_W,
+              );
+              setLeftW(next.leftW);
+            }}
+          />}
+          <div className="relative flex-1 min-w-0 min-h-0 flex" aria-hidden={(compact && view !== "chat") || (rightDrawer && rightOpen) || undefined} inert={(compact && view !== "chat") || (rightDrawer && rightOpen)}>
             <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
               <ErrorBoundary label="Chat">
                 <Conversation
@@ -399,14 +396,16 @@ export default function App() {
                 />
               </ErrorBoundary>
             </div>
-            <RightDock
-              panelsOpen={rightOpen}
-              onOpenTab={openRightTo}
-              onExpand={() => openRightTo(lastRightTab())}
-              onCollapse={() => setRightOpen(false)}
-            />
+            <div className="shell-dock-slot">
+              <RightDock
+                panelsOpen={rightOpen}
+                onOpenTab={openRightTo}
+                onExpand={() => openRightTo(lastRightTab())}
+                onCollapse={() => setRightOpen(false)}
+              />
+            </div>
           </div>
-          {rightOpen && !compact && (
+          {rightOpen && !rightDrawer && (
             <Resizer
               side="right"
               onResize={(dx) => {
@@ -421,11 +420,7 @@ export default function App() {
               }}
             />
           )}
-          <div
-            className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
-            data-shell-hidden={!rightOpen}
-            style={{ width: compact ? "100%" : displayed.rightW }}
-          >
+          <ShellSurface visible={rightOpen} presentation={rightDrawer ? "right" : "inline"} label="Panels" width={displayed.rightW} onClose={() => setRightOpen(false)}>
             <ErrorBoundary label="Tool board">
               <RightPane
                 visible={rightOpen}
@@ -439,7 +434,7 @@ export default function App() {
                 onRequestMinWidth={requestRightMinWidth}
               />
             </ErrorBoundary>
-          </div>
+          </ShellSurface>
         </div>
       </div>
       <div className="shrink-0 px-px py-px">

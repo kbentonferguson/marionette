@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.23.0` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.422, deliberately pre-1.0. Pins puppetmaster-ai==1.23.0. Saved inputs retain original text and attachments through interrupted delivery and archive restoration. Session changes and model swaps preserve input ownership. Job evidence distinguishes verified checks, uncertain effects, and measured, estimated, or unknown consumption. Forks, schedule editing, scoped reviews, and authenticated desktop image loading are integrated.
+> Status: v0.9.423, deliberately pre-1.0. Pins puppetmaster-ai==1.23.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows have a 900×600 minimum; smaller layouts use bounded Sessions and Panels drawers. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
 
 ## Documentation
 
