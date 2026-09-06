@@ -213,8 +213,11 @@ def test_concurrent_replay_bounds_real_processes(tmp_path):
     for index in range(4):
         start = int((tmp_path / f'started-{index}').read_text())
         end = int((tmp_path / f'ended-{index}').read_text())
-        assert start < end
-        events.extend(((start, 1), (end, -1)))
+        assert start <= end
+        # Windows wall-clock ticks can contain an entire post-release process.
+        # Such empty measured intervals add no evidence of concurrency.
+        if start < end:
+            events.extend(((start, 1), (end, -1)))
     active = peak = 0
     for _, delta in sorted(events):
         active += delta
