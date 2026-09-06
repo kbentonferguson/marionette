@@ -689,6 +689,8 @@ class TurnGuardState:
     implement_success_seen: bool = False
     # Patch is in the worktree but acceptance is red or unproven. Not success.
     implement_unverified_landed: bool = False
+    # True after the user-visible unverified-land sentence has been taken.
+    implement_unverified_user_told: bool = False
     # Cached at turn start from the effective repo path (scale-aware budget / chrome guard).
     tiny_workspace: bool = False
     # Nested native implement worker (ProviderWorker expects_diff): edit-first policy.
@@ -1788,6 +1790,21 @@ _UNVERIFIED_IMPLEMENT_RETRY_MESSAGE = (
     "outcome and stop. Do not dispatch another run_implement, run_parallel, "
     "or run_swarm until the user continues."
 )
+
+UNVERIFIED_LAND_NOTICE_REASON = "implement_unverified"
+UNVERIFIED_LAND_USER_MESSAGE = (
+    "I made this worse; I need your decision. A worker patch landed and "
+    "acceptance is red or unproven. Continue before another paid implement "
+    "or swarm."
+)
+
+
+def take_unverified_land_user_notice(state: TurnGuardState) -> Optional[str]:
+    """Return the user sentence once per unverified land; None after that."""
+    if not state.implement_unverified_landed or state.implement_unverified_user_told:
+        return None
+    state.implement_unverified_user_told = True
+    return UNVERIFIED_LAND_USER_MESSAGE
 
 
 def check_implement_unverified_retry(

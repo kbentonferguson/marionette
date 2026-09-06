@@ -36,7 +36,7 @@ import {
   transcriptFingerprint,
   transcriptResponseToItems,
 } from "./transcriptItems";
-import { writeTranscriptCache } from "./transcriptCache";
+import { captureTranscriptRead, writeTranscriptCache } from "./transcriptCache";
 import {
   preserveOrThinking,
   runnersBusyTickDecision,
@@ -208,10 +208,11 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const hydrateDurableTranscript = async (): Promise<void> => {
     const missHydrateGen = ++runnerBusyPollGenRef.current;
     const missSid = reattachSid;
+    const readStillCurrent = captureTranscriptRead(missSid, itemsRef, streamGenRef);
     try {
       const tres = await api.sessionTranscript(missSid);
       if (missHydrateGen !== runnerBusyPollGenRef.current) return;
-      if (!subscriptionFencesStillPass(missSid)) return;
+      if (!subscriptionFencesStillPass(missSid) || !readStillCurrent()) return;
       const loadedItems = transcriptResponseToItems(tres);
       const next = mergeTranscriptItems(itemsRef.current, loadedItems);
       const fp = transcriptFingerprint(next);
@@ -240,9 +241,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
   const refreshTranscriptFromDisk = async (sid: string): Promise<void> => {
     const pollGen = ++runnerBusyPollGenRef.current;
+    const readStillCurrent = captureTranscriptRead(sid, itemsRef, streamGenRef);
     try {
       const tres = await api.sessionTranscript(sid);
-      if (!transcriptRefreshStillCurrent(pollGen, sid)) return;
+      if (!transcriptRefreshStillCurrent(pollGen, sid) || !readStillCurrent()) return;
       const terminalSwarmCalls = collectTerminalRunSwarmCalls(tres.display);
       const loadedItems = transcriptResponseToItems(tres);
       const local = itemsRef.current.filter((item) => {
@@ -759,8 +761,8 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       const maxAttempts = 2;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          const st = await api.getSessionState();
-          if (cancelled()) return;
+          const st = await api.getSessionState({ sessionId: reattachSid });
+          if (cancelled() || streamGenRef.current !== reattachGen || localStreamActiveRef.current) return;
           if (cachedSessionIdRef.current !== reattachSid) return;
           const running = st?.runners?.[reattachSid] === "running";
           const awaiting = sessionStateShowsAwaitingSwarm({

@@ -4,11 +4,12 @@ adapter -> scoring -> ledger. Proves the whole rig with zero API keys.
 Marked as the canonical 'rig works' gate. If this passes, the harness can drive
 Puppetmaster in-process and score it; only the driver model is swappable.
 """
-import pytest
-pytestmark = pytest.mark.swarm
-import sqlite3
 import tempfile
 from pathlib import Path
+
+import pytest
+
+from test_offline_demo_seam import offline_demo
 
 from pmharness.registry import build
 from pmharness.ledger import Ledger
@@ -16,12 +17,14 @@ from pmharness.runner import run_driver, new_run_id
 from pmharness.bridge import execute_intent
 from pmharness.intent import validate_intent
 
+pytestmark = pytest.mark.usefixtures("offline_demo")
+
 
 def test_bridge_executes_real_puppetmaster():
     """The bridge actually drives PM's Orchestrator in-process and gets
     structured artifacts back -- no MCP, no CLI subprocess."""
     intent = validate_intent({"action": "run_swarm", "goal": "E2E: smoke the seam"})
-    res = execute_intent(intent)
+    res = execute_intent(intent, worker_mode="inline")
     assert res is not None
     assert res.status == "JobStatus.COMPLETE" or "complete" in res.status.lower()
     assert res.num_artifacts > 0

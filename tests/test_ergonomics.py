@@ -8,6 +8,40 @@ import threading
 import subprocess
 from http.server import ThreadingHTTPServer
 
+import pytest
+
+
+@pytest.fixture
+def isolated_server_state(monkeypatch, tmp_path, _isolate_provider_state):
+    """Keep the HTTP integration tests' store, view and pilot in one lifetime."""
+    from dataclasses import replace
+    import harness.server as srv
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.session import Session
+    from harness.session_runners import SessionRunnerRegistry
+    from harness.sessions import SessionStore
+
+    # Workspace opens use the real synchronous attach path; deferred attach
+    # races have their own tests and must not outlive these temporary stores.
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "0")
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    sessions = SessionStore(str(tmp_path / "harness_sessions.json"))
+    monkeypatch.setattr(srv, "_cfg", cfg)
+    monkeypatch.setattr(srv, "_sessions", sessions)
+    monkeypatch.setattr(srv, "_session", Session(cfg))
+    monkeypatch.setattr(srv, "_runners", SessionRunnerRegistry())
+    monkeypatch.setattr(srv, "_pilot_swap_lock", threading.Lock())
+    monkeypatch.setattr(srv, "_pilot", ConversationalSession(replace(cfg)))
+    srv._bind_pilot_services(srv._pilot)
+    srv._boot_usage_reset_for_tests()
+    yield srv
+    sessions.flush()
+    srv._usage_cache_clear_for_tests()
+
+
+pytestmark = pytest.mark.usefixtures("isolated_server_state")
+
 
 def _server():
     import harness.server as srv
@@ -91,6 +125,7 @@ def test_ergonomics_workspace_files():
 
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_ergonomics_session_compact():
@@ -110,9 +145,8 @@ def test_ergonomics_session_compact():
 
         # 2. POST /api/session/compact with token: too little history to
         # compact, so the endpoint reports a truthful no-op (409) instead of
-        # a false success. Trim history first so the no-op is deterministic
-        # regardless of what other tests left on the module singleton.
-        srv._pilot._history[:] = srv._pilot._history[:1]
+        # a false success. The fixture provides a fresh, ready pilot.
+        assert len(srv._pilot._history) <= 1
         try:
             _post(port, "/api/session/compact", {}, headers)
             assert False, "tiny history should report no-op compaction"
@@ -126,6 +160,7 @@ def test_ergonomics_session_compact():
 
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_ergonomics_at_path_resolution():

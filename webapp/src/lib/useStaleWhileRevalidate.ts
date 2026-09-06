@@ -47,7 +47,8 @@ export interface UseSWRResult<T> {
    */
   isTransitioning: boolean;
   error: unknown;
-  revalidate: () => Promise<T | undefined>;
+  /** Force a new read after a mutation instead of joining a pre-mutation read. */
+  revalidate: (force?: boolean) => Promise<T | undefined>;
   mutate: (value: T | undefined) => void;
 }
 
@@ -75,6 +76,7 @@ export function useStaleWhileRevalidate<T>(
   const hasEverLoadedKey = displayKey === keyStr && data !== undefined;
 
   const requestIdRef = useRef(0);
+  const inFlightRef = useRef<{ key: string; promise: Promise<T | undefined> } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -101,27 +103,36 @@ export function useStaleWhileRevalidate<T>(
     [keyStr],
   );
 
-  const revalidate = useCallback(async (): Promise<T | undefined> => {
+  const revalidate = useCallback(async (force = false): Promise<T | undefined> => {
     if (!keyStr || !enabled) return undefined;
+    if (!force && inFlightRef.current?.key === keyStr) return inFlightRef.current.promise;
     const reqId = ++requestIdRef.current;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
     setIsValidating(true);
-    try {
-      const result = await fetcherRef.current(ac.signal);
-      if (reqId !== requestIdRef.current) return undefined;
-      commit(result, keyStr);
-      onSuccessRef.current?.(result);
-      return result;
-    } catch (err) {
-      if (reqId !== requestIdRef.current) return undefined;
-      if ((err as Error).name === "AbortError") return undefined;
-      setError(err);
-      return undefined;
-    } finally {
-      if (reqId === requestIdRef.current) setIsValidating(false);
-    }
+    const promise = Promise.resolve().then(async () => {
+      try {
+        if (ac.signal.aborted) return undefined;
+        const result = await fetcherRef.current(ac.signal);
+        if (reqId !== requestIdRef.current) return undefined;
+        commit(result, keyStr);
+        onSuccessRef.current?.(result);
+        return result;
+      } catch (err) {
+        if (reqId !== requestIdRef.current) return undefined;
+        if (err instanceof Error && err.name === "AbortError") return undefined;
+        setError(err);
+        return undefined;
+      } finally {
+        if (reqId === requestIdRef.current) {
+          inFlightRef.current = null;
+          setIsValidating(false);
+        }
+      }
+    });
+    inFlightRef.current = { key: keyStr, promise };
+    return promise;
   }, [keyStr, enabled, commit]);
 
   useEffect(() => {
@@ -140,7 +151,10 @@ export function useStaleWhileRevalidate<T>(
     }
     void revalidate();
     return () => {
+      ++requestIdRef.current;
       abortRef.current?.abort();
+      inFlightRef.current = null;
+      setIsValidating(false);
     };
   }, [keyStr, enabled, revalidate]);
 

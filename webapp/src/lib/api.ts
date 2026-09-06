@@ -1506,22 +1506,23 @@ export const api = {
     const path = qs ? `/api/session/state?${qs}` : "/api/session/state";
     return getJSON<SessionState>(withToken(path));
   },
-  getSessionGoal: () =>
-    getJSON<{ ok: boolean; goal: SessionGoal }>(withToken("/api/session/goal")),
-  setSessionGoal: (text: string, tokenBudget?: number) =>
+  getSessionGoal: (sessionId: string) =>
+    getJSON<{ ok: boolean; goal: SessionGoal }>(withToken(`/api/session/goal?session_id=${encodeURIComponent(sessionId)}`)),
+  setSessionGoal: (sessionId: string, text: string, tokenBudget?: number) =>
     postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", {
       action: "set",
+      session_id: sessionId,
       text,
       ...(tokenBudget != null ? { token_budget: tokenBudget } : {}),
     }),
-  pauseSessionGoal: () =>
-    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "pause" }),
-  resumeSessionGoal: () =>
-    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "resume" }),
-  completeSessionGoal: () =>
-    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete" }),
-  clearSessionGoal: () =>
-    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear" }),
+  pauseSessionGoal: (sessionId: string) =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "pause", session_id: sessionId }),
+  resumeSessionGoal: (sessionId: string) =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "resume", session_id: sessionId }),
+  completeSessionGoal: (sessionId: string) =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "complete", session_id: sessionId }),
+  clearSessionGoal: (sessionId: string) =>
+    postJSON<{ ok: boolean; goal: SessionGoal }>("/api/session/goal", { action: "clear", session_id: sessionId }),
   getSessionLoop: () =>
     getJSON<{ ok: boolean; loop: SessionLoop }>(withToken("/api/session/loop")),
   startSessionLoop: (

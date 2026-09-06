@@ -43,7 +43,7 @@ import {
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
   appendStopHonestyNotice,
-  noticeIsStopHonesty,
+  noticeIsHonestyTranscript,
   noticeShowsWaitHint,
   reconcileOrphanInvestigationCards,
   sealOpenStreamSurfaces,
@@ -272,10 +272,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (!d.aborted) {
         window.dispatchEvent(new Event("harness-context-changed"));
       }
-    } else if (ev.kind === "notice" && noticeIsStopHonesty(d.reason)) {
-      // Stop-boundary honesty (owned-command orphan / steer drop): durable
-      // transcript row. Omit wait-hint — interrupted/stopLocal clears it and
-      // the operator must still see the notice after idle settle.
+    } else if (ev.kind === "notice" && noticeIsHonestyTranscript(d.reason)) {
+      // Stop honesty and unverified-land (#323): durable transcript row.
+      // Omit wait-hint — the operator must still see the sentence after idle.
       setItems((p) => appendStopHonestyNotice(p, d.message));
     } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {
       // wait / stagnation / resume_cap notices are user-visible chrome; other

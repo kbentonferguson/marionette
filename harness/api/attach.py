@@ -86,8 +86,8 @@ def attach_view(
             svc.runners.drop(session_id, notify=False)
             existing = None
         else:
-            svc.runners.set_active_view(session_id)
             with svc.pilot_swap_lock:
+                svc.runners.set_active_view(session_id)
                 svc.set_pilot(existing)
                 try:
                     svc.get_session().state_dir = svc.get_pilot().state_dir
@@ -127,6 +127,7 @@ def attach_view(
     transcript_payload = normalize_transcript_payload(history)
 
     if want_defer:
+        config = svc.runner_config_snapshot()
         placeholder = DeferredPilotPlaceholder(
             session_id=session_id,
             state_dir=svc.sessions_state_dir(),
@@ -138,8 +139,8 @@ def attach_view(
             return placeholder
 
         runner = svc.runners.get_or_create(session_id, _factory)
-        svc.runners.set_active_view(session_id)
         with svc.pilot_swap_lock:
+            svc.runners.set_active_view(session_id)
             svc.set_pilot(runner)
             try:
                 svc.get_session().state_dir = svc.get_pilot().state_dir
@@ -149,7 +150,7 @@ def attach_view(
             svc.sync_pilot_session_id()
 
         def _build():
-            return svc.build_conversational_pilot()
+            return svc.build_conversational_pilot(config=config)
 
         def _on_done(real: Any) -> None:
             try:
@@ -157,6 +158,9 @@ def attach_view(
                 # Session ownership must be set before hydrate so pending
                 # command-approval restore can refuse foreign display rows.
                 real.harness_session_id = session_id
+                reload_goal = getattr(real, "reload_session_goal", None)
+                if callable(reload_goal):
+                    reload_goal()
                 reload_todos = getattr(real, "reload_session_todos", None)
                 if callable(reload_todos):
                     reload_todos()
@@ -192,7 +196,8 @@ def attach_view(
                     svc.diag("server.deferred_pilot_replace", e)
                     placeholder.mark_failed(e)
                     return
-                if svc.runners.active_view_id == session_id:
+                if (svc.runners.active_view_id == session_id
+                        and svc.get_pilot() is placeholder):
                     svc.set_pilot(real)
                     try:
                         svc.get_session().state_dir = real.state_dir
@@ -218,8 +223,8 @@ def attach_view(
         return svc.build_conversational_pilot()
 
     runner = svc.runners.get_or_create(session_id, _factory)
-    svc.runners.set_active_view(session_id)
     with svc.pilot_swap_lock:
+        svc.runners.set_active_view(session_id)
         svc.set_pilot(runner)
         # Keep tracker/jobs pointed at the store this runner writes to.
         try:
@@ -244,13 +249,23 @@ def ensure_active_pilot_ready(svc: AttachServices, *, timeout: float = 120.0) ->
     No-op for warm / sync runners. Raises on timeout or build failure so turn
     starts never execute against a half-built placeholder.
     """
-    pilot = svc.get_pilot()
+    with svc.pilot_swap_lock:
+        pilot = svc.get_pilot()
+        session_id = svc.runners.active_view_id
     if not is_deferred_placeholder(pilot):
         return pilot
     real = pilot.ensure_ready(timeout=timeout)
     with svc.pilot_swap_lock:
-        # Background swap usually already updated _pilot; repair if not.
-        if is_deferred_placeholder(svc.get_pilot()):
+        current = svc.get_pilot()
+        registered = svc.runners.get(session_id or "")
+        if (
+            svc.runners.active_view_id != session_id
+            or getattr(real, "harness_session_id", None) != session_id
+            or (current is not pilot and current is not real)
+            or (registered is not pilot and registered is not real)
+        ):
+            raise RuntimeError("active session changed while waiting for pilot readiness")
+        if current is pilot:
             svc.set_pilot(real)
             try:
                 svc.get_session().state_dir = real.state_dir
@@ -258,12 +273,7 @@ def ensure_active_pilot_ready(svc: AttachServices, *, timeout: float = 120.0) ->
                 pass
             svc.bind_pilot_services(real)
             svc.sync_pilot_session_id()
-        elif svc.runners.active_view_id == getattr(real, "harness_session_id", None):
-            # Prefer registry live runner when active view matches.
-            live = svc.runners.get(svc.runners.active_view_id or "")
-            if live is not None and not is_deferred_placeholder(live):
-                svc.set_pilot(live)
-    return svc.get_pilot()
+        return real
 
 
 def gate_active_pilot_ready(svc: AttachServices, *, timeout: float = 120.0) -> Optional[dict]:

@@ -103,3 +103,96 @@ def test_session_goal_context_block_active_only():
     assert "SESSION GOAL" in goal.context_block()
     goal.complete()
     assert goal.context_block() == ""
+
+
+def test_replacement_resets_accounting_but_resume_retains(monkeypatch):
+    monkeypatch.setattr('harness.session_goal.time.time', lambda: 10.0)
+    goal = SessionGoal().set('old', token_budget=100)
+    goal.record_turn_usage(tokens=100, elapsed_seconds=3, continuation=True)
+    assert goal.budget_exceeded
+    goal.resume()
+    assert (goal.token_count, goal.continuation_count, goal.elapsed_seconds) == (100, 1, 3)
+    monkeypatch.setattr('harness.session_goal.time.time', lambda: 20.0)
+    goal.set('replacement', token_budget=200)
+    assert (goal.token_count, goal.continuation_count, goal.elapsed_seconds) == (0, 0, 0)
+    assert goal.created_at == goal._active_since == 20.0
+    assert not goal.budget_exceeded
+    assert goal.token_budget == 200
+
+
+def boot_goal_migration(tmp_path, active):
+    import json
+    from harness.sessions import SessionStore
+    path = tmp_path / 'harness_sessions.json'
+    path.write_text(json.dumps({'active': active, 'sessions': [{'id': 'A'}, {'id': 'B'}]}))
+    sessions = SessionStore(str(path))
+    SessionGoalStore.migrate_legacy(str(tmp_path), sessions)
+
+
+def test_boot_migrates_legacy_once_to_durable_active(tmp_path):
+    import json
+    legacy = SessionGoalStore(str(tmp_path))
+    legacy.save(SessionGoal().set('legacy goal'))
+    original = json.loads((tmp_path / 'session_goal.json').read_text())
+    boot_goal_migration(tmp_path, 'A')
+    assert SessionGoalStore(str(tmp_path), session_id='A').load().text == 'legacy goal'
+    boot_goal_migration(tmp_path, 'B')
+    assert SessionGoalStore(str(tmp_path), session_id='B').load().text == ''
+    assert SessionGoalStore(str(tmp_path), session_id='A').load().text == 'legacy goal'
+    stamped = json.loads((tmp_path / 'session_goal.json').read_text())
+    assert stamped.pop('session_id') == 'A'
+    assert stamped == original
+
+
+def test_boot_migration_existing_scoped_goal_wins(tmp_path):
+    legacy = SessionGoalStore(str(tmp_path))
+    legacy.save(SessionGoal().set('old goal'))
+    scoped = SessionGoalStore(str(tmp_path), session_id='A')
+    scoped.save(SessionGoal().set('new goal'))
+    from pathlib import Path
+    original = Path(scoped.path).read_bytes()
+    boot_goal_migration(tmp_path, 'A')
+    assert Path(scoped.path).read_bytes() == original
+    boot_goal_migration(tmp_path, 'B')
+    assert SessionGoalStore(str(tmp_path), session_id='B').load().text == ''
+
+
+def test_boot_migration_unknown_active_preserves_original(tmp_path):
+    legacy = SessionGoalStore(str(tmp_path))
+    legacy.save(SessionGoal().set('unclaimed'))
+    path = tmp_path / 'session_goal.json'
+    original = path.read_bytes()
+    for active in (None, '', 'missing'):
+        boot_goal_migration(tmp_path, active)
+        assert path.read_bytes() == original
+        assert not (tmp_path / 'session_goals').exists()
+
+
+def test_interrupted_migration_retries_original_owner(tmp_path, monkeypatch):
+    import json
+    import pytest
+    legacy = SessionGoalStore(str(tmp_path))
+    legacy.save(SessionGoal().set('alpha'))
+    with monkeypatch.context() as patch:
+        def fail_copy(*args):
+            raise OSError('interrupted scoped copy')
+        patch.setattr('harness.session_goal.os.link', fail_copy)
+        with pytest.raises(OSError, match='interrupted scoped copy'):
+            boot_goal_migration(tmp_path, 'A')
+    assert json.loads((tmp_path / 'session_goal.json').read_text())['session_id'] == 'A'
+    boot_goal_migration(tmp_path, 'B')
+    assert SessionGoalStore(str(tmp_path), session_id='A').load().text == 'alpha'
+    assert SessionGoalStore(str(tmp_path), session_id='B').load().text == ''
+    assert not list(tmp_path.rglob('.session-goal-*'))
+
+
+def test_ambiguous_active_row_does_not_claim_legacy(tmp_path):
+    from types import SimpleNamespace
+    legacy = SessionGoalStore(str(tmp_path))
+    legacy.save(SessionGoal().set('unknown owner'))
+    path = tmp_path / 'session_goal.json'
+    original = path.read_bytes()
+    sessions = SimpleNamespace(active='A', rows=lambda: [{'id': 'A'}, {'id': 'A'}])
+    SessionGoalStore.migrate_legacy(str(tmp_path), sessions)
+    assert path.read_bytes() == original
+    assert not (tmp_path / 'session_goals').exists()

@@ -107,13 +107,19 @@ export default function RightDock({
   const addMenuRef = useRef<HTMLDivElement | null>(null);
   const [activitySessionId, setActivitySessionId] = useState("");
   const [scopeEpoch, setScopeEpoch] = useState(0);
+  const activityEpoch = useRef(0);
 
   useEffect(() => {
     const onSession = (e: Event) => {
       const id = String((e as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId || "");
+      activityEpoch.current += 1;
+      setScopeEpoch((n) => n + 1);
       setActivitySessionId(id);
     };
-    const onScope = () => setScopeEpoch((n) => n + 1);
+    const onScope = () => {
+      activityEpoch.current += 1;
+      setScopeEpoch((n) => n + 1);
+    };
     window.addEventListener("harness-session-changed", onSession);
     window.addEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
     return () => {
@@ -142,19 +148,31 @@ export default function RightDock({
   useEffect(() => {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
-      if (typeof path === "string") setSwarmRepo(path || undefined);
+      if (typeof path === "string") {
+        activityEpoch.current += 1;
+        setScopeEpoch((n) => n + 1);
+        setSwarmRepo(path || undefined);
+      }
     };
     window.addEventListener("harness-project-selected", onProject);
     return () => window.removeEventListener("harness-project-selected", onProject);
   }, []);
 
   useEffect(() => {
+    let active = true;
+    let request = 0;
+    const epoch = activityEpoch.current;
     const load = () => {
+      const generation = ++request;
+      const current = () => active && epoch === activityEpoch.current && generation === request;
       api.getReviews()
-        .then((rows) => setReviewCount(Array.isArray(rows) ? rows.length : 0))
+        .then((rows) => {
+          if (current()) setReviewCount(Array.isArray(rows) ? rows.length : 0);
+        })
         .catch(() => {});
       api.swarmLive(swarmRepo)
         .then((data) => {
+          if (!current()) return;
           // Parity with RightPane: seed SwarmPane's SWR cache from the dock poll
           // so expanding into the tracker after a collapsed session is warm too.
           writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
@@ -173,6 +191,7 @@ export default function RightDock({
     const t = setInterval(load, 5000);
     window.addEventListener("harness-reviews-refresh", load);
     return () => {
+      active = false;
       clearInterval(t);
       window.removeEventListener("harness-reviews-refresh", load);
     };

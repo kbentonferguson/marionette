@@ -111,6 +111,7 @@ import {
   compactionAbortLabel,
   compactionSuccessLabel,
   vaultCiteChipLabel,
+  noticeIsHonestyTranscript,
   noticeIsStopHonesty,
   noticeShowsWaitHint,
   patchCardInItems,
@@ -2028,8 +2029,12 @@ describe("streamApply module", () => {
     expect(noticeShowsWaitHint("memory")).toBe(false);
     expect(noticeIsStopHonesty("owned_command_orphan")).toBe(true);
     expect(noticeIsStopHonesty("steer_dropped")).toBe(true);
+    expect(noticeIsStopHonesty("implement_unverified")).toBe(false);
     expect(noticeIsStopHonesty("wait")).toBe(false);
     expect(noticeIsStopHonesty(undefined)).toBe(false);
+    expect(noticeIsHonestyTranscript("implement_unverified")).toBe(true);
+    expect(noticeIsHonestyTranscript("owned_command_orphan")).toBe(true);
+    expect(noticeIsHonestyTranscript("wait")).toBe(false);
     expect(
       appendStopHonestyNotice([], "Stop cancelled owned tool work"),
     ).toEqual([

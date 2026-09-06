@@ -163,7 +163,6 @@ def open_cli_durable_at(state_dir: str, *, busy_timeout_ms: int = 5000):
         store = durable.store
         if hasattr(store, "busy_timeout_ms"):
             store.busy_timeout_ms = int(busy_timeout_ms)
-        _retry_on_locked(lambda: store.list_jobs(), attempts=2, delay=0.05)
         return durable
     except Exception as exc:
         _log_merge_failure("cli_job_merge.open_at", exc, msg=state_dir)

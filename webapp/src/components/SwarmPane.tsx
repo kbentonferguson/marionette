@@ -276,7 +276,7 @@ function swarmSignature(res: SwarmLive | null): string {
     const tasks = j.tasks || [];
     const arts = jobArtifactList(j);
     parts.push(
-      `${j.id}:${j.status}:${tasks.length}:${arts.length}` +
+      `${j.id}:${j.session_id ?? ""}:${j.goal ?? ""}:${j.status}:${tasks.length}:${arts.length}` +
       `:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}` +
       `:${j.tool_output_tokens_saved ?? 0}` +
       `:${(j.routing_saved_usd ?? 0).toFixed(4)}` +
@@ -1111,7 +1111,7 @@ function UnmatchedRoutingNote({
   );
 }
 
-export default function SwarmPane() {
+export default function SwarmPane({ enabled = true }: { enabled?: boolean }) {
   // Seeded so an instance mounting after the project-selected event scopes
   // to the same repo as its siblings instead of the unscoped default view.
   const [selectedProjectRoot, setSelectedProjectRoot] = useState(lastSelectedProjectRoot);
@@ -1135,6 +1135,8 @@ export default function SwarmPane() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [jobScope, setJobScope] = useState<JobScope>(() => loadJobScope());
   const [activeSessionId, setActiveSessionId] = useState("");
+  const [requestOwner, setRequestOwner] = useState({ repo: scopedRepo, sessionId: "" });
+  const requestSessionId = requestOwner.repo === scopedRepo ? requestOwner.sessionId : "";
   useEffect(() => {
     const onScope = () => setJobScope(loadJobScope());
     window.addEventListener("harness-job-scope-changed", onScope);
@@ -1151,16 +1153,31 @@ export default function SwarmPane() {
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     api.sessions(scopedRepo).then((rows) => {
       if (cancelled) return;
       const active = (rows || []).find((s) => s.active);
       setActiveSessionId(active?.id || "");
+      setRequestOwner({ repo: scopedRepo, sessionId: active?.id || "" });
     }).catch(() => {
       if (!cancelled) setActiveSessionId("");
     });
-    return () => { cancelled = true; };
-  }, [scopedRepo]);
+    const onSession = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail: unknown = event.detail;
+      if (!detail || typeof detail !== "object" || !("sessionId" in detail)) return;
+      const id = typeof detail.sessionId === "string" ? detail.sessionId : "";
+      cancelled = true;
+      setActiveSessionId(id);
+      setRequestOwner({ repo: scopedRepo, sessionId: id });
+    };
+    window.addEventListener("harness-session-changed", onSession);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("harness-session-changed", onSession);
+    };
+  }, [scopedRepo, enabled]);
 
   const toggleTask = (id: string) => setExpandedTasks((p) => ({ ...p, [id]: !p[id] }));
   const toggleFinding = (id: string) => setExpandedFindings((p) => ({ ...p, [id]: !p[id] }));
@@ -1177,7 +1194,11 @@ export default function SwarmPane() {
   useEffect(() => {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
-      if (typeof path === "string") setSelectedProjectRoot(path);
+      if (typeof path === "string") {
+        setSelectedProjectRoot(path);
+        setActiveSessionId("");
+        setRequestOwner({ repo: path || undefined, sessionId: "" });
+      }
     };
     window.addEventListener("harness-project-selected", onProject);
     return () => window.removeEventListener("harness-project-selected", onProject);
@@ -1185,7 +1206,9 @@ export default function SwarmPane() {
 
   // Holds latest live payload so the SWR fetcher / poll can merge without
   // wiping artifacts hydrated via /api/artifacts on expand.
+  const swarmCacheKey = `swarm:${scopedRepo || "__default__"}${requestSessionId ? `:session:${encodeURIComponent(requestSessionId)}` : ""}`;
   const dataRef = useRef<SwarmLive | null | undefined>(undefined);
+  const dataScopeRef = useRef(swarmCacheKey);
   const pendingOpenRef = useRef<{ jobId: string; artifactId?: string } | null>(null);
 
   const {
@@ -1193,30 +1216,35 @@ export default function SwarmPane() {
     isValidating,
     isTransitioning,
     isShowingStale,
+    revalidate,
     mutate,
   } = useStaleWhileRevalidate<SwarmLive | null>(
-    `swarm:${scopedRepo || "__default__"}`,
+    swarmCacheKey,
     async () => {
       const res = await api.swarmLive(scopedRepo);
-      return mergeSwarmLive(dataRef.current ?? undefined, res);
+      const previous = dataScopeRef.current === swarmCacheKey ? dataRef.current : undefined;
+      if (previous && swarmSignature(previous) === swarmSignature(res)) return previous;
+      return mergeSwarmLive(previous ?? undefined, res);
     },
+    { enabled },
   );
   dataRef.current = data;
+  dataScopeRef.current = isShowingStale ? "" : swarmCacheKey;
+  const currentScopeRef = useRef(swarmCacheKey);
+  currentScopeRef.current = swarmCacheKey;
 
   const loadingArtsRef = useRef(loadingArts);
   loadingArtsRef.current = loadingArts;
-
-  const applyLive = useCallback((res: SwarmLive) => {
-    mutate(mergeSwarmLive(dataRef.current ?? undefined, res));
-  }, [mutate]);
 
   // Hydrate full artifacts when a slim finished card expands.
   const ensureFullArtifacts = useCallback((job: Job) => {
     if (job.artifacts_complete !== false) return;
     if (loadingArtsRef.current.has(job.id)) return;
     setLoadingArts((prev) => new Set(prev).add(job.id));
+    const requestScope = swarmCacheKey;
     api.artifacts(job.id)
       .then((arts) => {
+        if (currentScopeRef.current !== requestScope || dataScopeRef.current !== requestScope) return;
         const prev = dataRef.current;
         if (!prev) return;
         const incoming = Array.isArray(arts) ? arts : [];
@@ -1248,7 +1276,7 @@ export default function SwarmPane() {
           return next;
         });
       });
-  }, [mutate]);
+  }, [mutate, swarmCacheKey]);
 
   // Transcript chrome (job_id chips / ActionCard KV) deep-links here: undismiss,
   // expand, hydrate artifacts, scroll the row into view. Also drains any job id
@@ -1340,8 +1368,6 @@ export default function SwarmPane() {
     };
   }, [openSwarmJobById]);
 
-  const lastSigRef = useRef("");
-
   // Drive a 1s clock only while something is running so relative "last activity"
   // labels advance live. Stops ticking when nothing is running to avoid needless
   // re-renders.
@@ -1382,8 +1408,7 @@ export default function SwarmPane() {
       setCancelling((prev) => { const next = new Set(prev); next.delete(id); return next; });
     }
     try {
-      const res = await api.swarmLive(scopedRepo);
-      applyLive(res);
+      await revalidate(true);
     } catch {
       // Ignore; the poll loop will refetch shortly.
     }
@@ -1409,10 +1434,7 @@ export default function SwarmPane() {
   // the window is hidden, backs off when the backend is under load, and skips the
   // re-render when nothing changed.
   useEffect(() => {
-    lastSigRef.current = swarmSignature(data ?? null);
-  }, [scopedRepo]);
-
-  useEffect(() => {
+    if (!enabled) return;
     let active = true;
     let timer: number | undefined;
     let inFlight = false;
@@ -1426,14 +1448,10 @@ export default function SwarmPane() {
       if (inFlight) { schedule(500); return; }
       inFlight = true;
       const startedAt = performance.now();
-      api.swarmLive(scopedRepo)
+      revalidate()
         .then((res) => {
           if (!active) return;
-          const sig = swarmSignature(res);
-          if (sig !== lastSigRef.current) {
-            lastSigRef.current = sig;
-            applyLive(res);
-          }
+          if (!res) { schedule(8000); return; }
           const hasRunning = (res.jobs || []).some((j) => jobStatus(j) === "in_progress");
           const elapsed = performance.now() - startedAt;
           const base = hasRunning ? 2000 : 5000;
@@ -1444,7 +1462,7 @@ export default function SwarmPane() {
         .finally(() => { inFlight = false; });
     };
 
-    tick();
+    schedule(2000);
     const onVisible = () => {
       if (!document.hidden && !inFlight) { window.clearTimeout(timer); tick(); }
     };
@@ -1454,7 +1472,7 @@ export default function SwarmPane() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [scopedRepo, applyLive]);
+  }, [scopedRepo, revalidate, enabled]);
 
   const pendingOpenId = peekPendingSwarmOpenJob();
   const allJobs = filterJobsByScope(data?.jobs || [], jobScope, activeSessionId, {

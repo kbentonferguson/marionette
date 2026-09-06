@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile as _tf
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
@@ -53,6 +54,8 @@ class SessionControlServices:
     consume_resume_pending: Optional[Callable[..., bool]] = None
     checkpoint_transcript: Optional[Callable[[], None]] = None
     context_at: Optional[Callable[..., Any]] = None
+    pilot_swap_lock: Any = None
+    gate_goal_pilot_ready: Optional[Callable[[], Optional[dict]]] = None
 
 
 JsonPayload = Union[dict, list]
@@ -432,21 +435,27 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
     }
 
 
-def _goal_pilot(svc: SessionControlServices) -> tuple[Any, Optional[tuple[int, dict]]]:
-    if not svc.get_pilot():
+def _goal_pilot(svc: SessionControlServices, session_id: Optional[str] = None) -> tuple[Any, Optional[tuple[int, dict]]]:
+    original = svc.get_pilot()
+    owner = getattr(original, "harness_session_id", "") or ""
+    if session_id is not None and session_id != owner:
+        return None, (409, {"ok": False, "error": "active session changed", "code": "session_changed"})
+    if not original:
         return None, (404, {"ok": False, "error": "no active session"})
-    not_ready = svc.gate_active_pilot_ready()
+    not_ready = (svc.gate_goal_pilot_ready or svc.gate_active_pilot_ready)()
     if not_ready is not None:
         return None, (409, not_ready)
     pilot = svc.get_pilot()
     if not pilot:
         return None, (404, {"ok": False, "error": "no active session"})
+    if (getattr(pilot, "harness_session_id", "") or "") != owner:
+        return None, (409, {"ok": False, "error": "active session changed", "code": "session_changed"})
     return pilot, None
 
 
-def get_session_goal(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+def get_session_goal(session_id: Optional[str], svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """GET /api/session/goal."""
-    pilot, err = _goal_pilot(svc)
+    pilot, err = _goal_pilot(svc, session_id)
     if err is not None:
         return err
     goal = {}
@@ -459,36 +468,39 @@ def get_session_goal(svc: SessionControlServices) -> tuple[int, JsonPayload]:
 
 def post_session_goal(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/goal — set / pause / resume / complete / clear."""
-    pilot, err = _goal_pilot(svc)
+    pilot, err = _goal_pilot(svc, body.get("session_id"))
     if err is not None:
         return err
-    action = str(body.get("action") or "set").strip().lower()
-    budget = body.get("token_budget")
-    token_budget = None
-    if budget not in ("", None):
+    with svc.pilot_swap_lock if svc.pilot_swap_lock is not None else nullcontext():
+        if svc.get_pilot() is not pilot:
+            return 409, {"ok": False, "error": "active session changed", "code": "session_changed"}
+        action = str(body.get("action") or "set").strip().lower()
+        budget = body.get("token_budget")
+        token_budget = None
+        if budget not in ("", None):
+            try:
+                token_budget = int(budget)
+            except (TypeError, ValueError):
+                return 400, {"ok": False, "error": "token_budget must be an int"}
         try:
-            token_budget = int(budget)
-        except (TypeError, ValueError):
-            return 400, {"ok": False, "error": "token_budget must be an int"}
-    try:
-        if action == "set":
-            text = (body.get("text") or body.get("goal") or "").strip()
-            if not text:
-                return 400, {"ok": False, "error": "missing text"}
-            goal = pilot.set_session_goal(text, token_budget=token_budget)
-        elif action == "pause":
-            goal = pilot.pause_session_goal()
-        elif action == "resume":
-            goal = pilot.resume_session_goal()
-        elif action == "complete":
-            goal = pilot.complete_session_goal()
-        elif action == "clear":
-            goal = pilot.clear_session_goal()
-        else:
-            return 400, {"ok": False, "error": "unknown action"}
-    except Exception as exc:
-        return 500, {"ok": False, "error": str(exc)}
-    return 200, {"ok": True, "goal": goal}
+            if action == "set":
+                text = (body.get("text") or body.get("goal") or "").strip()
+                if not text:
+                    return 400, {"ok": False, "error": "missing text"}
+                goal = pilot.set_session_goal(text, token_budget=token_budget)
+            elif action == "pause":
+                goal = pilot.pause_session_goal()
+            elif action == "resume":
+                goal = pilot.resume_session_goal()
+            elif action == "complete":
+                goal = pilot.complete_session_goal()
+            elif action == "clear":
+                goal = pilot.clear_session_goal()
+            else:
+                return 400, {"ok": False, "error": "unknown action"}
+        except Exception as exc:
+            return 500, {"ok": False, "error": str(exc)}
+        return 200, {"ok": True, "goal": goal}
 
 
 def get_session_loop(svc: SessionControlServices) -> tuple[int, JsonPayload]:

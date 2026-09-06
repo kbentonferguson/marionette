@@ -7,8 +7,10 @@ JSON under the session state_dir so the goal survives turns and compaction
 mutates the frozen system prompt.
 """
 
+import hashlib
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -83,8 +85,10 @@ class SessionGoal:
             return self.clear()
         self.text = cleaned
         self.status = "active"
-        if not self.created_at:
-            self.created_at = now
+        self.created_at = now
+        self.token_count = 0
+        self.continuation_count = 0
+        self.elapsed_seconds = 0.0
         self.updated_at = now
         self._active_since = now
         self.budget_exceeded = False
@@ -196,19 +200,89 @@ class SessionGoal:
 class SessionGoalStore:
     """Load/save SessionGoal JSON under a session state_dir."""
 
-    def __init__(self, state_dir: str) -> None:
+    def __init__(self, state_dir: str, *, session_id: str = "") -> None:
         self.state_dir = state_dir or ""
-        self.path = (
-            os.path.join(self.state_dir, GOAL_FILENAME) if self.state_dir else ""
-        )
+        self.session_id = session_id or ""
+        filename = GOAL_FILENAME
+        if self.session_id:
+            key = hashlib.sha256(self.session_id.encode("utf-8")).hexdigest()
+            filename = os.path.join("session_goals", key + ".json")
+        self.path = os.path.join(self.state_dir, filename) if self.state_dir else ""
+
+    @classmethod
+    def migrate_legacy(cls, state_dir: str, sessions: Any) -> None:
+        """Claim the legacy goal at boot, before active-view promotion or builds.
+
+        The owner is stamped first so an interrupted copy can only retry for
+        that same owner. Keep every legacy field and never replace scoped data.
+        Callers must surface write errors instead of continuing an unclaimed boot.
+        """
+        if not state_dir:
+            return
+        legacy_path = os.path.join(state_dir, GOAL_FILENAME)
+        try:
+            with open(legacy_path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (FileNotFoundError, ValueError):
+            return
+        if not isinstance(payload, dict):
+            return
+        owner = payload.get("session_id")
+        if not owner:
+            owner = sessions.active
+            if not isinstance(owner, str) or not owner.strip():
+                return
+            if sum(row.get("id") == owner for row in sessions.rows()) != 1:
+                return
+            payload["session_id"] = owner
+            cls._write_payload(legacy_path, payload)
+        if not isinstance(owner, str):
+            return
+        target = cls(state_dir, session_id=owner)
+        cls._write_payload(target.path, payload, replace=False)
+
+    @staticmethod
+    def _write_payload(path: str, payload: dict, *, replace: bool = True) -> None:
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".session-goal-", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(payload, fh, indent=2, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            if replace:
+                os.replace(temporary, path)
+            else:
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    pass
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def load(self) -> SessionGoal:
-        if not self.path or not os.path.isfile(self.path):
+        if not self.path:
             return SessionGoal()
+        path = self.path
+        migrate = self.session_id and not os.path.isfile(path)
+        if migrate:
+            path = os.path.join(self.state_dir, GOAL_FILENAME)
         try:
-            with open(self.path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return SessionGoal.from_dict(data if isinstance(data, dict) else None)
+            if not isinstance(data, dict):
+                return SessionGoal()
+            # An old unscoped file has no knowable owner. Preserve it for
+            # unbound callers; migration requires an explicit session_id.
+            owner = data.get("session_id") or ""
+            if (migrate and owner != self.session_id) or (not self.session_id and owner):
+                return SessionGoal()
+            goal = SessionGoal.from_dict(data)
+            if migrate:
+                self._write_payload(self.path, data, replace=False)
+            return goal
         except Exception:
             return SessionGoal()
 
@@ -216,13 +290,12 @@ class SessionGoalStore:
         if not self.path or not self.state_dir:
             return
         try:
-            os.makedirs(self.state_dir, exist_ok=True)
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
             payload = goal.to_dict()
+            if self.session_id:
+                payload["session_id"] = self.session_id
             # Persist active_since so elapsed can resume across process restarts.
             payload["_active_since"] = float(getattr(goal, "_active_since", 0.0) or 0.0)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(json.dumps(payload, indent=2, ensure_ascii=False))
-            os.replace(tmp, self.path)
+            self._write_payload(self.path, payload)
         except Exception:
             pass

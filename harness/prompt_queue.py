@@ -70,6 +70,7 @@ class PromptQueueMixin:
                 "text": str(it.get("text") or ""),
                 "images": [str(p) for p in (it.get("images") or []) if p],
                 "model": str(it.get("model") or ""),
+                **({"source": "goal_mode"} if it.get("source") == "goal_mode" else {}),
             })
         with self._prompt_queue_lock:
             self._prompt_queue = restored
@@ -81,7 +82,7 @@ class PromptQueueMixin:
     # values on unexpected input rather than exploding the caller.
     # ------------------------------------------------------------------
     def enqueue_prompt(self, text: str, images: Optional[list] = None,
-                       model: Optional[str] = None) -> dict:
+                       model: Optional[str] = None, *, source: str = "") -> dict:
         """Append a full prompt to the queue and return the created item.
 
         Empty/whitespace-only text is rejected with an empty item -- callers
@@ -104,6 +105,8 @@ class PromptQueueMixin:
             import uuid as _uuid
             m = (model or "").strip()
             item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs, "model": m}
+            if source == "goal_mode":
+                item["source"] = source
             with self._prompt_queue_lock:
                 self._prompt_queue.append(item)
             self._save_prompt_queue()

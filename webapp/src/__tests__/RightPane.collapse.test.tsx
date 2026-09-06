@@ -1,12 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
 import RightDock from "../components/RightDock";
 import css from "../index.css?raw";
 import { api } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
-import { usePolling } from "../lib/usePolling";
 import { clearSWRCache, readSWRCache } from "../lib/useStaleWhileRevalidate";
 import { resetSettingsOverlay, setSettingsOverlayOpen } from "../lib/settingsOverlay";
 
@@ -17,9 +16,6 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../lib/usePolling", () => ({
-  usePolling: vi.fn(),
-}));
 
 vi.mock("../components/StatePane", () => ({ default: () => <div data-testid="state-pane" /> }));
 vi.mock("../components/BrowserPane", () => ({ default: () => <div /> }));
@@ -646,11 +642,6 @@ describe("RightPane reviews-load failure honesty", () => {
 
     expect(screen.getByRole("region", { name: "Review panel" })).toBeInTheDocument();
 
-    const pollCalls = vi.mocked(usePolling).mock.calls;
-    expect(pollCalls.length).toBeGreaterThanOrEqual(1);
-    const fetchReviews = pollCalls[0][0];
-    await fetchReviews();
-
     await waitFor(() => {
       expect(screen.getByTestId("reviews-load-error")).toHaveTextContent(
         /Couldn't load pending reviews/i,
@@ -691,14 +682,7 @@ describe("RightPane swarm activity poll seeds SWR cache", () => {
 
     render(<RightPane {...baseProps} />);
 
-    // usePolling(fetchReviews) then usePolling(fetchSwarmActivity) each render —
-    // the last registration is the swarm activity poller.
-    const pollCalls = vi.mocked(usePolling).mock.calls;
-    expect(pollCalls.length).toBeGreaterThanOrEqual(2);
-    const fetchSwarmActivity = pollCalls[pollCalls.length - 1][0];
-    await fetchSwarmActivity();
-
-    expect(api.swarmLive).toHaveBeenCalledWith(REPO);
+    await waitFor(() => expect(api.swarmLive).toHaveBeenCalledWith(REPO));
     expect(readSWRCache(`swarm:${REPO}`)).toEqual(payload);
   });
 });
@@ -750,4 +734,129 @@ describe("RightPane add-panel menu", () => {
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu", { name: "Add panel" })).toBeNull();
   });
+});
+
+
+describe("RightPane and RightDock polling ownership", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    resetSettingsOverlay();
+    dispatchProjectSelected("");
+    seedBoardTabOrder(["review", "swarm"]);
+    localStorage.setItem("marionette.jobScope.v1", "repo");
+    vi.mocked(api.getReviews).mockResolvedValue([]);
+    vi.mocked(api.swarmLive).mockResolvedValue({ jobs: [] });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+  const tick = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const dock = <RightDock panelsOpen={false} onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={vi.fn()} />;
+
+  it("leaves only dock scans while hidden, including refresh and session changes", async () => {
+    render(<>{dock}<RightPane {...baseProps} visible={false} /></>);
+    await tick(20000);
+    expect(api.swarmLive).toHaveBeenCalledTimes(5);
+    expect(api.getReviews).toHaveBeenCalledTimes(5);
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "next" } }));
+    });
+    await tick();
+    expect(api.swarmLive).toHaveBeenCalledTimes(6);
+    act(() => { window.dispatchEvent(new Event("harness-reviews-refresh")); });
+    await tick();
+    expect(api.getReviews).toHaveBeenCalledTimes(7);
+    expect(api.swarmLive).toHaveBeenCalledTimes(7);
+  });
+
+  it("polls once on opening, refreshes visible badges, and retains warm cache on collapse", async () => {
+    const payload = { jobs: [{ id: "live", session_id: "s", status: "running" }] };
+    vi.mocked(api.swarmLive).mockResolvedValue(payload);
+    const view = render(<RightPane {...baseProps} visible={false} />);
+    await tick(8000);
+    expect(api.swarmLive).not.toHaveBeenCalled();
+    view.rerender(<RightPane {...baseProps} />);
+    await tick();
+    expect(api.swarmLive).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle("1 swarm jobs running")).toBeInTheDocument();
+    await tick(4000);
+    expect(api.swarmLive).toHaveBeenCalledTimes(2);
+    view.rerender(<RightPane {...baseProps} visible={false} />);
+    await tick(8000);
+    expect(api.swarmLive).toHaveBeenCalledTimes(2);
+    expect(readSWRCache("swarm:__default__")).toEqual(payload);
+    view.rerender(<RightPane {...baseProps} />);
+    expect(screen.getByTitle("1 swarm jobs running")).toBeInTheDocument();
+    await tick();
+    expect(api.swarmLive).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes visible review counts immediately on review events", async () => {
+    render(<RightPane {...baseProps} />);
+    await tick();
+    vi.mocked(api.getReviews).mockResolvedValue([
+      { id: "new", job_id: "new", objective: "new", files: [], created_at: 0 },
+    ]);
+    act(() => { window.dispatchEvent(new Event("harness-reviews-refresh")); });
+    await tick();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(api.getReviews).toHaveBeenCalledTimes(2);
+    expect(api.swarmLive).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores an in-flight pane response after collapse", async () => {
+    let resolveOld: (value: Awaited<ReturnType<typeof api.swarmLive>>) => void = () => {};
+    vi.mocked(api.swarmLive).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const view = render(<RightPane {...baseProps} />);
+    await tick();
+    view.rerender(<RightPane {...baseProps} visible={false} />);
+    await act(async () => { resolveOld({ jobs: [] }); });
+    expect(readSWRCache("swarm:__default__")).toBeUndefined();
+    await tick(8000);
+    expect(api.swarmLive).toHaveBeenCalledTimes(1);
+  });
+
+  for (const surface of ["pane", "dock"]) {
+    it(`${surface} keeps a newer review count when an older refresh resolves last`, async () => {
+      let resolveOld: (value: Awaited<ReturnType<typeof api.getReviews>>) => void = () => {};
+      vi.mocked(api.getReviews).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+      render(surface === "pane" ? <RightPane {...baseProps} /> : dock);
+      await tick();
+      act(() => { window.dispatchEvent(new Event("harness-reviews-refresh")); });
+      await tick();
+      await act(async () => {
+        resolveOld([{ id: "old", job_id: "old", objective: "old", files: [], created_at: 0 }]);
+      });
+      expect(screen.queryByText("1")).toBeNull();
+    });
+    for (const change of ["session", "repo"]) {
+      it(`${surface} rejects late ${change} responses before cache and badge writes`, async () => {
+        let resolveOld: (value: Awaited<ReturnType<typeof api.swarmLive>>) => void = () => {};
+        let rejectReviews: (reason: Error) => void = () => {};
+        vi.mocked(api.swarmLive).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+        vi.mocked(api.getReviews).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectReviews = reject; }));
+        render(surface === "pane" ? <RightPane {...baseProps} /> : dock);
+        await tick();
+        act(() => {
+          window.dispatchEvent(change === "repo"
+            ? new CustomEvent("harness-project-selected", { detail: "/next" })
+            : new CustomEvent("harness-session-changed", { detail: { sessionId: "next" } }));
+        });
+        await tick();
+        await act(async () => {
+          resolveOld({ jobs: [{ id: "obsolete", session_id: "old", status: "running" }] });
+          rejectReviews(new Error("obsolete failure"));
+        });
+        expect(screen.queryByTitle(/swarm jobs? running/)).toBeNull();
+        expect(screen.queryByTestId("reviews-load-error")).toBeNull();
+        expect(readSWRCache(change === "repo" ? "swarm:/next" : "swarm:__default__")).toEqual({ jobs: [] });
+        if (change === "repo") expect(readSWRCache("swarm:__default__")).toBeUndefined();
+      });
+    }
+  }
 });

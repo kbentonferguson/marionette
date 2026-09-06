@@ -1,3 +1,4 @@
+import { transcriptFingerprint } from "./transcriptItems";
 import type { Item } from "../TranscriptList";
 
 /**
@@ -81,4 +82,20 @@ export function writeTranscriptCache(
     items: [...items],
     ...(seededEmpty ? { seededEmpty: true } : {}),
   });
+}
+
+/** A disk response may replace rows only while its local baseline still owns them. */
+export function captureTranscriptRead(
+  sessionId: string,
+  itemsRef: { current: Item[] },
+  streamGenRef: { current: number },
+): () => boolean {
+  const items = itemsRef.current;
+  const fingerprint = transcriptFingerprint(items);
+  const streamGen = streamGenRef.current;
+  const cached = peekTranscriptCache(sessionId);
+  return () => itemsRef.current === items
+    && transcriptFingerprint(itemsRef.current) === fingerprint
+    && streamGenRef.current === streamGen
+    && peekTranscriptCache(sessionId) === cached;
 }

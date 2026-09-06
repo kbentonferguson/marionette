@@ -95,6 +95,7 @@ from .goal_mode import (
     maybe_enqueue_session_goal_continuation,
     maybe_inject_goal_continue,
     reset_turn_goal_state,
+    goal_mode_continue_cap,
 )
 
 
@@ -1194,7 +1195,7 @@ class SendLoopMixin:
         except ValueError:
             _auto_verify_cap = 2
         try:
-            _goal_mode_cap = reset_turn_goal_state(self)
+            _goal_mode_cap = goal_mode_continue_cap() if resume else reset_turn_goal_state(self)
         except Exception:
             _goal_mode_cap = 2
         goal_mode_iters = 0

@@ -13,6 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from test_ergonomics import isolated_server_state
+
+pytestmark = pytest.mark.usefixtures("isolated_server_state")
+
 def _server(tmp_state_dir):
     import harness.server as srv
     # Hermetic: prior suite cases can leave boot carry that /api/usage
@@ -69,6 +73,7 @@ def test_swarm_live_returns_expected_shape():
             assert isinstance(data["jobs"], list)
         finally:
             httpd.shutdown()
+            httpd.server_close()
     finally:
         shutil.rmtree(tmp_dir)
 
@@ -115,6 +120,7 @@ def test_swarm_live_surfaces_local_provider_jobs():
             assert done["artifacts"] and "2 files" in done["artifacts"][0]["headline"]
         finally:
             httpd.shutdown()
+            httpd.server_close()
             srv._pilot._local_jobs.clear()
     finally:
         shutil.rmtree(tmp_dir)
@@ -193,6 +199,7 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             assert abs(headline - (measured + estimated)) < 1e-6
         finally:
             httpd.shutdown()
+            httpd.server_close()
     finally:
         shutil.rmtree(tmp_dir)
 
@@ -341,4 +348,5 @@ def test_swarm_live_held_open_scratch_hijack_exposes_only_host_local(tmp_path, m
         assert all(j.get("source") == "harness" for j in locals_)
     finally:
         httpd.shutdown()
+        httpd.server_close()
         srv._pilot._local_jobs.clear()

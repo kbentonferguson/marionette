@@ -14,7 +14,7 @@ from harness.goal_mode import (
     stash_turn_swarm_facts,
 )
 from harness.session_goal import SessionGoal
-from harness.swarm_run_facts import NOT_VERIFIED, VERIFIED, CriterionFact, SwarmRunFacts
+from harness.swarm_run_facts import NOT_VERIFIED, VERIFIED, CriterionEvidence, CriterionFact, SwarmRunFacts
 
 
 def _facts(*criteria: CriterionFact) -> SwarmRunFacts:
@@ -34,7 +34,7 @@ def _facts(*criteria: CriterionFact) -> SwarmRunFacts:
 
 
 def _criterion(text: str, status: str) -> CriterionFact:
-    return CriterionFact(text=text, status=status, basis="test")
+    return CriterionFact(text=text, status=status, basis="test", evidence=CriterionEvidence.FAILED)
 
 
 def test_assess_swarm_goal_empty_and_none():
