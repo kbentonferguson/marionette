@@ -97,3 +97,98 @@ def test_get_usage_builds_session_pill(monkeypatch):
     assert isinstance(payload["session"].get("swarm_by_model"), list)
     assert "jobs" in payload
     assert store  # cached
+
+
+def test_context_usage_deferred_transition(tmp_path):
+    from threading import Event
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.deferred_attach import DeferredPilotPlaceholder, schedule_deferred_build
+
+    shell = DeferredPilotPlaceholder(session_id="child", state_dir=str(tmp_path))
+    svc, _ = _svc(pilot=shell)
+    release = Event()
+    real = ConversationalSession(HarnessConfig(max_context_tokens=1000))
+    real.harness_session_id = "child"
+    def build():
+        assert release.wait(5)
+        return real
+    thread = schedule_deferred_build(build, on_done=shell.mark_ready, on_error=shell.mark_failed)
+    try:
+        code, payload = get_context_usage(svc)
+        assert (code, payload) == (200, {"available": False, "reason": "building", "session_id": "child"})
+    finally:
+        release.set()
+        thread.join(5)
+    code, payload = get_context_usage(svc)
+    assert code == 200
+    assert payload == {**real.get_context_usage(), "available": True, "session_id": "child"}
+
+
+def test_context_usage_failed_build_remains_error(tmp_path):
+    from harness.deferred_attach import DeferredPilotPlaceholder
+    shell = DeferredPilotPlaceholder(session_id="child", state_dir=str(tmp_path))
+    shell.mark_failed(RuntimeError("construction failed"))
+    svc, _ = _svc(pilot=shell)
+    code, payload = get_context_usage(svc)
+    assert code == 500
+    assert "construction failed" in payload["error"]
+
+
+def test_context_usage_scoped_registry_lookup_never_uses_active_pilot():
+    from harness.session_runners import SessionRunnerRegistry
+    runners = SessionRunnerRegistry()
+    child = SimpleNamespace(harness_session_id="child", get_context_usage=lambda: {"total": 73})
+    runners.get_or_create("child", lambda: child)
+    svc, _ = _svc()
+    svc.get_runner = runners.get
+    def forbidden():
+        raise AssertionError("scoped request must not resolve the active pilot")
+    svc.get_pilot = forbidden
+    assert get_context_usage(svc, "child") == (200, {"available": True, "session_id": "child", "total": 73})
+    assert get_context_usage(svc, "missing") == (200, {"available": False, "session_id": "missing", "reason": "no_runner"})
+    assert runners.ids() == ["child"]
+
+
+def test_context_usage_route_during_real_cold_attach(tmp_path, monkeypatch):
+    import threading
+    import json
+    from copy import deepcopy
+    import harness.server as srv
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    from harness.http_routes import build_get_routes
+    from harness.session_runners import SessionRunnerRegistry
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    cfg = deepcopy(srv._cfg)
+    cfg.state_dir = str(tmp_path)
+    monkeypatch.setattr(srv, "_cfg", cfg)
+    monkeypatch.setattr(srv, "_runners", SessionRunnerRegistry())
+    monkeypatch.setattr(srv, "_pilot", None)
+    # Keep bind side effects out of this route/attach test.
+    monkeypatch.setattr(srv, "_bind_pilot_services", lambda pilot: None)
+    real = ConversationalSession(HarnessConfig(state_dir=str(tmp_path), max_context_tokens=1000))
+    release = threading.Event()
+    def build(*, config=None):
+        assert release.wait(5)
+        return real
+    monkeypatch.setattr(srv, "_build_conversational_pilot", build)
+    class Handler:
+        def _send(self, status, body):
+            return status, json.loads(body)
+    route = build_get_routes(srv._route_services())["/api/context/usage"]
+    shell = srv._attach_view("cold-child", defer_cold_build=True, load_transcript_on_create=False)
+    try:
+        assert route(Handler(), None, {"session_id": ["cold-child"]}) == (
+            200, {"available": False, "reason": "building", "session_id": "cold-child"})
+        assert route(Handler(), None, {"session_id": ["other"]}) == (
+            200, {"available": False, "reason": "no_runner", "session_id": "other"})
+    finally:
+        release.set()
+        shell.ensure_ready(timeout=5)
+    status, payload = route(Handler(), None, {"session_id": ["cold-child"]})
+    assert status == 200
+    assert payload["available"] is True
+    assert payload["session_id"] == "cold-child"
+    assert payload["total"] == real.get_context_usage()["total"]

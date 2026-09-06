@@ -3,6 +3,11 @@
  * State and send/stop wiring stay owned by Conversation.tsx.
  */
 
+import { ImageResource } from "./ImageResource";
+import { imagePath } from "../../lib/transport";
+import QueueRecoveryNotice from "./QueueRecoveryNotice";
+import InputReceipts from "./InputReceipts";
+import type { InputReceipt, InputDocument, QueueRecovery } from "../../lib/api";
 import type { RefObject } from "react";
 import {
   ChevronDown,
@@ -72,6 +77,12 @@ export default function ComposerDock({
   swarmLiveJobs = [],
   sessionId = "",
   queueLoadError,
+  receipts = [],
+  onCopyReceipt,
+  attachedDocuments = [],
+  onRemoveDocument,
+  queueRecovery = [],
+  onCopyQueueRecovery,
   queueDragIndex,
   queueDragOverIndex,
   editingIndex,
@@ -121,6 +132,7 @@ export default function ComposerDock({
   handleQueueDragOver,
   handleQueueDragLeave,
   handleQueueDrop,
+  moveServerQueueItem,
   handleQueueDragEnd,
   handleQueueEdit,
   handleQueueRemove,
@@ -164,6 +176,12 @@ export default function ComposerDock({
   swarmLiveJobs?: Job[];
   sessionId?: string;
   queueLoadError?: string | null;
+  receipts?: InputReceipt[];
+  onCopyReceipt?: (receipt: InputReceipt) => void;
+  attachedDocuments?: InputDocument[];
+  onRemoveDocument?: (index: number) => void;
+  queueRecovery?: QueueRecovery[];
+  onCopyQueueRecovery?: (text: string) => void;
   queueDragIndex: number | null;
   queueDragOverIndex: number | null;
   editingIndex: number | null;
@@ -221,6 +239,7 @@ export default function ComposerDock({
   handleQueueDragOver: (e: React.DragEvent, idx: number) => void;
   handleQueueDragLeave: (idx: number) => void;
   handleQueueDrop: (e: React.DragEvent, idx: number) => void;
+  moveServerQueueItem: (fromIdx: number, targetIdx: number) => void;
   handleQueueDragEnd: () => void;
   handleQueueEdit: (item: ServerQueueItem) => void;
   handleQueueRemove: (id: string) => void;
@@ -302,6 +321,7 @@ export default function ComposerDock({
   return (
     <div className="composer-dock-shell px-6 pb-3 pt-0.5 min-w-0">
       <div className="max-w-3xl mx-auto min-w-0">
+        <div data-testid="composer-context" className="max-h-[25dvh] overflow-y-auto overscroll-contain">
         {wikiPrepared && wikiPrepared.pages.length > 0 && (
           <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-[11px] text-txt/85">
             <Share2 size={11} className="text-accent shrink-0" />
@@ -505,11 +525,8 @@ export default function ComposerDock({
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}
-        {queueNotice && (
-          <div className="mb-2 px-1 text-[10px] text-danger/90">
-            {queueNotice}
-          </div>
-        )}
+        {onCopyReceipt && <InputReceipts receipts={receipts} onCopy={onCopyReceipt} sessionId={sessionId} />}
+        <QueueRecoveryNotice entries={queueRecovery} onCopy={onCopyQueueRecovery} />
         {queueItems.length > 0 && (
           <div className="mb-2 space-y-1">
             <div className="flex items-center justify-between px-1">
@@ -552,13 +569,22 @@ export default function ComposerDock({
                       next
                     </span>
                   )}
-                  <span
+                  <button
+                    type="button"
                     onClick={() => handleQueueEdit(item)}
-                    title={item.text}
-                    className="truncate flex-1 min-w-0 cursor-pointer hover:text-txt hover:underline transition-colors"
+                    onKeyDown={(event) => {
+                      if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+                        event.preventDefault();
+                        moveServerQueueItem(idx, idx + (event.key === "ArrowUp" ? -1 : 1));
+                      }
+                    }}
+                    aria-label={`Edit queued prompt ${idx + 1}: ${item.text}`}
+                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                    title={`${item.text}\nEdit prompt; Alt+Up or Alt+Down to reorder`}
+                    className="truncate flex-1 min-w-0 min-h-6 text-left rounded cursor-pointer hover:text-txt hover:underline focus-visible:outline focus-visible:outline-accent transition-colors"
                   >
                     {item.text}
-                  </span>
+                  </button>
                   {item.images && item.images.length > 0 && (
                     <span
                       title={`${item.images.length} image attachment(s)`}
@@ -570,13 +596,20 @@ export default function ComposerDock({
                   <button
                     onClick={() => handleQueueRemove(item.id)}
                     title="Remove from queue"
-                    className="p-0.5 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all shrink-0"
+                    aria-label={`Remove queued prompt ${idx + 1}`}
+                    className="min-w-6 min-h-6 flex items-center justify-center rounded text-faint hover:text-risk hover:bg-risk/10 focus-visible:outline focus-visible:outline-accent border border-transparent hover:border-risk/20 transition-all shrink-0"
                   >
                     <X size={11} />
                   </button>
                 </div>
               );
             })}
+          </div>
+        )}
+        </div>
+        {queueNotice && (
+          <div role="alert" className="mb-2 px-1 text-[10px] text-risk">
+            {queueNotice}
           </div>
         )}
         {/* compact composer: input + a single tidy control row */}
@@ -968,6 +1001,12 @@ export default function ComposerDock({
             </div>
           )}
 
+          {attachedDocuments.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-2">
+            {attachedDocuments.map((document, index) => <div key={index} className="flex items-center gap-2 rounded border border-edge px-2 text-xs">
+              <span>{document.name || ("ref" in document ? document.ref : document.path)}</span>
+              <button type="button" className="min-h-8 px-2" aria-label={`Remove document ${document.name || index + 1}`} onClick={() => onRemoveDocument?.(index)}>Remove</button>
+            </div>)}
+          </div>}
           {attachedImages.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
               {attachedImages.map((img, idx) => (
@@ -975,10 +1014,10 @@ export default function ComposerDock({
                   key={idx}
                   className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none animate-in fade-in zoom-in duration-150"
                 >
-                  <img
-                    src={img.previewUrl}
+                  <ImageResource
+                    src={img.previewUrl.startsWith("blob:") ? img.previewUrl : imagePath(img.path)}
                     alt={img.name}
-                    onClick={() => onSetLightboxUrl(img.previewUrl)}
+                    onClick={() => onSetLightboxUrl(imagePath(img.path))}
                     className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
                   />
                   <button
@@ -1064,7 +1103,7 @@ export default function ComposerDock({
             </button>
             </div>
             <div className="composer-toolbar-send">
-            {input.trim() && (
+            {(input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
               <button
                 type="button"
                 onClick={handleQueueAdd}
@@ -1074,7 +1113,7 @@ export default function ComposerDock({
                 <ListChecks size={9} /><span className="composer-toolbar-send-label">Queue</span>
               </button>
             )}
-            {composerBusy && input.trim() && (
+            {composerBusy && (input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
               <button
                 type="button"
                 onClick={() => send("interrupt")}
@@ -1133,7 +1172,7 @@ export default function ComposerDock({
                     <Square size={9} /><span className="composer-toolbar-send-label">Stop</span>
                   </button>
                 </>
-              : <button type="button" onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
+              : <button type="button" onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)}
                   aria-label={auto ? "Run" : plan ? "Plan" : "Send"}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                   <Send size={9} /><span className="composer-toolbar-send-label">{auto ? "Run" : plan ? "Plan" : "Send"}</span></button>}

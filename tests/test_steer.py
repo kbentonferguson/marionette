@@ -197,7 +197,7 @@ def test_steer_defers_when_tool_pair_unanswered():
     )
 
 
-def test_api_session_steer_auth(tmp_path):
+def test_api_session_steer_auth(tmp_path, owned_server):
     import harness.server as srv
     
     # Start local testing server
@@ -207,9 +207,6 @@ def test_api_session_steer_auth(tmp_path):
     t.start()
     
     # Set mock configurations on srv
-    srv._cfg.state_dir = str(tmp_path)
-    srv._sessions.path = str(tmp_path / "harness_sessions.json")
-    srv._sessions._sessions = []
     
     try:
         # 1. POST without token should fail with 403
@@ -257,7 +254,7 @@ def test_api_session_steer_auth(tmp_path):
         httpd.shutdown()
 
 
-def test_api_session_steer_after_idle_interrupt_still_enqueues(tmp_path):
+def test_api_session_steer_after_idle_interrupt_still_enqueues(tmp_path, owned_server):
     """Sticky Stop hold on a ready idle pilot must not discard authenticated steers."""
     import harness.server as srv
 
@@ -266,9 +263,6 @@ def test_api_session_steer_after_idle_interrupt_still_enqueues(tmp_path):
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
 
-    srv._cfg.state_dir = str(tmp_path)
-    srv._sessions.path = str(tmp_path / "harness_sessions.json")
-    srv._sessions._sessions = []
 
     try:
         # Mirror suite order: an earlier interrupt leaves _stop_holds_idle sticky
@@ -301,7 +295,7 @@ def test_api_session_steer_after_idle_interrupt_still_enqueues(tmp_path):
         httpd.shutdown()
 
 
-def test_api_session_steer_image_path_traversal_blocked(tmp_path):
+def test_api_session_steer_image_path_traversal_blocked(tmp_path, owned_server):
     """Steer image attachments must be validated like queue/chat/run."""
     import harness.server as srv
     import tempfile
@@ -311,9 +305,6 @@ def test_api_session_steer_image_path_traversal_blocked(tmp_path):
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
 
-    srv._cfg.state_dir = str(tmp_path)
-    srv._sessions.path = str(tmp_path / "harness_sessions.json")
-    srv._sessions._sessions = []
 
     try:
         bad_path = os.path.join(tempfile.gettempdir(), "steer_bad_outside.png")

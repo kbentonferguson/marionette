@@ -66,6 +66,21 @@ def test_debounce_skips_second_check_within_window(tmp_path, monkeypatch):
     assert reindex_calls == [repo]
 
 
+def test_first_refresh_runs_at_zero_monotonic_epoch(tmp_path, monkeypatch):
+    repo = _mk_stale_repo(tmp_path)
+    _reset_refresh_state()
+    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0)
+    reindex_calls = []
+    monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
+
+    cgi.maybe_refresh_codegraph(repo)
+    cgi.maybe_refresh_codegraph(repo)
+
+    assert reindex_calls == [repo]
+    assert cgi.codegraph_stale_check_at[repo] == 0.0
+
+
 def test_force_bypasses_debounce(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()

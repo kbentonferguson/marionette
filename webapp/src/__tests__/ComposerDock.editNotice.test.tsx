@@ -90,6 +90,7 @@ function renderDockWithNotice(
       handleQueueDragOver={noop}
       handleQueueDragLeave={noop}
       handleQueueDrop={noop}
+      moveServerQueueItem={noop}
       handleQueueDragEnd={noop}
       handleQueueEdit={noop}
       handleQueueRemove={noop}

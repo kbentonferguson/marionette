@@ -17,7 +17,6 @@ import re
 import shutil
 import subprocess
 import threading
-import uuid
 from typing import Any, Dict, Optional
 
 from harness.api.redaction import redact_secret_text
@@ -27,6 +26,7 @@ from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE
 COMMAND_JOB_STATES = frozenset({
     "registered",
     "running",
+    "unknown",
     "completed",
     "failed",
     "cancelled",
@@ -44,6 +44,9 @@ COMMAND_TERMINAL_STATES = frozenset({
 # Adapter/role labels that must NOT read as provider-swarm workers.
 COMMAND_JOB_ROLE = "command"
 COMMAND_JOB_ADAPTER = "command"
+
+# Live launch ownership is process-local and never persisted.
+_ACTIVE_COMMAND_LAUNCHES: set[str] = set()
 
 _TMP_MARIONETTE_RE = re.compile(r"/tmp/marionette[-_./A-Za-z0-9]+")
 
@@ -170,6 +173,9 @@ def build_pending_receipt(
                 receipt["output_chars"] = int(job.get("output_chars") or 0)
     if job.get("exit_code") is not None:
         receipt["exit_code"] = job.get("exit_code")
+    receipt.update(command_job_outcome(job))
+    if receipt["status"] == "unknown":
+        receipt.pop("exit_code", None)
     return receipt
 
 
@@ -211,6 +217,8 @@ def command_job_recovery_state(job: Optional[Dict[str, Any]]) -> str:
         job.get("role") or ""
     ) != COMMAND_JOB_ROLE:
         return "unknown"
+    if command_job_outcome(job)["status"] == "unknown":
+        return "unknown"
     status = str(job.get("status") or "").strip()
     receipt = job.get("terminal_receipt")
     if isinstance(receipt, dict) and str(receipt.get("status") or "") in COMMAND_TERMINAL_STATES:
@@ -229,6 +237,108 @@ def command_job_recovery_state(job: Optional[Dict[str, Any]]) -> str:
     return "needs_heal"
 
 
+def command_job_outcome(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Project observed outcomes separately from restart bookkeeping receipts."""
+    receipt = job.get("terminal_receipt")
+    recovery = receipt.get("recovery") if isinstance(receipt, dict) else None
+    uncertain = job.get("status") == "unknown" or (
+        recovery == "terminal_after_restart"
+        and bool(receipt.get("had_launch_checkpoint"))
+    ) or (
+        job.get("launch_checkpoint") is not None
+        and not isinstance(receipt, dict)
+        and job.get("status") not in COMMAND_TERMINAL_STATES | {"running"}
+        and not _command_launch_is_active(job)
+    )
+    if uncertain:
+        return {
+            "status": "unknown", "recovery_state": "unknown",
+            "terminal_receipt": None,
+            "recovery_receipt": job.get("recovery_receipt") or receipt,
+        }
+    out = {"status": job.get("status") or "unknown", "terminal_receipt": receipt}
+    if isinstance(receipt, dict) and receipt.get("status") in COMMAND_TERMINAL_STATES:
+        out["status"] = receipt["status"]
+    if out["status"] in {"timeout", "cancelled", "truncated"}:
+        out["effect_state"] = "unknown"
+        out["retry_disposition"] = "do_not_retry"
+    if job.get("exit_code") is not None:
+        out["exit_code"] = job["exit_code"]
+    return out
+
+
+_COMMAND_LAUNCH_LOCK = threading.Lock()
+
+
+def _command_launch_id(job: Dict[str, Any]) -> str:
+    checkpoint = job.get("launch_checkpoint")
+    return str(job.get("launch_id") or (checkpoint.get("launch_id") if isinstance(checkpoint, dict) else "") or "")
+
+
+def _command_launch_is_active(job: Dict[str, Any]) -> bool:
+    return _command_launch_id(job) in _ACTIVE_COMMAND_LAUNCHES
+
+
+def release_command_job_launch(session: Any, job_id: str) -> None:
+    """Release only the persisted launch incarnation owned by this row."""
+    with _COMMAND_LAUNCH_LOCK:
+        job = lookup_command_job(session, job_id) or {}
+        _ACTIVE_COMMAND_LAUNCHES.discard(_command_launch_id(job))
+
+
+def claim_command_job_launch(session: Any, job_id: str) -> bool:
+    """Claim once in this process, with a durable checkpoint before execution."""
+    with _COMMAND_LAUNCH_LOCK:
+        existing = lookup_command_job(session, job_id)
+        if (
+            existing is None
+            or existing.get("status") != "registered"
+            or existing.get("launch_checkpoint") is not None
+            or existing.get("terminal_receipt") is not None
+        ):
+            return False
+        checkpoint = getattr(session, "_checkpoint_command_job_launch", None)
+        if not callable(checkpoint):
+            return False
+        launch_id = _command_launch_id(existing)
+        if launch_id:
+            _ACTIVE_COMMAND_LAUNCHES.add(launch_id)
+        try:
+            if not checkpoint(job_id):
+                _ACTIVE_COMMAND_LAUNCHES.discard(launch_id)
+                return False
+            job = lookup_command_job(session, job_id) or {}
+            launch_id = _command_launch_id(job)
+            if not launch_id:
+                return False
+            _ACTIVE_COMMAND_LAUNCHES.add(launch_id)
+        except BaseException:
+            _ACTIVE_COMMAND_LAUNCHES.discard(launch_id)
+            raise
+    return True
+
+
+def _register_standalone_command(session: Any, act: Any, action_id: str) -> Dict[str, Any]:
+    command = str(getattr(act, "command", "") or "").strip()
+    repo = str(getattr(getattr(session, "config", None), "repo", "") or "")
+    if not command or not action_id:
+        raise ValueError("run_command requires a non-empty command and action_id")
+    if not repo:
+        raise ValueError("No workspace directory (config.repo) is open.")
+    register = getattr(session, "_register_command_job", None)
+    if not callable(register):
+        raise RuntimeError("session does not support durable command registration")
+    return register(
+        "local-cmd-" + command_fingerprint(action_id),
+        command=command,
+        action_id=action_id,
+        command_fingerprint=command_fingerprint(command),
+        command_preview=secret_free_command_preview(command),
+        cwd=repo,
+        reconcile_action=True,
+    )
+
+
 def launch_registered_command_job(
     session: Any,
     job_id: str,
@@ -245,24 +355,28 @@ def launch_registered_command_job(
     Never submits to the provider-swarm pool — command jobs are Marionette-
     owned process work with their own cooperative cancel Event.
     """
-    checkpoint = getattr(session, "_checkpoint_command_job_launch", None)
-    if callable(checkpoint):
-        if not checkpoint(job_id):
-            return False
-    else:
-        # Minimal hosts without the mixin still refuse terminal relaunch.
-        existing = lookup_command_job(session, job_id)
-        if existing is None:
-            return False
-        if command_job_recovery_state(existing) == "terminal":
-            return False
+    if not claim_command_job_launch(session, job_id):
+        return False
     short = str(job_id or "").rsplit("-", 1)[-1] or "cmd"
-    threading.Thread(
-        target=_run_registered_command_job,
-        args=(session, job_id, command, cwd),
-        daemon=True,
-        name=f"pmh-cmd-{short}",
-    ).start()
+    def run_owned_command(session: Any, job_id: str, command: str, cwd: str) -> None:
+        try:
+            _run_registered_command_job(session, job_id, command, cwd)
+        finally:
+            release_command_job_launch(session, job_id)
+
+    try:
+        threading.Thread(
+            target=run_owned_command,
+            args=(session, job_id, command, cwd),
+            daemon=True,
+            name=f"pmh-cmd-{short}",
+        ).start()
+    except Exception:
+        release_command_job_launch(session, job_id)
+        return False
+    except BaseException:
+        release_command_job_launch(session, job_id)
+        raise
     return True
 
 
@@ -279,89 +393,15 @@ def start_background_run_command(
     if not is_background_run_command(act):
         raise ValueError("start_background_run_command requires act.background=True")
     command = str(getattr(act, "command", "") or "").strip()
-    if not command:
-        raise ValueError("run_command requires a non-empty command")
-    repo = str(getattr(getattr(session, "config", None), "repo", "") or "").strip()
-    if not repo:
-        raise ValueError("No workspace directory (config.repo) is open.")
-
-    register = getattr(session, "_register_command_job", None)
-    if not callable(register):
-        raise RuntimeError("session does not support _register_command_job")
-
-    short = uuid.uuid4().hex[:8]
-    job_id = f"local-cmd-{short}"
-    fingerprint = command_fingerprint(command)
-    preview = secret_free_command_preview(command)
-    job = register(
-        job_id,
-        command=command,
-        action_id=action_id,
-        command_fingerprint=fingerprint,
-        command_preview=preview,
-        cwd=repo,
-    )
-    receipt = build_pending_receipt(job, include_output=False)
-    receipt["status"] = "pending"
-    receipt["message"] = (
-        f"Background command registered as job {job_id}; "
-        "query the job for the terminal receipt."
-    )
-
-    # Launch only after durable registration + launch checkpoint. Daemon
-    # thread — not the swarm pool — so command jobs never count as
-    # provider-swarm capacity.
-    try:
-        launched = launch_registered_command_job(session, job_id, command, repo)
-        if not launched:
-            # Already terminal or missing — surface the durable row, do not
-            # invent a second receipt.
-            live = lookup_command_job(session, job_id) or job
-            return build_pending_receipt(live, include_output=False)
-    except Exception as exc:
-        finish = getattr(session, "_finish_command_job", None)
-        if callable(finish):
-            finish(
-                job_id,
-                status="failed",
-                summary=f"Failed to start background command: {exc}",
-                exit_code=-1,
-                output="",
-            )
-        receipt["status"] = "failed"
-        receipt["terminal_receipt"] = {
-            "status": "failed",
-            "summary": f"Failed to start background command: {exc}",
-            "exit_code": -1,
-        }
-        receipt["message"] = receipt["terminal_receipt"]["summary"]
-    return receipt
+    job = _register_standalone_command(session, act, action_id)
+    job_id = job["id"]
+    launch_registered_command_job(session, job_id, command, job["cwd"])
+    return build_pending_receipt(lookup_command_job(session, job_id) or job)
 
 
 def register_foreground_command_job(session: Any, act: Any, action_id: str) -> str:
-    """Allocate a ``local-cmd-*`` row for a synchronous foreground command.
-
-    Best-effort: missing register helpers return ``\"\"`` so dispatch still
-    runs the command. Never persists the raw command string.
-    """
-    register = getattr(session, "_register_command_job", None)
-    if not callable(register):
-        return ""
-    command = str(getattr(act, "command", "") or "")
-    repo = str(getattr(getattr(session, "config", None), "repo", "") or "")
-    job_id = "local-cmd-" + uuid.uuid4().hex[:8]
-    register(
-        job_id,
-        command=command,
-        action_id=action_id,
-        command_fingerprint=command_fingerprint(command),
-        command_preview=secret_free_command_preview(command),
-        cwd=repo,
-    )
-    mark = getattr(session, "_mark_command_job_running", None)
-    if callable(mark):
-        mark(job_id)
-    return job_id
+    """Resolve the durable row; dispatch must claim it before execution."""
+    return str(_register_standalone_command(session, act, action_id)["id"])
 
 
 def finish_foreground_command_job(
@@ -370,13 +410,13 @@ def finish_foreground_command_job(
     ok: bool,
     status: str,
     val: Any,
-) -> None:
+) -> bool:
     """Map a foreground ``_do_run_command`` outcome onto one terminal receipt."""
     if not job_id:
-        return
+        return False
     finish = getattr(session, "_finish_command_job", None)
     if not callable(finish):
-        return
+        return False
     run_status = str(status or "")
     output = ""
     exit_code = -1
@@ -388,21 +428,21 @@ def finish_foreground_command_job(
         except (TypeError, ValueError):
             exit_code = -1
     if ok:
-        terminal = "truncated" if run_status == "truncated" else "completed"
+        terminal = "truncated" if run_status == "truncated" else ("completed" if exit_code == 0 else "failed")
     elif status == "cancelled" or run_status == "cancelled":
         terminal = "cancelled"
     elif status == "timeout" or run_status == "timeout":
         terminal = "timeout"
     else:
         terminal = "failed"
-    finish(
+    return bool(finish(
         job_id,
         status=terminal,
         summary=_terminal_summary(terminal, exit_code, output),
         exit_code=exit_code,
         output=output[:_INLINE_OUTPUT_CAP] if output else "",
         run_status=run_status or str(status or ""),
-    )
+    ))
 
 
 def _run_registered_command_job(
@@ -525,7 +565,7 @@ def _run_registered_command_job(
             run_status = "ok"
         # Map run_cancellable status onto durable job states.
         if run_status == "ok":
-            terminal = "completed"
+            terminal = "completed" if exit_code == 0 else "failed"
         elif run_status in COMMAND_TERMINAL_STATES:
             terminal = run_status
         elif run_status == "error":
@@ -695,5 +735,9 @@ def project_command_job_fields(job: Dict[str, Any]) -> Dict[str, Any]:
         out["output_preview"] = job.get("output_preview")
     if job.get("exit_code") is not None:
         out["exit_code"] = job.get("exit_code")
+    outcome = command_job_outcome(job)
+    if outcome["status"] == "unknown":
+        out.update(outcome)
+        out.pop("exit_code", None)
     # Never project a raw command string — fingerprint + redacted preview only.
     return out

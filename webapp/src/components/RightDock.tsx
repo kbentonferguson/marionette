@@ -199,7 +199,7 @@ export default function RightDock({
 
   return (
     <aside
-      className="pointer-events-none absolute right-4 top-[3.75rem] bottom-10 z-20 flex flex-col items-center select-none"
+      className="relative shrink-0 self-start mx-4 mt-14 mb-10 flex flex-col items-center select-none"
       aria-label="Floating panel shortcuts"
     >
       {/* Same --shell-panel glass as the left rail: slightly darker keep so
@@ -286,6 +286,7 @@ export default function RightDock({
             type="button"
             onClick={() => onOpenTab(link.tab)}
             title={link.title}
+            aria-label={link.title}
             className="relative flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
           >
             {link.icon}

@@ -222,11 +222,11 @@ def test_restart_preserves_terminal_and_heals_unfinished(session):
     assert unlaunched["terminal_receipt"].get("had_launch_checkpoint") is False
 
     inflight = restarted.get_local_job("local-cmd-inflight")
-    assert inflight["status"] == "cancelled"
-    assert "restart" in inflight["terminal_receipt"]["summary"].lower()
-    assert inflight["terminal_receipt"].get("had_launch_checkpoint") is True
-    # Never left as recoverable_running after process death.
-    assert command_job_recovery_state(inflight) == "terminal"
+    assert inflight["status"] == "unknown"
+    assert inflight["terminal_receipt"] is None
+    assert inflight["recovery_receipt"]["recovery"] == "outcome_unknown_after_restart"
+    assert inflight["recovery_receipt"]["had_launch_checkpoint"] is True
+    assert command_job_recovery_state(inflight) == "unknown"
 
 
 def test_stream_loss_does_not_rerun_completed_batch_sibling(session):

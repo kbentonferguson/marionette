@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from harness.cli_job_merge import (
     is_marionette_host_scratch_dir,
+    job_read_key,
     mark_marionette_host_scratch,
     merge_running_cli_jobs_all_projects,
     merge_scoped_cli_jobs,
@@ -71,7 +72,7 @@ def _seed_cli_store(tmp_path, repo_root: str, goal: str = "cli goal"):
     return store, str(cli_dir), job.id
 
 
-def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
+def test_merge_preserves_colliding_ids_and_sets_source(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_store = create_store("sqlite", str(tmp_path / "harness-state"))
@@ -79,6 +80,8 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
     _save_task(harness_store, harness_job.id, str(repo))
 
     class _FakeCliStore:
+        root = tmp_path / "cli-state"
+
         def list_tasks_for_jobs(self, jids):
             return []
 
@@ -118,12 +121,11 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
         repo_root=str(repo),
         workspace_root=str(repo),
     )
-    by_id = {row["id"]: row for row in merged}
-    assert by_id[harness_job.id]["source"] == "harness"
-    assert by_id["cli-only"]["source"] == "cli"
-    assert not by_id[harness_job.id].get("cross_project")
-    assert not by_id["cli-only"].get("cross_project")
-    assert len(merged) == 2
+    assert [(row["id"], row["source"]) for row in merged] == [
+        (harness_job.id, "harness"), (harness_job.id, "cli"), ("cli-only", "cli"),
+    ]
+    assert all(not row.get("cross_project") for row in merged)
+    assert len(merged) == 3
 
 
 def test_unreadable_cli_store_contributes_nothing(tmp_path, monkeypatch):
@@ -185,7 +187,7 @@ def test_merge_running_cli_jobs_all_projects_scans_foreign_live(tmp_path, monkey
     assert rows[0]["source"] == "cli"
     assert rows[0]["cli_state_dir"]
     assert rows[0]["cross_project"] is True
-    assert job.id in seen
+    assert job_read_key(rows[0]) in seen
 
 
 def test_merge_scoped_cli_jobs_drops_unstamped_foreign_running(tmp_path, monkeypatch):
@@ -331,7 +333,8 @@ def test_sibling_task_only_stamp_uses_one_store_open(tmp_path, monkeypatch):
     )
     assert [row["id"] for row in merged] == [job.id]
     assert merged[0]["session_id"] == "sess-x"
-    assert job.id in tasks_by_job
+    assert job_read_key(merged[0]) in tasks_by_job
+    assert tasks_by_job[job_read_key(merged[0])][0].job_id == job.id
     assert "tasks" not in merged[0]
     sibling_opens = [path for path in opens if str(foreign) in path]
     assert len(sibling_opens) == 1

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+import threading
 from copy import deepcopy
 from typing import Any, List, Optional
 
@@ -139,6 +140,7 @@ class CassetteDriver:
             f"{_sanitize_driver_name(inner_name)}.json",
         )
         self._data = self._load()
+        self._record_lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -188,8 +190,10 @@ class CassetteDriver:
         }
         scrubbed, fields = _scrub_interaction(interaction)
         scrubbed["scrubbed_fields"] = fields
-        self._data.setdefault("interactions", []).append(scrubbed)
-        self._save()
+        with self._record_lock:
+            self._data = self._load()
+            self._data.setdefault("interactions", []).append(scrubbed)
+            self._save()
         return response
 
     def _replay(self, req_hash: str) -> DriverResponse:

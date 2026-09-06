@@ -12,6 +12,7 @@ webapp/node_modules/
 webapp/dist/
 webapp/.vite/
 webapp/out/
+webapp/release/
 
 # Temporary iconset directories
 webapp/build/*.iconset/
@@ -34,3 +35,6 @@ signing.env
 
 # Per-machine Cursor config (mcp.json carries the user's API key)
 .cursor/
+
+# Generated from the exact packaging checkout by electron-builder beforePack.
+webapp/electron/bootstrap-revision.json

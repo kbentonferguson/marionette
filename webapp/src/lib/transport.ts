@@ -5,6 +5,8 @@
 // ONLY this file changes: getJSON/postJSON/stream route through window.harnessIPC
 // (preload bridge) instead of HTTP. Components never know the difference.
 
+import { EndpointSessionClient, endpointRecoveryError, isEndpointMismatch } from "./endpointSession";
+
 import {
   DESKTOP_BRIDGE_MISSING,
   desktopBridgeMissing,
@@ -12,7 +14,8 @@ import {
 } from "./operationalDiagnostic";
 import { publishDiagnostic } from "./operationalDiagnosticBus";
 import { correlationHeaders, setCorrelationId } from "./correlationId";
-import { publishTransportFailure } from "./transportFailure";
+import { parseJSONResponse, type JSONResponse } from "../../electron/json-response.mjs";
+import { publishTransportFailure, type TransportFailureContext } from "./transportFailure";
 
 /**
  * Live SSE payload from /api/chat, /api/auto, /api/run.
@@ -59,6 +62,8 @@ export type StoreEvent = {
 
 /** Payload for GET /api/session/events (read_events_since). */
 export type StoreEventsSince = {
+  replay_reset?: boolean;
+  stream_id?: string;
   ok?: boolean;
   session_id: string;
   cursor: number;
@@ -163,92 +168,265 @@ export function isTransientHarnessConnError(err: unknown): boolean {
   return /ECONNREFUSED|ECONNRESET|socket hang up|EPIPE|ETIMEDOUT/i.test(msg);
 }
 
-/** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
-export async function getJSONSoft<T = any>(path: string): Promise<T> {
-  refuseIfDesktopBridgeMissing("getJSONSoft", path);
+export type JSONRequestContext = Pick<TransportFailureContext, "sessionId" | "repo" | "failureKind"> & { operation?: string };
+
+const WORKTREE_ACTION_PATHS = new Set([
+  "/api/worktrees/add", "/api/worktrees/remove", "/api/worktrees/prune",
+  "/api/worktrees/prune-edit-branches", "/api/worktrees/max",
+]);
+
+function requestContext(method: "GET" | "POST", path: string, body: unknown, context: JSONRequestContext): JSONRequestContext {
+  const url = new URL(path, "http://harness.local");
+  const fields = body && typeof body === "object" ? body : {};
+  const sessionId = "session_id" in fields && typeof fields.session_id === "string" ? fields.session_id
+    : "session" in fields && typeof fields.session === "string" ? fields.session : undefined;
+  const repo = "repo" in fields && typeof fields.repo === "string" ? fields.repo : undefined;
+  return {
+    sessionId: context.sessionId ?? (sessionId || url.searchParams.get("session") || url.searchParams.get("session_id") || undefined),
+    repo: context.repo ?? (repo || url.searchParams.get("repo") || undefined),
+    failureKind: context.failureKind ?? (method === "POST" && WORKTREE_ACTION_PATHS.has(url.pathname) ? "action" : "operational"),
+  };
+}
+
+const endpointClient = new EndpointSessionClient();
+
+async function rawJSON(method: "GET" | "POST", path: string, body: unknown, identity: Record<string,string>): Promise<JSONResponse> {
   const bridge = getHarnessIpc();
-  if (bridge?.getJSON) return bridge.getJSON(path);
+  if (bridge) {
+    if (!bridge.requestJSON || bridge.endpointHeaders !== true) {
+      throw new Error("Desktop connection bridge needs an update. Quit and reopen Marionette.");
+    }
+    return bridge.requestJSON(method, path, body, correlationHeaders()["X-Correlation-Id"], identity);
+  }
+  const response = await fetch(path, {
+    method,
+    redirect: "error",
+    headers: requestHeaders({...identity, ...(method === "POST" ? {"Content-Type":"application/json"} : {})}),
+    ...(method === "POST" ? {body: JSON.stringify(body)} : {}),
+  });
+  return {kind:"response", status:response.status, text:await response.text(), correlationId:response.headers.get("X-Correlation-Id") || ""};
+}
+
+function discoverEndpoint(): Promise<JSONResponse> {
+  return rawJSON("GET", "/api/endpoint", undefined, {"X-Harness-Protocol":"1"});
+}
+
+async function requestJSON<T>(method: "GET" | "POST", path: string, body: unknown, soft: boolean, context: JSONRequestContext): Promise<T> {
+  const operation = method === "POST" ? "postJSON" : soft ? "getJSONSoft" : "getJSON";
+  const ctx = { operation: context.operation ?? operation, path, ...requestContext(method, path, body, context) };
+  refuseIfDesktopBridgeMissing(operation, path);
   try {
-    const r = await fetch(path, { headers: requestHeaders() });
-    noteResponseCorrelation(r);
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      publishTransportFailure(new Error(`${path} -> ${r.status}`), {
-        operation: "getJSONSoft",
-        path,
-      });
-      if (body && typeof body === "object" && !("ok" in body)) {
-        return { ok: false, error: (body as any).error || `${path} -> ${r.status}`, ...body } as T;
-      }
-      if (body == null || typeof body !== "object") {
-        return { ok: false, error: `${path} -> ${r.status}` } as T;
+    const pin = await endpointClient.connect(discoverEndpoint);
+    const request = endpointClient.prepare(path, pin);
+    let response: JSONResponse;
+    try {
+      response = await rawJSON(method, request.path, body, endpointClient.headers(pin));
+    } catch (error) {
+      endpointClient.invalidate(pin);
+      throw error;
+    }
+    if (response.kind === "connection-error") endpointClient.invalidate(pin);
+    if (isEndpointMismatch(response)) {
+      endpointClient.invalidate(pin);
+      await endpointClient.connect(discoverEndpoint);
+      throw endpointRecoveryError();
+    }
+    if (response.kind === "connection-error") parseJSONResponse(response, path);
+    if (!endpointClient.isCurrent(pin)) throw endpointRecoveryError();
+    if (request.session && response.kind === "response" && response.status === 409) {
+      endpointClient.resetReplay(request);
+    }
+    if (response.kind === "response" && response.correlationId) setCorrelationId(response.correlationId);
+    const parsed = parseJSONResponse(response, path, soft);
+    if (soft && response.kind === "response" && (response.status < 200 || response.status >= 300)) {
+      try { parseJSONResponse(response, path); } catch (err) {
+        publishTransportFailure(err, ctx);
       }
     }
-    return body as T;
+    // API callers supply their endpoint schema; JSON transport cannot validate it.
+    return (response.kind === "response" && response.status >= 200 && response.status < 300
+      ? endpointClient.accept(request, parsed) : parsed) as T;
   } catch (err) {
-    publishTransportFailure(err, { operation: "getJSONSoft", path });
+    publishTransportFailure(err, ctx);
     throw err;
   }
 }
 
-export async function getJSON<T = any>(path: string): Promise<T> {
-  refuseIfDesktopBridgeMissing("getJSON", path);
-  const bridge = getHarnessIpc();
-  if (bridge?.getJSON) return bridge.getJSON(path);
-  try {
-    const r = await fetch(path, { headers: requestHeaders() });
-    noteResponseCorrelation(r);
-    if (!r.ok) {
-      publishTransportFailure(new Error(`${path} -> ${r.status}`), {
-        operation: "getJSON",
-        path,
-      });
-      throw new Error(`${path} -> ${r.status}`);
-    }
-    return r.json();
-  } catch (err) {
-    if (!(err instanceof Error) || !String(err.message).includes("->")) {
-      publishTransportFailure(err, { operation: "getJSON", path });
-    }
-    throw err;
-  }
+/** Image locators contain no credentials; only this transport may fetch them. */
+export function imagePath(path: string): string {
+  return "/api/image?path=" + encodeURIComponent(path);
 }
 
-export async function postJSON<T = any>(path: string, body: any): Promise<T> {
-  refuseIfDesktopBridgeMissing("postJSON", path);
+function imageOrigin(): string {
+  if (!getHarnessIpc()) return window.location.origin;
+  const port = "__HARNESS_PORT__" in window ? Number(window.__HARNESS_PORT__) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Backend image port unavailable");
+  return `http://127.0.0.1:${port}`;
+}
+
+/** Validate before attaching credentials, including before endpoint discovery. */
+function imageRequestPath(src: string, origin: string): string {
+  const url = new URL(src, origin);
+  if (!/^https?:$/.test(url.protocol) || url.origin !== origin || url.pathname !== "/api/image"
+    || url.username || url.password || url.hash || !url.searchParams.get("path")
+    || [...url.searchParams.keys()].some(key => key !== "path" && key !== "_r")
+    || url.searchParams.getAll("path").length !== 1) {
+    throw new Error("Refusing image URL outside the backend image endpoint");
+  }
+  return url.pathname + url.search;
+}
+
+export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+function nativeImage(path: string, identity: Record<string, string>, port: number,
+  bridge: {requestImage: (path: string, identity: Record<string, string>, port: number, done: (value: unknown) => void) => () => void},
+  signal: AbortSignal): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let cancel: (() => void) | undefined;
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      cancel?.();
+      reject(new DOMException("Image load aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, {once: true});
+    if (signal.aborted) { abort(); return; }
+    try {
+      cancel = bridge.requestImage(path, identity, port, value => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      });
+      if (signal.aborted) cancel();
+    } catch {
+      signal.removeEventListener("abort", abort);
+      settled = true;
+      reject(new Error("Native image request failed"));
+    }
+  });
+}
+
+function nativeImageBlob(value: unknown, port: number, invalidate: () => void): Blob {
+  if (!value || typeof value !== "object" || !("kind" in value)) throw new Error("Invalid native image response");
+  if (value.kind === "image-error") {
+    if ("code" in value && (value.code === "stale" || value.code === "connection")) invalidate();
+    throw new Error("Native image request failed");
+  }
+  if (value.kind !== "image-response" || !("status" in value) || typeof value.status !== "number"
+    || !Number.isInteger(value.status) || !("port" in value) || value.port !== port) throw new Error("Invalid native image response");
+  if (value.status === 409) { invalidate(); throw endpointRecoveryError(); }
+  if (value.status < 200 || value.status >= 300) throw new Error(`Image request failed (${value.status})`);
+  if (!("mime" in value) || typeof value.mime !== "string" || !/^image\/[a-z0-9.+-]+$/.test(value.mime)
+    || !("bytes" in value)) throw new Error("Invalid native image response");
+  const bytes = value.bytes;
+  if (!(bytes instanceof ArrayBuffer) && !(bytes instanceof Uint8Array)) throw new Error("Invalid native image bytes");
+  if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("Invalid native image size");
+  return new Blob([new Uint8Array(bytes)], {type: value.mime});
+}
+
+export async function fetchImage(src: string, signal: AbortSignal): Promise<{blob: Blob; assertCurrent: () => void}> {
+  refuseIfDesktopBridgeMissing("fetchImage");
+  const origin = imageOrigin();
+  const path = imageRequestPath(src, origin);
   const bridge = getHarnessIpc();
-  if (bridge?.postJSON) return bridge.postJSON(path, body);
-  try {
-    const r = await fetch(path, {
-      method: "POST",
-      headers: requestHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
+  const token = authToken();
+  signal.throwIfAborted();
+  const pin = await new Promise<Awaited<ReturnType<EndpointSessionClient["connect"]>>>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Image load aborted", "AbortError"));
+    signal.addEventListener("abort", abort, {once: true});
+    endpointClient.connect(discoverEndpoint).then(value => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, error => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
     });
-    noteResponseCorrelation(r);
-    if (!r.ok) {
-      const parsed = await r.json().catch(() => null);
-      publishTransportFailure(
-        new Error(
-          String((parsed as { error?: string } | null)?.error || `${path} -> ${r.status}`),
-        ),
-        { operation: "postJSON", path },
-      );
-      if (parsed && typeof parsed === "object") {
-        const err = new Error(
-          String((parsed as { error?: string }).error || `${path} -> ${r.status}`),
-        ) as Error & Record<string, unknown>;
-        Object.assign(err, parsed, { status: r.status });
-        throw err;
-      }
-      throw new Error(`${path} -> ${r.status}`);
+  });
+  const current = () => {
+    signal.throwIfAborted();
+    if (!endpointClient.isCurrent(pin) || imageOrigin() !== origin
+      || getHarnessIpc() !== bridge || authToken() !== token) throw endpointRecoveryError();
+  };
+  current();
+  const request = endpointClient.prepare(path, pin);
+  if (bridge) {
+    if (typeof bridge.requestImage !== "function") throw new Error("Desktop image bridge needs an update. Quit and reopen Marionette.");
+    let value: unknown;
+    try {
+      value = await nativeImage(request.path, endpointClient.headers(pin), Number(new URL(origin).port), bridge, signal);
+    } catch (error) {
+      current();
+      endpointClient.invalidate(pin);
+      throw error;
     }
-    return r.json();
-  } catch (err) {
-    if (!(err instanceof Error) || !String(err.message).includes("->")) {
-      publishTransportFailure(err, { operation: "postJSON", path });
-    }
-    throw err;
+    current();
+    const blob = nativeImageBlob(value, Number(new URL(origin).port), () => endpointClient.invalidate(pin));
+    current();
+    return {blob, assertCurrent: current};
   }
+  let response: Response;
+  try {
+    response = await fetch(request.path, {
+      headers: requestHeaders(endpointClient.headers(pin)),
+      signal, cache: "no-store", credentials: "omit", redirect: "error",
+    });
+  } catch (error) {
+    if (!signal.aborted) endpointClient.invalidate(pin);
+    throw error;
+  }
+  try {
+    current();
+    if (response.status === 409) {
+      endpointClient.invalidate(pin);
+      throw endpointRecoveryError();
+    }
+    if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+    const mime = (response.headers.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
+    if (!/^image\/[a-z0-9.+-]+$/.test(mime)) throw new Error("Backend returned a non-image response");
+    const length = Number(response.headers.get("Content-Length"));
+    if (length > MAX_IMAGE_BYTES) throw new Error("Image exceeds 32 MiB limit");
+    if (!response.body) throw new Error("Image response has no body");
+    const reader = response.body.getReader();
+    const abortBody = () => { void reader.cancel().catch(() => {}); };
+    signal.addEventListener("abort", abortBody, {once: true});
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        current();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_IMAGE_BYTES) throw new Error("Image exceeds 32 MiB limit");
+        chunks.push(new Uint8Array(value));
+      }
+    } finally {
+      signal.removeEventListener("abort", abortBody);
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+    current();
+    if (!size) throw new Error("Image response is empty");
+    return {blob: new Blob(chunks, {type: mime}), assertCurrent: current};
+  } finally {
+    if (!response.body?.locked) void response.body?.cancel().catch(() => {});
+  }
+}
+
+/** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
+export function getJSONSoft<T = any>(path: string, context: JSONRequestContext = {}): Promise<T> {
+  return requestJSON<T>("GET", path, undefined, true, context);
+}
+
+export function getJSON<T = any>(path: string, context: JSONRequestContext = {}): Promise<T> {
+  return requestJSON<T>("GET", path, undefined, false, context);
+}
+
+export function postJSON<T = any>(path: string, body: unknown, context: JSONRequestContext = {}): Promise<T> {
+  return requestJSON<T>("POST", path, body, false, context);
 }
 
 // NOTE: no deleteJSON here on purpose. The Electron preload bridge only routes
@@ -261,7 +439,56 @@ export function stream(
   path: string,
   onEvent: (ev: StreamEvent) => void,
   onDone?: () => void,
-  onError?: (e: any) => void
+  onError?: (e: any) => void,
+): () => void {
+  const ctx = {operation:"stream", path, ...requestContext("GET", path, undefined, {})};
+  let cancelled = false;
+  let cancel: (() => void) | undefined;
+  void (async () => {
+    try {
+      refuseIfDesktopBridgeMissing("stream", path);
+      const pin = await endpointClient.connect(discoverEndpoint);
+      if (cancelled) return;
+      const fail = (error: unknown) => {
+        if (cancelled) return;
+        cancelled = true;
+        cancel?.();
+        // Stream errors are sanitized by Electron, so any 409 forces discovery.
+        if ((error && typeof error === "object" && "status" in error && error.status === 409) || isTransientHarnessConnError(error)) {
+          endpointClient.invalidate(pin);
+          void endpointClient.connect(discoverEndpoint).catch(() => {});
+        }
+        publishTransportFailure(error, ctx);
+        onError?.(error);
+      };
+      const request = endpointClient.prepare(path, pin);
+      if (request.ringReset) onEvent({kind:"endpoint_replay_reset"});
+      if (cancelled) return;
+      cancel = streamConnected(request.path, ev => {
+        if (cancelled) return;
+        if (!endpointClient.isCurrent(pin)) { fail(endpointRecoveryError()); return; }
+        onEvent(ev);
+      }, () => {
+        if (cancelled) return;
+        if (!endpointClient.isCurrent(pin)) { fail(endpointRecoveryError()); return; }
+        onDone?.();
+      }, fail, endpointClient.headers(pin));
+    } catch (error) {
+      if (!cancelled) {
+        publishTransportFailure(error, ctx);
+        onError?.(error);
+      }
+    }
+  })();
+  return () => { cancelled = true; cancel?.(); };
+}
+
+function streamConnected(
+  path: string,
+  onEvent: (ev: StreamEvent) => void,
+  onDone: (() => void) | undefined,
+  onError: ((e: any) => void) | undefined,
+  identity: Record<string,string>
 ): () => void {
   try {
     refuseIfDesktopBridgeMissing("stream", path);
@@ -270,7 +497,7 @@ export function stream(
     return () => {};
   }
   const bridge = getHarnessIpc();
-  if (bridge?.stream) return bridge.stream(path, onEvent, onDone, onError);
+  if (bridge?.stream) return bridge.stream(path, onEvent, onDone, onError, identity);
 
   // Browser: SSE via fetch so we can attach the auth header (EventSource
   // cannot set custom headers).
@@ -294,11 +521,11 @@ export function stream(
     try {
       resp = await fetch(path, {
         method: "GET",
-        headers: requestHeaders(),
+        headers: requestHeaders(identity),
         signal: controller.signal,
       });
       if (!resp.ok) {
-        throw new Error(`stream ${path} -> ${resp.status}`);
+        parseJSONResponse({kind:"response",status:resp.status,text:await resp.text(),correlationId:""}, path);
       }
       noteResponseCorrelation(resp);
       const body = resp.body;
@@ -348,10 +575,19 @@ export function stream(
 // (real same-origin server) we use a normal multipart fetch.
 export async function uploadFile(file: File): Promise<{ path: string; name: string }[]> {
   refuseIfDesktopBridgeMissing("uploadFile");
+  const pin = await endpointClient.connect(discoverEndpoint);
+  const identity = endpointClient.headers(pin);
   const bridge = getHarnessIpc();
   if (bridge?.uploadFile) {
     const buf = await file.arrayBuffer();
-    const result = await bridge.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) });
+    if (!endpointClient.isCurrent(pin)) throw endpointRecoveryError();
+    const result = await bridge.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) }, identity);
+    if (!endpointClient.isCurrent(pin)) throw endpointRecoveryError();
+    if (result?.status === 409) {
+      endpointClient.invalidate(pin);
+      await endpointClient.connect(discoverEndpoint);
+      throw endpointRecoveryError();
+    }
     if (Array.isArray(result)) return result;
     if (result && typeof result === "object") {
       if (result.error) throw new Error(String(result.error));
@@ -361,8 +597,15 @@ export async function uploadFile(file: File): Promise<{ path: string; name: stri
   }
   const fd = new FormData();
   fd.append("file", file);
-  const r = await fetch("/api/upload", { method: "POST", body: fd, headers: requestHeaders() });
+  const r = await fetch("/api/upload", { method: "POST", body: fd, headers: requestHeaders(identity) });
+  if (!endpointClient.isCurrent(pin)) throw endpointRecoveryError();
+  if (r.status === 409) {
+    endpointClient.invalidate(pin);
+    await endpointClient.connect(discoverEndpoint);
+    throw endpointRecoveryError();
+  }
   const j = await r.json().catch(() => ({}));
+  if (!endpointClient.isCurrent(pin)) throw endpointRecoveryError();
   if (!r.ok) {
     throw new Error((j && j.error) || `Upload failed (${r.status})`);
   }

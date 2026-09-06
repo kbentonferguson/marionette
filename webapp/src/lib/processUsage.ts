@@ -5,6 +5,8 @@ export type ProcessUsageSession = UsageData["session"];
 
 export type ProcessUsageSnapshot = {
   session: ProcessUsageSession | null;
+  readStatus?: "unavailable";
+  sessionTotal?: UsageData["session_total"];
   fetchedAt: number;
   generation: number;
 };
@@ -16,6 +18,7 @@ const listeners = new Set<Listener>();
 let snapshot: ProcessUsageSnapshot = emptySnapshot();
 let inFlight: Promise<void> | null = null;
 let acceptZero = false;
+let scopeGeneration = 0;
 let pollTimer: number | undefined;
 let subscriberCount = 0;
 let busyCount = 0;
@@ -40,14 +43,20 @@ function emit(next: ProcessUsageSnapshot): void {
   listeners.forEach((listener) => listener(snapshot));
 }
 
-function acceptSession(session: ProcessUsageSession): void {
+function acceptSession(session: ProcessUsageSession, sessionTotal: UsageData["session_total"]): void {
+  if (session.read_status === "unavailable") {
+    emit({ session, sessionTotal, readStatus: "unavailable", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+    return;
+  }
   if (acceptZero) {
     acceptZero = false;
-  } else if (sessionIsZero(session) && sessionHasSpend(snapshot.session)) {
+  } else if (sessionIsZero(session) && sessionHasSpend(snapshot.session) && snapshot.readStatus !== "unavailable" && session.cost_source !== "provider") {
+    emit({ ...snapshot, sessionTotal });
     return;
   }
   emit({
     session,
+    sessionTotal,
     fetchedAt: Date.now(),
     generation: snapshot.generation + 1,
   });
@@ -59,14 +68,19 @@ export function getProcessUsage(): ProcessUsageSnapshot {
 
 export function refreshProcessUsage(): Promise<void> {
   if (inFlight) return inFlight;
+  const owner = scopeGeneration;
   const run = (async () => {
     try {
       const data = await api.getUsage();
-      if (data?.session) acceptSession(data.session);
+      if (owner !== scopeGeneration) return;
+      if (!data?.session) throw new Error("Usage unavailable");
+      acceptSession(data.session, data.session_total);
     } catch (err) {
-      console.error("Failed to load process usage", err);
+      if (owner === scopeGeneration) {
+        emit({ session: null, readStatus: "unavailable", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+      }
     } finally {
-      inFlight = null;
+      if (owner === scopeGeneration) inFlight = null;
     }
   })();
   inFlight = run;
@@ -74,6 +88,8 @@ export function refreshProcessUsage(): Promise<void> {
 }
 
 function resetForSessionChange(): void {
+  scopeGeneration += 1;
+  inFlight = null;
   acceptZero = true;
   emit({
     session: null,
@@ -116,7 +132,7 @@ function installBridges(): void {
   };
   window.addEventListener("harness-usage-refresh", refresh);
   window.addEventListener("harness-config-changed", refresh);
-  window.addEventListener("harness-project-selected", refresh);
+  window.addEventListener("harness-project-selected", resetForSessionChange);
   window.addEventListener("harness-new-session", resetForSessionChange);
   window.addEventListener("harness-session-changed", resetForSessionChange);
   document.addEventListener("visibilitychange", () => {
@@ -162,5 +178,6 @@ export function _resetProcessUsageForTests(): void {
   busyCount = 0;
   inFlight = null;
   acceptZero = false;
+  scopeGeneration += 1;
   snapshot = emptySnapshot();
 }

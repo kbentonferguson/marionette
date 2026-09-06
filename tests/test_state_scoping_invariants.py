@@ -13,6 +13,7 @@ from puppetmaster.models import Artifact, ArtifactType, Task
 from puppetmaster.store_factory import create_store
 from harness.api.sessions import handle_session_delete, remove_session_transcript
 from harness.api.workspace import _persistable_recent_path, record_recent_workspace
+from tests.test_scoped_job_cancel import store_dump
 from harness.server import _job_status_is_terminal
 from harness.sessions import SessionStore, _is_ephemeral_root, save_transcript
 
@@ -273,9 +274,8 @@ def test_cancel_and_artifacts_both_resolve_cli_store(monkeypatch):
     )
 
     cancel_code, cancel_body = post_swarm_cancel({"job_id": "cli-job"}, svc)
-    assert cancel_code == 200
-    assert cancel_body["ok"] is True
-    assert cancel_body["durable"] is True
+    assert cancel_code == 409
+    assert cancel_body["ok"] is False
 
     art_code, arts = get_artifacts("cli-job", svc)
     assert art_code == 200
@@ -302,8 +302,9 @@ def test_known_unowned_job_artifacts_and_cancel_look_unknown(monkeypatch):
         get_session=lambda: _FakeSession(_HarnessState(harness)),
     )
     cancel_code, cancel_body = post_swarm_cancel({"job_id": "foreign-row"}, svc)
-    assert cancel_code == 404
-    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": "foreign-row"}
+    assert cancel_code == 409
+    assert cancel_body["ok"] is False
+    assert cancel_body["code"] == "job_cancel_unavailable"
     assert harness.cancelled == []
     assert tripped == []
     art_code, arts = get_artifacts("foreign-row", svc)
@@ -333,8 +334,9 @@ def test_known_unowned_cli_job_artifacts_and_cancel_look_unknown(monkeypatch):
         get_session=lambda: _FakeSession(_HarnessState(harness)),
     )
     cancel_code, cancel_body = post_swarm_cancel({"job_id": "cli-foreign"}, svc)
-    assert cancel_code == 404
-    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": "cli-foreign"}
+    assert cancel_code == 409
+    assert cancel_body["ok"] is False
+    assert cancel_body["code"] == "job_cancel_unavailable"
     assert cli_store.cancelled == []
     assert tripped == []
     art_code, arts = get_artifacts("cli-foreign", svc)
@@ -366,7 +368,7 @@ def test_unknown_job_is_unknown_for_cancel_and_empty_for_artifacts(monkeypatch):
         get_session=lambda: _FakeSession(_HarnessState(harness)),
     )
     code, body = post_swarm_cancel({"job_id": "missing"}, svc)
-    assert code == 404
+    assert code == 409
     assert tripped == []
     art_code, arts = get_artifacts("missing", svc)
     assert art_code == 200
@@ -472,9 +474,12 @@ def test_foreign_sibling_cancel_refused_and_artifacts_hidden(tmp_path, monkeypat
     svc, _harness = _sibling_action_svc(monkeypatch, sibling_dir, registered=[job_id])
     tripped = _track_request_cancel(monkeypatch)
     before = _job_status(store, job_id)
+    snapshot = store_dump(store)
     cancel_code, cancel_body = post_swarm_cancel({"job_id": job_id}, svc)
-    assert cancel_code == 404
-    assert cancel_body == {"ok": False, "error": "unknown job_id", "job_id": job_id}
+    assert store_dump(store) == snapshot
+    assert cancel_code == 409
+    assert cancel_body["ok"] is False
+    assert cancel_body["code"] == "job_cancel_unavailable"
     assert tripped == []
     assert _job_status(store, job_id) == before
     art_code, arts = get_artifacts(job_id, svc)
@@ -482,19 +487,20 @@ def test_foreign_sibling_cancel_refused_and_artifacts_hidden(tmp_path, monkeypat
     assert arts == []
 
 
-def test_owned_sibling_cancel_succeeds_and_artifacts_returned(tmp_path, monkeypatch):
+def test_owned_sibling_cancel_refused_and_artifacts_returned(tmp_path, monkeypatch):
     store, sibling_dir, job_id = _seed_sibling_store(tmp_path, owned=True)
     svc, harness = _sibling_action_svc(monkeypatch, sibling_dir)
     tripped = _track_request_cancel(monkeypatch)
     art_code, arts = get_artifacts(job_id, svc)
     assert art_code == 200
     assert arts
+    snapshot = store_dump(store)
     cancel_code, cancel_body = post_swarm_cancel({"job_id": job_id}, svc)
-    assert cancel_code == 200
-    assert cancel_body["ok"] is True
-    assert cancel_body["marked"] is True
-    assert tripped == [job_id]
-    assert _job_status(store, job_id) == "cancelled"
+    assert store_dump(store) == snapshot
+    assert cancel_code == 409
+    assert cancel_body["ok"] is False
+    assert tripped == []
+    assert _job_status(store, job_id) == "running"
     assert harness.cancelled == []
 
 
@@ -537,17 +543,18 @@ def test_session_delete_removes_metadata_and_transcript(tmp_path):
     assert archive.is_file()
     assert compaction_archive_path(str(state_dir), sid) == str(archive)
 
-    class _Runners:
-        def drop(self, _sid):
-            return None
+    from threading import RLock
+    from harness.session_runners import SessionRunnerRegistry
 
     svc = SimpleNamespace(
         sessions=store,
-        runners=_Runners(),
+        runners=SessionRunnerRegistry(),
+        pilot_swap_lock=RLock(),
         sessions_state_dir=lambda: str(state_dir),
         get_pilot=lambda: SimpleNamespace(load_history=lambda _h: None),
         attach_view=lambda *_a, **_k: None,
         sync_pilot_session_id=lambda: None,
+        clear_active_pilot=lambda: None,
         diag=lambda *_a, **_k: None,
     )
     code, body = handle_session_delete(sid, svc)

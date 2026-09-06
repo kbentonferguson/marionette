@@ -43,7 +43,13 @@ def test_display_transcript_accumulation():
     # Check that display transcript has correct user message and clean assistant message
     display = session.export_display_transcript()
     assert len(display) == 2
-    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?"}
+    from harness.input_receipts import session_input_store
+    input_id, = session._history[1]['input_ids']
+    receipt = session_input_store(session).get(input_id)
+    assert receipt['id'] == input_id
+    assert receipt['original_text'] == "how do I build a wooden table?"
+    assert receipt['status'] == 'injected'
+    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id}
     assert display[1] == {"type": "message", "role": "assistant", "text": "Sure, I can help you with that."}
 
     # Verify that the raw history has the raw pilot output formatting
@@ -123,7 +129,10 @@ def test_load_history_handles_both_formats():
     session_legacy.load_history(history_data)
     
     assert session_legacy.export_history() == history_data
-    assert session_legacy.export_display_transcript() == []
+    assert session_legacy.export_display_transcript() == [
+        {"type": "message", "role": "user", "text": "raw user"},
+        {"type": "message", "role": "assistant", "text": "raw assistant"},
+    ]
     assert session_legacy._session_job_ids == []
 
 

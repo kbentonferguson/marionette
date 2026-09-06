@@ -1121,14 +1121,6 @@ class ToolDispatchMixin:
         # are still persisted under "default" in that case.
         sid = (getattr(self, "harness_session_id", None) or "").strip() or "default"
         state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
-        messages: list = []
-        archive: list = []
-        try:
-            from .compaction_archive import load_compaction_archive_messages
-
-            archive = load_compaction_archive_messages(state_dir, sid)
-        except Exception:
-            archive = []
         disk_messages: list = []
         try:
             data = load_transcript(state_dir, sid)
@@ -1153,29 +1145,30 @@ class ToolDispatchMixin:
                 ]
         except Exception:
             live_messages = []
-        # When an archive exists, residual must be the post-compact tail
-        # (live first) so a stale pre-compact transcript is not concatenated
-        # on top of the elided rows. Without an archive, keep preferring disk.
-        if archive:
-            residual = live_messages or disk_messages
-            messages = list(archive) + residual
-        else:
-            messages = disk_messages or live_messages
+        # Loading the transcript first resolves pending archive publication.
+        # Page the archive through its owner rather than materializing it.
+        from .compaction_archive import load_compaction_archive_page
+        try:
+            archive_page, archive_total = load_compaction_archive_page(
+                state_dir, sid, offset=offset, limit=limit, role=role_filter,
+            )
+        except (OSError, ValueError):
+            return False, "archive_unavailable", "Compaction archive unavailable or corrupt"
+        residual = (live_messages or disk_messages) if archive_total else (disk_messages or live_messages)
+        residual = [m for m in residual if isinstance(m, dict) and (
+            not role_filter or str(m.get("role") or "").lower() == role_filter
+        )]
+        slice_msgs = archive_page
+        if offset + len(slice_msgs) >= archive_total:
+            residual_offset = max(0, offset - archive_total)
+            slice_msgs += residual[residual_offset:residual_offset + limit - len(slice_msgs)]
+        total = archive_total + len(residual)
 
-        if role_filter:
-            messages = [
-                m for m in messages
-                if isinstance(m, dict) and str(m.get("role") or "").lower() == role_filter
-            ]
-        else:
-            messages = [m for m in messages if isinstance(m, dict)]
-
-        slice_msgs = messages[offset: offset + limit]
         # Cap returned chars (~8 KiB).
         max_chars = 8 * 1024
         lines = [
             f"compaction_generation={generation}",
-            f"offset={offset} limit={limit} returned={len(slice_msgs)} total={len(messages)}",
+            f"offset={offset} limit={limit} returned={len(slice_msgs)} total={total}",
         ]
         for i, msg in enumerate(slice_msgs):
             role = str(msg.get("role") or "?")
@@ -1328,7 +1321,10 @@ class ToolDispatchMixin:
 
     def _do_hash_edit(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, str]:
         """Validate (and optionally apply) hash-anchored edits from act.arguments['ops']."""
-        from .hash_edit import HashEditOp, apply_hash_edits, atomic_write_text, hash_edit_enabled
+        from .hash_edit import (
+            FileChangedError, HashEditOp, apply_hash_edits, atomic_write_text,
+            hash_edit_enabled, read_file_snapshot,
+        )
 
         if write:
             refused = self._refuse_read_only_role_write()
@@ -1364,8 +1360,8 @@ class ToolDispatchMixin:
             return False, "invalid_arguments", f"hash_edit: invalid op: {e}"
 
         try:
-            with open(target_path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                original = f.read()
+            snapshot = read_file_snapshot(target_path)
+            original = snapshot.text
             new_text, result = apply_hash_edits(original, ops)
             if not result.ok:
                 status = "stale_anchor" if result.stale_anchors else "validation_error"
@@ -1375,7 +1371,7 @@ class ToolDispatchMixin:
                 refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
                 if refused is not None:
                     return refused
-                atomic_write_text(target_path, new_text)
+                atomic_write_text(target_path, new_text, expected=snapshot)
                 # AST preview (round 6, opt-in): stash a structural diff for
                 # the conversation layer to merge into the action_result.
                 self._last_ast_preview = None
@@ -1387,6 +1383,10 @@ class ToolDispatchMixin:
                 except Exception:
                     self._last_ast_preview = None
             return True, "success", result.message
+        except UnicodeDecodeError as e:
+            return False, "invalid_encoding", f"hash_edit refuses non UTF-8 content: {e}"
+        except FileChangedError as e:
+            return False, "stale_content", str(e)
         except Exception as e:
             return False, "exception", str(e)
 

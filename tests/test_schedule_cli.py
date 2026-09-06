@@ -87,8 +87,8 @@ def test_cli_help_documents_host_local_cron(capsys):
     out = capsys.readouterr().out.lower()
     assert "host-local" in out
     assert "at-least-once" in out
-    assert "iana" in out and "deferred" in out
-    assert "--timezone" not in out
+    assert "iana" in out
+    assert "--timezone" in out
 
 
 def test_cli_run_now_exit_nonzero_for_non_ok(tmp_path, monkeypatch):

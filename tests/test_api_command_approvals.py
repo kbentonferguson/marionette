@@ -57,6 +57,7 @@ def test_approval_targets_one_session_and_hash():
         "command_hash": COMMAND_HASH,
         "workspace_root": "/workspace/a",
         "approve": True,
+        "expected": None,
     }]
     assert runner_b.decisions == []
 
@@ -195,6 +196,9 @@ def test_api_approve_after_export_load_history_roundtrip(tmp_path):
         {
             "session_id": "session-a",
             "workspace_root": pending["workspace_root"],
+            "approval_protocol": 1,
+            "expected_action_id": pending["action_id"],
+            "expected_approval_id": pending["approval_id"],
             "command_hash": command_hash,
         },
         services,
@@ -245,6 +249,9 @@ def test_approve_amendment_uses_new_hash(tmp_path):
         {
             "session_id": "session-a",
             "workspace_root": pending["workspace_root"],
+            "approval_protocol": 1,
+            "expected_action_id": pending["action_id"],
+            "expected_approval_id": pending["approval_id"],
             "command_hash": command_hash,
         },
         services,
@@ -281,6 +288,9 @@ def test_original_approve_path_unchanged_for_force_push(tmp_path):
         {
             "session_id": "session-a",
             "workspace_root": pending["workspace_root"],
+            "approval_protocol": 1,
+            "expected_action_id": pending["action_id"],
+            "expected_approval_id": pending["approval_id"],
             "command_hash": command_hash,
         },
         services,
@@ -311,6 +321,9 @@ def test_approve_amendment_rejects_when_no_suggestion(tmp_path):
         {
             "session_id": "session-a",
             "workspace_root": pending["workspace_root"],
+            "approval_protocol": 1,
+            "expected_action_id": pending["action_id"],
+            "expected_approval_id": pending["approval_id"],
             "command_hash": command_hash,
         },
         _services({"session-a": session}),

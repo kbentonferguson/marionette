@@ -4,7 +4,8 @@ from __future__ import annotations
 
 Hide (session ``archived``) is not ingest and not prune. Ingest copies an
 archived session into ``{state_dir}/chat-archive/archive.sqlite`` plus a
-markdown backup. Search and read query that vault. Prune removes the hot
+markdown projection and a verified raw JSON backup. Search and read query
+that vault. Prune removes the hot
 transcript only after a vault copy and backup exist. Unarchive restores
 from the vault into the live transcript store — the only write-back.
 """
@@ -15,11 +16,13 @@ import os
 import re
 import sqlite3
 import time
+import tempfile
+from functools import wraps
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 PER_CHAT_HITS = 3
 MAX_SEARCH = 20
@@ -56,6 +59,10 @@ CREATE TABLE IF NOT EXISTS chats (
   ingested_at INTEGER NOT NULL,
   content_fp TEXT NOT NULL,
   backup_path TEXT
+);
+CREATE TABLE IF NOT EXISTS raw_payloads (
+  chat_id TEXT PRIMARY KEY, payload TEXT NOT NULL, digest TEXT NOT NULL,
+  backup_path TEXT NOT NULL, markdown_digest TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,
@@ -149,11 +156,11 @@ def _connect_archive(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(path))
     con.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
     con.execute("PRAGMA journal_mode = WAL")
-    con.execute("PRAGMA synchronous = NORMAL")
+    con.execute("PRAGMA synchronous = FULL")
     con.executescript(SCHEMA)
     con.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
-        "ON CONFLICT(key) DO NOTHING",
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (str(SCHEMA_VERSION),),
     )
     con.commit()
@@ -163,12 +170,21 @@ def _connect_archive(path: Path) -> sqlite3.Connection:
 def _write_backup(state_dir: str, source: str, origin_id: str, name: str, messages: Sequence[Tuple[str, str]]) -> str:
     dest_dir = backup_dir(state_dir) / _safe_id(source)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / ("%s.md" % _safe_id(origin_id))
+    dest = dest_dir / ("%s-%s.md" % (_safe_id(origin_id), _content_fp(name, messages)))
     lines = ["# %s" % (name or origin_id), "", "source: %s" % source, "id: %s" % origin_id, ""]
     for role, text in messages:
         heading = (role or "message").strip() or "message"
         lines.extend(["## %s" % heading, "", text or "", ""])
-    dest.write_text("\n".join(lines), encoding="utf-8")
+    fd, temporary = tempfile.mkstemp(dir=dest_dir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, dest)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return str(dest)
 
 
@@ -262,6 +278,102 @@ def _transcript_messages(history: Any) -> List[Tuple[str, str]]:
     return out
 
 
+def _serialized_operation(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        from .native_publication import native_publication
+        state_dir = args[0] if args else kwargs['state_dir']
+        with native_publication(state_dir):
+            return fn(*args, **kwargs)
+    return locked
+
+
+def _raw_transcript(state_dir: str, sid: str) -> Any:
+    from .history_compaction_journal import recover_compaction_commit
+    path = _session_transcript_path(state_dir, sid)
+    recover_compaction_commit(state_dir, path.stem)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not _is_pruned_stub(raw):
+        rows = raw.get("history") if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("Invalid transcript history shape")
+    return raw
+
+
+def _has_archived_transcript(state_dir: str, sid: str) -> bool:
+    """Check recovery provenance without treating database failures as absence."""
+    db = archive_db_path(state_dir)
+    try:
+        db.stat()
+    except FileNotFoundError:
+        return False
+    con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        chat_id = "marionette:" + sid
+        if con.execute("SELECT 1 FROM chats WHERE chat_id=?", (chat_id,)).fetchone():
+            return True
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='raw_payloads'").fetchone():
+            return con.execute("SELECT 1 FROM raw_payloads WHERE chat_id=?", (chat_id,)).fetchone() is not None
+        return False
+    finally:
+        con.close()
+
+
+def _bundle(state_dir: str, sid: str, raw: Any) -> Dict[str, Any]:
+    from .compaction_archive import compaction_archive_path, verified_archive_digest
+    path = Path(compaction_archive_path(state_dir, sid))
+    files = {}
+    if path.is_file():
+        verified_archive_digest(state_dir, sid)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        files[path.name] = document
+        head = document.get("head") if document.get("version") == 2 else ""
+        while head:
+            segment = path.parent / (path.name + ".segments") / (head + ".json")
+            data = json.loads(segment.read_text(encoding="utf-8"))
+            files[path.name + ".segments/" + head + ".json"] = data
+            head = data.get("parent")
+    from .input_receipts import InputReceiptStore
+    try:
+        inputs = InputReceiptStore(state_dir, sid).snapshot()
+    except Exception as exc:
+        raise OSError('Input originals cannot be bundled') from exc
+    bundle = {"transcript": raw, "compaction_files": files}
+    if inputs is not None:
+        bundle["inputs"] = inputs
+    return bundle
+
+
+def _verified_raw(state_dir: str, chat_id: str):
+    from .compaction_archive import json_digest
+    db = archive_db_path(state_dir)
+    if not db.is_file():
+        return None
+    con = sqlite3.connect(str(db))
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='raw_payloads'").fetchone():
+            return None
+        row = con.execute("SELECT payload, digest, backup_path, markdown_digest FROM raw_payloads WHERE chat_id=?", (chat_id,)).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row[0])
+        if json_digest(data) != row[1]:
+            raise OSError("Archive raw payload digest mismatch")
+        backup = json.loads(Path(row[2]).read_text(encoding="utf-8"))
+        if json_digest(backup) != row[1]:
+            raise OSError("Archive raw backup digest mismatch")
+        md = con.execute("SELECT backup_path, name, content_fp FROM chats WHERE chat_id=?", (chat_id,)).fetchone()
+        if not md or hashlib.sha256(Path(md[0]).read_bytes()).hexdigest() != row[3]:
+            raise OSError("Archive markdown backup digest mismatch")
+        projection = con.execute("SELECT role, text FROM messages WHERE chat_id=? ORDER BY seq", (chat_id,)).fetchall()
+        if _content_fp(md[1], projection) != md[2]:
+            raise OSError("Archive projection fingerprint mismatch")
+        return data
+    finally:
+        con.close()
+
+
+@_serialized_operation
 def ingest_marionette_session(
     state_dir: str,
     session_id: str,
@@ -275,18 +387,29 @@ def ingest_marionette_session(
     backups = str(backup_dir(state_dir))
     if not sid:
         return IngestReport(errors=1, backup_dir=backups)
-    from .sessions import load_transcript
-
-    raw = load_transcript(state_dir, sid)
-    if _is_pruned_stub(raw):
-        return IngestReport(skipped_unchanged=1, vault_present=True, backup_dir=backups)
+    try:
+        raw = _raw_transcript(state_dir, sid)
+        if _is_pruned_stub(raw):
+            present = _verified_raw(state_dir, "marionette:%s" % sid) is not None
+            return IngestReport(skipped_unchanged=int(present), errors=int(not present), vault_present=present, backup_dir=backups)
+        bundle = _bundle(state_dir, sid, raw)
+    except (OSError, ValueError, sqlite3.Error):
+        return IngestReport(errors=1, backup_dir=backups)
     messages = _transcript_messages(raw)
+    from .compaction_archive import _atomic_write_json, json_digest, load_compaction_archive_page
+    offset = 0
+    while bundle["compaction_files"]:
+        page, total = load_compaction_archive_page(state_dir, sid, offset=offset, limit=400)
+        messages.extend(_transcript_messages(page))
+        offset += len(page)
+        if offset >= total:
+            break
     name = (title or "").strip() or sid
     chat_id = "marionette:%s" % sid
     fp = _content_fp(name, messages)
     dst = _connect_archive(archive_db_path(state_dir))
     try:
-        if fp and fp == _existing_fp(dst, chat_id):
+        if fp and fp == _existing_fp(dst, chat_id) and _verified_raw(state_dir, chat_id) == bundle:
             return IngestReport(skipped_unchanged=1, vault_present=True, backup_dir=backups)
         backup = _write_backup(state_dir, "marionette", sid, name, messages)
         _upsert_chat(
@@ -300,6 +423,13 @@ def ingest_marionette_session(
             content_fp=fp,
             backup_path=backup,
             messages=messages,
+        )
+        raw_backup = str(Path(backup).with_name(json_digest(bundle) + ".raw.json"))
+        _atomic_write_json(raw_backup, bundle)
+        dst.execute(
+            "INSERT OR REPLACE INTO raw_payloads VALUES (?, ?, ?, ?, ?)",
+            (chat_id, json.dumps(bundle), json_digest(bundle), raw_backup,
+             hashlib.sha256(Path(backup).read_bytes()).hexdigest()),
         )
         dst.commit()
     finally:
@@ -342,85 +472,79 @@ def ingest_all(
     }
 
 
-def prune_ingested_transcripts(
-    state_dir: str,
-    sessions: Optional[Iterable[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """Remove hot transcripts that already have a vault copy + markdown backup.
-
-    Never touches an active (unarchived) session. Never prunes without a
-    matching vault fingerprint.
-    """
-    pruned = 0
-    skipped = 0
-    from .sessions import load_transcript
-
+@_serialized_operation
+def prune_ingested_transcripts(state_dir: str, sessions=None) -> Dict[str, Any]:
+    """Prune archived transcripts only after verifying both complete copies."""
+    from .compaction_archive import _atomic_write_json
+    pruned = skipped = 0
     for row in sessions or ():
-        if not row.get("archived"):
-            continue
         sid = str(row.get("id") or "")
-        if not sid:
+        if not row.get("archived") or not sid:
             continue
-        chat_id = "marionette:%s" % sid
-        raw = load_transcript(state_dir, sid)
-        messages = _transcript_messages(raw)
-        if not messages:
+        try:
+            raw = _raw_transcript(state_dir, sid)
+            if _is_pruned_stub(raw):
+                skipped += 1
+                continue
+            saved = _verified_raw(state_dir, "marionette:" + sid)
+            if saved is None or saved != _bundle(state_dir, sid, raw):
+                skipped += 1
+                continue
+            _atomic_write_json(str(_session_transcript_path(state_dir, sid)),
+                               {"pruned": True, "chat_id": "marionette:" + sid})
+            pruned += 1
+        except (OSError, ValueError, sqlite3.Error):
             skipped += 1
-            continue
-        payload = read_archived_chat(state_dir, chat_id)
-        if not payload or not payload.get("messages"):
-            skipped += 1
-            continue
-        backup = Path(payload.get("backup_path") or "")
-        if not backup.is_file():
-            skipped += 1
-            continue
-        name = str(row.get("title") or sid)
-        if _content_fp(name, messages) != _content_fp(
-            str(payload.get("name") or sid),
-            [(m.get("role") or "", m.get("text") or "") for m in payload["messages"]],
-        ):
-            skipped += 1
-            continue
-        path = _session_transcript_path(state_dir, sid)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"pruned": True, "chat_id": chat_id}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        pruned += 1
-    return {
-        "ok": True,
-        "pruned": pruned,
-        "skipped": skipped,
-        "archive_db": str(archive_db_path(state_dir)),
-    }
+    return {"ok": True, "pruned": pruned, "skipped": skipped,
+            "archive_db": str(archive_db_path(state_dir))}
 
 
+@_serialized_operation
 def restore_pruned_transcript(state_dir: str, session_id: str) -> bool:
-    """Write a pruned session back into the live transcript store from the vault."""
+    """Restore complete native state, or an uncapped legacy text projection."""
+    from .compaction_archive import _atomic_write_json
     sid = (session_id or "").strip()
     if not sid:
         return False
-    from .sessions import save_transcript
-
     path = _session_transcript_path(state_dir, sid)
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            raw = None
-        if raw and not _is_pruned_stub(raw) and _transcript_messages(raw):
+    try:
+        if path.exists() and not _is_pruned_stub(_raw_transcript(state_dir, sid)):
             return False
-    payload = read_archived_chat(state_dir, "marionette:%s" % sid)
-    if not payload:
+        bundle = _verified_raw(state_dir, "marionette:" + sid)
+        if bundle is not None:
+            # Publish sidecars before the transcript; retry is safe after interruption.
+            for relative, data in sorted(bundle["compaction_files"].items(), reverse=True):
+                target = path.parent / relative
+                if not target.resolve().is_relative_to(path.parent.resolve()):
+                    raise OSError("Invalid archive sidecar path")
+                if target.exists():
+                    if json.loads(target.read_text(encoding="utf-8")) != data:
+                        raise OSError("Conflicting compaction generation")
+                else:
+                    _atomic_write_json(str(target), data)
+            if bundle.get("inputs") is not None:
+                from .input_receipts import InputReceiptStore
+                try:
+                    InputReceiptStore(state_dir, sid).restore(bundle["inputs"])
+                except Exception as exc:
+                    raise OSError('Input originals cannot be restored') from exc
+            raw = bundle["transcript"]
+        else:
+            db = archive_db_path(state_dir)
+            if not db.is_file():
+                return False
+            con = sqlite3.connect(str(db))
+            try:
+                if not con.execute("SELECT 1 FROM chats WHERE chat_id=?", ("marionette:" + sid,)).fetchone():
+                    return False
+                raw = [{"role": role, "content": text} for role, text in con.execute(
+                    "SELECT role, text FROM messages WHERE chat_id=? ORDER BY seq", ("marionette:" + sid,))]
+            finally:
+                con.close()
+        _atomic_write_json(str(path), raw)
+        return True
+    except (OSError, ValueError, sqlite3.Error):
         return False
-    history = [
-        {"role": m.get("role") or "", "content": m.get("text") or ""}
-        for m in (payload.get("messages") or [])
-    ]
-    save_transcript(state_dir, sid, history)
-    return True
 
 
 def archive_status(state_dir: str) -> Dict[str, Any]:

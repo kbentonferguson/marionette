@@ -28,6 +28,9 @@ import {
   terminalBareOnDoneAction,
   terminalMissingSessionAction,
   terminalNotice,
+  terminalEventIsCurrent,
+  terminalObservationLabel,
+  type TerminalObservation,
   terminalStreamPath,
 } from "./terminalStreamPolicy";
 
@@ -60,14 +63,59 @@ export default function TerminalPane() {
   const agentUnregisterRef = useRef<null | (() => void)>(null);
   const idRef = useRef<string>("");
   const cancelRef = useRef<null | (() => void)>(null);
-  // One automatic recovery when the first SSE closes before any ConPTY bytes
-  // (common React-remount / IPC race on Windows). Manual Restart always works.
+  // Only a confirmed missing session permits automatic replacement.
   const autoRecoveredRef = useRef(false);
   // Bumping this re-runs the effect: cleanly tears down the old PTY + xterm and
   // spins up a fresh one. Drives the Restart button and exit auto-recovery.
   const [restartNonce, setRestartNonce] = useState(0);
   const [exited, setExited] = useState(false);
+  const [observation, setObservation] = useState<{ state: TerminalObservation; at: number }>({ state: "unknown", at: Date.now() });
+  const [now, setNow] = useState(Date.now());
+  const [submission, setSubmission] = useState("");
+  const submissionRef = useRef("");
+
+  const writeInput = async (id: string, data: string) => {
+    const submissionId = crypto.randomUUID();
+    submissionRef.current = submissionId;
+    setSubmission("input pending");
+    const current = () => idRef.current === id && submissionRef.current === submissionId;
+    const timeout = window.setTimeout(() => {
+      if (current()) setSubmission("input unconfirmed");
+    }, 5000);
+    try {
+      const receipt = await postJSON<{ id?: string; submission_id?: string; accepted_bytes?: number; ok?: boolean }>(
+        "/api/terminal/write", { id, data, submission_id: submissionId },
+      );
+      if (current()) setSubmission(receipt.id === id && receipt.submission_id === submissionId && receipt.ok === true && receipt.accepted_bytes === new TextEncoder().encode(data).length
+        ? "Input accepted" : "input not confirmed");
+    } catch {
+      if (current()) setSubmission("input failed or unconfirmed");
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
   const [agentView, setAgentView] = useState<AgentView | null>(null);
+  useEffect(() => {
+    if (agentView || observation.state === "exited" || observation.state === "stale") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (document.hidden || !hostRef.current || !hostHasLayout(hostRef.current)) return;
+      const current = Date.now();
+      setNow(current);
+      const deadline = observation.at + (observation.state === "active_output" && current < observation.at + 1000 ? 1000 : 5001);
+      if (deadline > current) timer = setTimeout(schedule, deadline - current);
+    };
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
+    const resize = new ResizeObserver(schedule);
+    if (hostRef.current) resize.observe(hostRef.current);
+    return () => {
+      clearTimeout(timer);
+      resize.disconnect();
+      document.removeEventListener("visibilitychange", schedule);
+    };
+  }, [agentView, observation]);
   const [selection, setSelection] = useState("");
   const [selectionStyle, setSelectionStyle] = useState<{ left: number; top: number } | null>(null);
   const agentViewRef = useRef<AgentView | null>(null);
@@ -120,7 +168,7 @@ export default function TerminalPane() {
         return;
       }
       // Send command + Enter. Prefer \r for PTY line discipline.
-      postJSON("/api/terminal/write", { id, data: cmd + "\r" });
+      void writeInput(id, cmd + "\r");
     };
     window.addEventListener("harness-run-command", onRun as EventListener);
     return () => window.removeEventListener("harness-run-command", onRun as EventListener);
@@ -243,6 +291,8 @@ export default function TerminalPane() {
   useEffect(() => {
     if (!hostRef.current) return;
     setExited(false);
+    setObservation({ state: "unknown", at: Date.now() });
+    setSubmission("");
     const host = hostRef.current;
     const term = new Terminal({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -288,25 +338,39 @@ export default function TerminalPane() {
     };
 
     let lastOffset = 0;
+    let attachment = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     const attachStream = (sid: string) => {
+      const generation = ++attachment;
+      const current = () => !disposed && idRef.current === sid && generation === attachment;
       let sawOutput = false;
       let sawExit = false;
       cancelRef.current = stream(
         terminalStreamPath(sid, lastOffset),
         (raw: unknown) => {
+          if (!terminalEventIsCurrent(raw, sid, current())) return;
           const ev = decodeTerminalStreamEvent(raw);
-          if (ev.offset !== undefined && ev.offset > lastOffset) lastOffset = ev.offset;
+          if (ev.kind === "observation") setObservation({ state: "unknown", at: Date.now() });
+          if (ev.kind === "gap") {
+            lastOffset = ev.offset;
+            term.write(ev.reason === "trimmed"
+              ? "\r\n[earlier terminal output trimmed]\r\n"
+              : "\r\n[terminal cursor reset; replaying retained output]\r\n");
+          } else if (ev.offset !== undefined && ev.offset > lastOffset) lastOffset = ev.offset;
           if (ev.kind === "data") {
             sawOutput = true;
+            setObservation({ state: "active_output", at: Date.now() });
             try { term.write(_b64ToBytes(ev.b64)); } catch { /* ignore */ }
           } else if (ev.kind === "process_exit" || ev.kind === "legacy_exit") {
             if (sawExit) return;
             sawExit = true;
+            setObservation({ state: "exited", at: Date.now() });
             term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
             idRef.current = "";
             markExited();
           } else if (ev.kind === "missing_session") {
             if (sawExit) return;
+            setObservation({ state: "stale", at: Date.now() });
             const action = terminalMissingSessionAction(autoRecoveredRef.current);
             if (action === "auto_recover") {
               autoRecoveredRef.current = true;
@@ -320,16 +384,12 @@ export default function TerminalPane() {
             }
           } else if (ev.kind === "stream_error") {
             if (sawExit) return;
-            sawExit = true;
-            idRef.current = "";
-            markExited(`\r\n\x1b[31m[terminal stream error${terminalNotice(ev.error) ? `: ${terminalNotice(ev.error)}` : ""} -- press Restart]\x1b[0m\r\n`);
+            setObservation({ state: "stale", at: Date.now() });
           }
         },
-        // onDone: SSE closed. kind:exit already settled the pane. A bare close
-        // with prior output means the transport dropped while ConPTY is still
-        // alive — reattach the same id. Do NOT kill. Empty first stream still
-        // gets one-shot auto-recover (kill+recreate).
+        // A stream drop does not prove the process exited.
         () => {
+          if (!current()) return;
           const action = terminalBareOnDoneAction({
             disposed,
             sawExit,
@@ -340,34 +400,19 @@ export default function TerminalPane() {
           if (action === "noop") return;
           if (action === "reattach") {
             const liveId = idRef.current;
-            if (liveId) attachStream(liveId);
+            setObservation({ state: "stale", at: Date.now() });
+            clearTimeout(reconnectTimer);
+            if (liveId) reconnectTimer = setTimeout(() => { if (current()) attachStream(liveId); }, 1000);
             return;
-          }
-          if (action === "auto_recover") {
-            autoRecoveredRef.current = true;
-            const deadId = idRef.current;
-            idRef.current = "";
-            if (deadId) postJSON("/api/terminal/kill", { id: deadId });
-            setRestartNonce((n) => n + 1);
-            return;
-          }
-          // mark_exited — confirmed dead or second empty-stream failure
-          if (idRef.current) {
-            const deadId = idRef.current;
-            idRef.current = "";
-            postJSON("/api/terminal/kill", { id: deadId });
-            if (!sawExit) {
-              markExited("\r\n\x1b[90m[stream closed -- press Restart]\x1b[0m\r\n");
-              return;
-            }
           }
           markExited();
         },
         // onError: backend gone / stream broke -- surface a restartable state
         () => {
-          if (disposed) return;
-          idRef.current = "";
-          markExited("\r\n\x1b[31m[terminal stream error -- press Restart]\x1b[0m\r\n");
+          if (!current()) return;
+          setObservation({ state: "stale", at: Date.now() });
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => { if (current()) attachStream(sid); }, 1000);
         }
       );
     };
@@ -402,7 +447,7 @@ export default function TerminalPane() {
 
         // keystrokes -> backend
         term.onData((data) => {
-          if (idRef.current) postJSON("/api/terminal/write", { id: idRef.current, data });
+          if (idRef.current) void writeInput(idRef.current, data);
         });
         // resize -> backend (never send 0x0 — ConPTY rejects it)
         term.onResize(({ cols, rows }) => {
@@ -413,6 +458,8 @@ export default function TerminalPane() {
 
         attachStream(res.id);
       } catch (e) {
+        if (disposed) return;
+        setObservation({ state: "stale", at: Date.now() });
         const detail = e instanceof Error && e.message ? ` (${e.message})` : "";
         markExited(
           `\r\n\x1b[31mFailed to start terminal${detail} -- press Restart.\x1b[0m\r\n`
@@ -432,6 +479,7 @@ export default function TerminalPane() {
 
     return () => {
       disposed = true;
+      clearTimeout(reconnectTimer);
       layoutWaitRo?.disconnect();
       ro.disconnect();
       if (cancelRef.current) cancelRef.current();
@@ -488,7 +536,11 @@ export default function TerminalPane() {
         ) : (
           <>
             <span className="text-[10px] uppercase tracking-wider text-faint font-medium">
-              Terminal{exited ? " -- exited" : ""}
+              Terminal -- {terminalObservationLabel(observation.state, observation.at, now)}
+              {submission && <span
+                title="Input receipts confirm only bytes accepted by the PTY, not command execution or completion."
+                aria-label={`${submission}. Input receipts confirm only bytes accepted by the PTY, not command execution or completion.`}
+              >{` / ${submission}`}</span>}
             </span>
             <button
               onClick={restart}

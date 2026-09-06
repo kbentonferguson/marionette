@@ -3,7 +3,8 @@ from __future__ import annotations
 """Cooperative per-tool deadline.
 
 A tool may declare ``timeoutMs``. This wrapper arms ``session._cancel`` for
-that budget, restores the upstream event, and only *this* wrapper's expiry
+that budget, restores cancellation only while it still owns the generation,
+and only *this* wrapper's expiry
 becomes structured ``TOOL_TIMEOUT``. Inner command/ipython/worker timeouts
 are not remapped — those kinds declare no budget here.
 """
@@ -77,29 +78,43 @@ def run_with_tool_deadline(
 
     Returns ``(result, None)`` on a normal finish (including inner timeout or
     user Stop). Returns ``(result, timeout_ms)`` only when *this* timer fired.
-    Never remaps an inner status. Restores ``session._cancel`` when we set it
-    and the user did not also request interrupt.
+    Never remaps an inner status. Cancellation is cooperative: this waits for
+    ``fn`` to return, even after expiry, and cannot undo its side effects.
+    Restores cancellation only in the captured generation and absent user Stop.
     """
     if timeout_ms is None:
         timeout_ms = declared_timeout_ms(kind)
     if not timeout_ms:
         return fn(), None
 
-    cancel = getattr(session, "_cancel", None)
+    lock = getattr(session, "_busy_meta", None)
+    if lock is None:
+        lock = threading.Lock()
+    with lock:
+        cancel = getattr(session, "_cancel", None)
+        generation = getattr(session, "_busy_gen", None)
     if cancel is None or not hasattr(cancel, "is_set"):
         return fn(), None
 
-    already = bool(cancel.is_set())
-    owned = []
+    owned = False
+    active = True
 
     def _expire() -> None:
-        try:
-            if cancel.is_set():
+        nonlocal owned
+        with lock:
+            if (
+                not active
+                or getattr(session, "_busy_gen", None) != generation
+                or getattr(session, "_cancel", None) is not cancel
+            ):
                 return
-            owned.append(True)
-            cancel.set()
-        except Exception:
-            pass
+            try:
+                if cancel.is_set():
+                    return
+                cancel.set()
+                owned = True
+            except Exception:
+                pass
 
     timer = threading.Timer(float(timeout_ms) / 1000.0, _expire)
     timer.daemon = True
@@ -111,12 +126,18 @@ def run_with_tool_deadline(
             timer.cancel()
         except Exception:
             pass
-        user_stop = bool(getattr(session, "_interrupt_requested", False))
-        if owned and not already and not user_stop:
-            try:
-                cancel.clear()
-            except Exception:
-                pass
+        with lock:
+            active = False
+            if (
+                owned
+                and getattr(session, "_busy_gen", None) == generation
+                and getattr(session, "_cancel", None) is cancel
+                and not getattr(session, "_interrupt_requested", False)
+            ):
+                try:
+                    cancel.clear()
+                except Exception:
+                    pass
     if owned:
         return result, int(timeout_ms)
     return result, None

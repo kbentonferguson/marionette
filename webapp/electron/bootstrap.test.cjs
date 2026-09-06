@@ -13,7 +13,7 @@ test("isInstallComplete: false for empty directory", () => {
   assert.equal(bootstrap.isInstallComplete(dir), false);
 });
 
-test("isInstallComplete: true when git, venv python, and dist exist", () => {
+test("isInstallComplete: existence alone does not certify an install", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-bootstrap-"));
   fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
   const pyDir = process.platform === "win32"
@@ -24,7 +24,7 @@ test("isInstallComplete: true when git, venv python, and dist exist", () => {
   fs.writeFileSync(path.join(pyDir, pyName), "");
   fs.mkdirSync(path.join(dir, "webapp", "dist"), { recursive: true });
   fs.writeFileSync(path.join(dir, "webapp", "dist", "index.html"), "<html></html>");
-  assert.equal(bootstrap.isInstallComplete(dir), true);
+  assert.equal(bootstrap.isInstallComplete(dir), false);
 });
 
 test("venvPython: platform-specific path", () => {

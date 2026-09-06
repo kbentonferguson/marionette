@@ -1,12 +1,10 @@
 import {
   Decoration,
   EditorView,
-  ViewPlugin,
   WidgetType,
   type DecorationSet,
-  type ViewUpdate,
 } from "@codemirror/view";
-import { RangeSetBuilder, type Extension } from "@codemirror/state";
+import { RangeSetBuilder, StateField, type EditorState, type Extension } from "@codemirror/state";
 import type { InFilePendingHunk } from "../lib/inFileReview";
 
 export type InFileReviewHandlers = {
@@ -27,7 +25,9 @@ class HunkActionWidget extends WidgetType {
 
   eq(other: HunkActionWidget): boolean {
     return (
-      this.item.decisionKey === other.item.decisionKey &&
+      this.item === other.item &&
+      this.handlers.onAccept === other.handlers.onAccept &&
+      this.handlers.onReject === other.handlers.onReject &&
       this.handlers.applyingKey === other.handlers.applyingKey &&
       this.item.hunk.header === other.item.hunk.header
     );
@@ -94,12 +94,12 @@ class HunkActionWidget extends WidgetType {
 }
 
 function buildDecorations(
-  view: EditorView,
+  state: EditorState,
   hunks: InFilePendingHunk[],
   handlers: InFileReviewHandlers,
 ): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
-  const doc = view.state.doc;
+  const doc = state.doc;
   const lineCount = doc.lines;
   const pending: { from: number; to: number; deco: Decoration }[] = [];
 
@@ -134,7 +134,7 @@ function buildDecorations(
     }
   }
 
-  pending.sort((a, b) => a.from - b.from || a.to - b.to);
+  pending.sort((a, b) => a.from - b.from || a.deco.startSide - b.deco.startSide || a.to - b.to);
   for (const row of pending) {
     builder.add(row.from, row.to, row.deco);
   }
@@ -204,24 +204,16 @@ export function createInFileReviewExtension(
 ): Extension {
   if (!hunks.length) return [];
 
-  const plugin = ViewPlugin.fromClass(
-    class {
-      decorations: DecorationSet;
-
-      constructor(view: EditorView) {
-        this.decorations = buildDecorations(view, hunks, handlers);
-      }
-
-      update(update: ViewUpdate) {
-        if (update.docChanged || update.viewportChanged) {
-          this.decorations = buildDecorations(update.view, hunks, handlers);
-        }
-      }
+  const decorations = StateField.define<DecorationSet>({
+    create: (state) => buildDecorations(state, hunks, handlers),
+    update(value, transaction) {
+      return transaction.docChanged
+        ? buildDecorations(transaction.state, hunks, handlers)
+        : value;
     },
-    {
-      decorations: (v) => v.decorations,
-    },
-  );
+    // Block widgets must be supplied before CodeMirror computes the viewport.
+    provide: (field) => EditorView.decorations.from(field),
+  });
 
-  return [infileReviewTheme, plugin];
+  return [infileReviewTheme, decorations];
 }

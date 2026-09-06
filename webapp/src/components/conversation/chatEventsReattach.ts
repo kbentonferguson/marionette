@@ -474,6 +474,11 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       if (userStoppedRef.current) return false;
       if (chatEventsLiveCancelRef.current != null) return false;
 
+      if (batch.replay_reset) {
+        lastAppliedCursorRef.current = 0;
+        lastAppliedRingCursorRef.current = 0;
+        ringGenerationRef.current = undefined;
+      }
       const events = Array.isArray(batch.events) ? batch.events : [];
       let sawTerminal = false;
       let wantRetry = false;
@@ -727,6 +732,12 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         if (!fenceOk()) return;
         if (localStreamActiveRef.current || userStoppedRef.current) return;
         const kind = String(ev?.kind || "");
+        if (kind === "endpoint_replay_reset") {
+          lastAppliedCursorRef.current = 0;
+          lastAppliedRingCursorRef.current = 0;
+          ringGenerationRef.current = undefined;
+          return;
+        }
         if (kind === "done") return;
         if (isChatEventsLiveRingMissFrame(ev)) {
           void fallBackAfterRingMissHydrate();

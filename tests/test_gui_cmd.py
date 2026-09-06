@@ -14,10 +14,12 @@ def test_default_path_still_runs_task(capsys):
     assert code == 0
 
 
-def test_gui_subcommand_starts_server(monkeypatch):
+def test_gui_subcommand_starts_server(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     # _run_gui calls serve(); monkeypatch serve to capture args without blocking
     captured = {}
-    def fake_serve(host="127.0.0.1", port=8799, force=False):
+    def fake_serve(host="127.0.0.1", port=8799, force=False, lifetime_receipt=None):
+        assert lifetime_receipt is None
         captured["host"] = host; captured["port"] = port; captured["force"] = force
     monkeypatch.setattr("harness.server.serve", fake_serve)
     code = cli.main(["gui", "--port", "8910", "--host", "127.0.0.1"])

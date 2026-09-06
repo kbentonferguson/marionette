@@ -245,25 +245,21 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     vi.spyOn(window, "dispatchEvent");
   });
 
-  it("Accept seeds all review hunk keys (never omits other files)", () => {
+  it("Accept selects only the requested hunk", () => {
     const review = makeReview();
     expect(buildInFileApplyDecisions(review, "aaa1111111111111#0", "accept")).toEqual({
       "aaa1111111111111#0": "accept",
-      "bbb2222222222222#0": "accept",
-      "ccc3333333333333#0": "accept",
     });
   });
 
-  it("Reject of one hunk still seeds sibling hunks as accept", () => {
+  it("Reject leaves sibling hunks pending", () => {
     const review = makeReview();
     expect(buildInFileApplyDecisions(review, "bbb2222222222222#0", "reject")).toEqual({
-      "aaa1111111111111#0": "accept",
       "bbb2222222222222#0": "reject",
-      "ccc3333333333333#0": "accept",
     });
   });
 
-  it("applyInFileHunkDecision posts seeded payload and refreshes reviews", async () => {
+  it("applyInFileHunkDecision posts selected payload and refreshes reviews", async () => {
     vi.mocked(api.applyReview).mockResolvedValue({
       ok: true,
       message: "ok",
@@ -277,9 +273,7 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     expect(res.ok).toBe(true);
     expect(api.applyReview).toHaveBeenCalledWith("rev-a", {
       "aaa1111111111111#0": "accept",
-      "bbb2222222222222#0": "accept",
-      "ccc3333333333333#0": "accept",
-    });
+    }, "selected");
 
     const kinds = vi.mocked(window.dispatchEvent).mock.calls.map(
       (c) => (c[0] as Event).type,
@@ -288,7 +282,7 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     expect(kinds).toContain("harness-repo-mutated");
   });
 
-  it("Reject posts namespaced decision without dropping other keys", async () => {
+  it("Reject posts only the selected decision", async () => {
     vi.mocked(api.applyReview).mockResolvedValue({
       ok: true,
       message: "ok",
@@ -301,8 +295,6 @@ describe("buildInFileApplyDecisions + applyInFileHunkDecision", () => {
     await applyInFileHunkDecision(review, "aaa1111111111111#0", "reject");
     expect(api.applyReview).toHaveBeenCalledWith("rev-a", {
       "aaa1111111111111#0": "reject",
-      "bbb2222222222222#0": "accept",
-      "ccc3333333333333#0": "accept",
-    });
+    }, "selected");
   });
 });

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import queue
 import threading
 import time
@@ -148,9 +149,11 @@ def test_send_locked_inner_excludes_yield_suspension_from_phase_timers():
     assert "reset_timing_before_step(timing, step)" in src
     # Plan+append-only order: timed trailer, untimed suffix, timed encode/append.
     inner = inspect.getsource(SendLoopMixin._send_locked_inner)
-    first_user = inner.find('with timed_phase(timing, "user_append")')
-    plan_idx = inner.find("PLAN_SYSTEM_SUFFIX")
-    second_user = inner.find('with timed_phase(timing, "user_append")', first_user + 1)
+    assert "yield from self._prepare_user_turn(" in inner
+    prepare = inspect.getsource(SendLoopMixin._prepare_user_turn)
+    first_user = prepare.find('with timed_phase(timing, "user_append")')
+    plan_idx = prepare.find("PLAN_SYSTEM_SUFFIX")
+    second_user = prepare.find('with timed_phase(timing, "user_append")', first_user + 1)
     assert first_user != -1 and plan_idx != -1 and second_user != -1
     assert first_user < plan_idx < second_user
     # CodeGraph visibility event is yielded after the timed compute block.
@@ -1724,9 +1727,21 @@ def test_dispatch_local_action_hash_edit_success_includes_path(tmp_path):
     assert events[0].data["types"] == ["file"]
 
 
-def test_dispatch_local_action_run_command_blocked():
+def _durable_command_session(tmp_path, **overrides):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    session = ConversationalSession(HarnessConfig(
+        driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path),
+    ))
+    for name, value in overrides.items():
+        setattr(session, name, value)
+    return session
+
+
+def test_dispatch_local_action_run_command_blocked(tmp_path):
     act = PilotAction(kind="run_command", command="rm -rf /")
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
             return_value=(
@@ -1742,6 +1757,9 @@ def test_dispatch_local_action_run_command_blocked():
         register_pending_command_approval=MagicMock(return_value={
             "session_id": "session-a",
             "workspace_root": "/repo",
+            "approval_protocol": 1,
+            "approval_id": "approval-a",
+            "action_id": "a3",
         }),
         _append_action_result=MagicMock(),
     )
@@ -1753,7 +1771,7 @@ def test_dispatch_local_action_run_command_blocked():
     session._append_action_result.assert_called_once()
 
 
-def test_dispatch_local_action_run_command_action_result_includes_ui_output():
+def test_dispatch_local_action_run_command_action_result_includes_ui_output(tmp_path):
     """Run cards need command/exit_code/output on action_result for the UI."""
     from harness.send_loop_phases import (
         _RUN_COMMAND_UI_OUTPUT_CAP,
@@ -1763,7 +1781,7 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output():
     long_output = ("line-head\n" + ("x" * 5000) + "\nline-tail\n")
     assert len(long_output) > _RUN_COMMAND_UI_OUTPUT_CAP
     act = PilotAction(kind="run_command", command="pytest -q")
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
             return_value=(
@@ -1792,14 +1810,16 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output():
     assert "line-head" in headline
     # Model history still gets the full (pre-UI-cap) tool output wrapper.
     session._append_action_result.assert_called_once()
-    hist = session._append_action_result.call_args[0][2]
-    assert "completed with exit code 1" in hist
-    assert long_output in hist
+    receipt = json.loads(session._append_action_result.call_args[0][2])
+    assert receipt["exit_code"] == 1
+    assert "completed with exit code 1" in receipt["output"]
+    assert long_output in receipt["output"]
+    assert session._append_action_result.call_args.kwargs["ok"] is False
 
 
-def test_dispatch_local_action_run_command_failure_includes_command():
+def test_dispatch_local_action_run_command_failure_includes_command(tmp_path):
     act = PilotAction(kind="run_command", command="echo boom")
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(return_value=(False, "error", "spawn failed")),
         _append_action_result=MagicMock(),
@@ -1810,11 +1830,11 @@ def test_dispatch_local_action_run_command_failure_includes_command():
     assert events[0].data["kind"] == "run_command"
 
 
-def test_dispatch_local_action_run_command_cancelled_preserves_partial_output():
+def test_dispatch_local_action_run_command_cancelled_preserves_partial_output(tmp_path):
     """Wave 1: cancelled must not flatten into ordinary completed success."""
     act = PilotAction(kind="run_command", command="pytest -q")
     partial = "collected 12 items\n\n[interrupted by user]"
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
             return_value=(
@@ -1840,10 +1860,10 @@ def test_dispatch_local_action_run_command_cancelled_preserves_partial_output():
     assert session._append_action_result.call_args.kwargs.get("ok") is False
 
 
-def test_dispatch_local_action_run_command_timeout_surfaces_status():
+def test_dispatch_local_action_run_command_timeout_surfaces_status(tmp_path):
     act = PilotAction(kind="run_command", command="sleep 30")
     partial = "still running\n\n[TimeoutExpired after 1 seconds]"
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
             return_value=(
@@ -1865,10 +1885,10 @@ def test_dispatch_local_action_run_command_timeout_surfaces_status():
     assert "timeout with exit code -1" in hist
 
 
-def test_dispatch_local_action_run_command_truncated_marks_status():
+def test_dispatch_local_action_run_command_truncated_marks_status(tmp_path):
     act = PilotAction(kind="run_command", command="yes")
     capped = "HEAD\n\n[output truncated at 2 MiB cap]"
-    session = SimpleNamespace(
+    session = _durable_command_session(tmp_path,
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
             return_value=(
@@ -2050,4 +2070,3 @@ def test_run_auto_verify_retries_on_failure(monkeypatch):
     assert events[1].data["passed"] is False
     assert session._history[-1]["role"] == "user"
     assert "[auto-verify]" in session._history[-1]["content"]
-

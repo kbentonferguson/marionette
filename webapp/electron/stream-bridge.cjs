@@ -11,9 +11,8 @@
 // and paints the misleading "[aborted] Connection closed before the turn
 // finished".
 //
-// Sanitization rule: error payloads carry only an HTTP status and a coarse code/
-// message. Never the response body, never the request path/query, and never any
-// token -- these payloads cross the IPC boundary and land in renderer state/logs.
+// Errors expose a status, an allowlisted code and a static message. Response
+// text and request details never cross IPC into renderer state or logs.
 
 /** Structured, secret-free error payload for a non-2xx stream response. */
 function sanitizedStreamHttpError(statusCode) {
@@ -47,11 +46,38 @@ function sanitizedStreamConnError(err) {
   };
 }
 
+const INPUT_ERROR_CODES = new Set([
+  "input_already_attempted", "input_archive_unavailable", "input_attachment_corrupt",
+  "input_attachment_invalid", "input_attachment_limit", "input_attachment_unavailable", "input_attachment_unknown",
+  "input_commit_uncertain", "input_corrupt", "input_delivery_uncertain",
+  "input_document_missing", "input_evidence_missing", "input_evidence_unreadable",
+  "input_handoff_conflict", "input_held", "input_id_conflict", "input_invalid",
+  "input_lock_failed", "input_owner_invalid", "input_owner_required",
+  "input_publication_conflict", "input_read_failed", "input_restore_conflict",
+  "input_restore_required", "input_retry_conflict", "input_storage_unavailable",
+  "input_terminal", "input_transcript_unreadable", "input_transition_invalid", "input_unknown",
+  "input_archive_stale", "input_stop_uncertain", "input_stopped", "input_session_changed", "input_stash_expired",
+]);
+
+function sanitizedInputError(status, text) {
+  try {
+    const body = JSON.parse(text);
+    if (body && INPUT_ERROR_CODES.has(body.code)) {
+      return {
+        status,
+        code: body.code,
+        message: "Input delivery could not be confirmed. Keep your draft and inspect Saved inputs before retrying.",
+      };
+    }
+  } catch { /* malformed errors retain the HTTP classification */ }
+  return sanitizedStreamHttpError(status);
+}
+
 /**
  * Wire a backend SSE http.IncomingMessage to exactly one terminal callback.
  *
- * - non-2xx status: onError(sanitized) immediately; the body is drained and
- *   DISCARDED (it may echo error text) and onDone can never fire.
+ * - non-2xx status: onError(sanitized), never onDone. Bounded input error JSON
+ *   preserves only known codes; response text is never forwarded.
  * - 2xx: `data:` frames -> onEvent; a `{"kind":"done"}` frame or stream end ->
  *   onDone; a response error -> onError(sanitized).
  */
@@ -70,6 +96,32 @@ function wireStreamResponse(res, { onEvent, onDone, onError }) {
 
   const status = res.statusCode;
   if (!Number.isInteger(status) || status < 200 || status >= 300) {
+    if ([400, 409, 413, 422, 503].includes(status)) {
+      let body = "";
+      let bytes = 0;
+      const complete = (payload) => {
+        clearTimeout(timer);
+        finishError(payload);
+        try { res.destroy(); } catch { /* already closed */ }
+      };
+      const timer = setTimeout(() => complete(sanitizedStreamHttpError(status)), 2000);
+      timer.unref?.();
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        if (settled) return;
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > 4096) {
+          body = "";
+          complete(sanitizedStreamHttpError(status));
+          return;
+        }
+        body += chunk;
+      });
+      res.on("end", () => complete(sanitizedInputError(status, body)));
+      res.on("error", () => complete(sanitizedStreamHttpError(status)));
+      res.on("aborted", () => complete(sanitizedStreamHttpError(status)));
+      return;
+    }
     finishError(sanitizedStreamHttpError(status));
     // Drain so the socket can close; never parse or forward the error body.
     res.on("data", () => {});

@@ -11,7 +11,8 @@ import time
 import urllib.request
 import urllib.error
 
-from .base import DriverResponse, SYSTEM_PROMPT
+from .request_boundary import http_request
+from .base import tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT
 from .prompt_cache import (
     _can_carry_marker,
     _mark_content_block,
@@ -223,7 +224,8 @@ class AnthropicDriver:
             raw = None
             for attempt in range(2):
                 try:
-                    req = urllib.request.Request(
+                    req = http_request(
+                        self,
                         url, data=data, headers=headers, method="POST",
                     )
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -314,12 +316,16 @@ class AnthropicDriver:
 
             elif role == "tool":
                 tc_id = msg.get("tool_call_id") or ""
-                content_val = msg.get("content") or ""
+                content_val = tool_result_content(msg)
                 blocks.append({
                     "type": "tool_result",
                     "tool_use_id": tc_id,
                     "content": content_val
                 })
+                semantics = tool_result_semantics(content_val)
+                is_error = semantics.get("is_error", msg.get("is_error"))
+                if isinstance(is_error, bool):
+                    blocks[-1]["is_error"] = is_error
                 anth_role = "user"
 
             else:
@@ -484,7 +490,8 @@ class AnthropicDriver:
             raw = None
             for attempt in range(2):
                 try:
-                    req = urllib.request.Request(
+                    req = http_request(
+                        self,
                         url, data=data, headers=headers, method="POST",
                     )
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -604,7 +611,7 @@ class AnthropicDriver:
         stop_reason = ""
 
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            req = http_request(self, url, data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()

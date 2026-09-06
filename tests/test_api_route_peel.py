@@ -256,7 +256,7 @@ def test_memory_propose_accept_ok():
 
 def test_worktrees_add_rejects_bad_branch(monkeypatch):
     svc = WorktreeServices(cfg=SimpleNamespace(repo="/tmp/repo"), parse_bool=bool)
-    code, payload = post_worktrees_add({"branch": "-evil"}, svc)
+    code, payload = post_worktrees_add({"branch": "-evil", "repo": "/tmp/repo"}, svc)
     assert code == 400
     assert "invalid" in payload["error"]
 
@@ -268,13 +268,13 @@ def test_worktrees_add_ok(monkeypatch):
         lambda repo, branch, base: {"path": "/wt", "branch": branch},
     )
     monkeypatch.setattr("harness.worktrees.get_max_worktrees", lambda: 25)
-    monkeypatch.setattr("harness.worktrees.cleanup_old_worktrees", lambda *a: None)
+    monkeypatch.setattr("harness.worktrees.cleanup_old_worktrees", lambda *a, **kw: None)
     monkeypatch.setattr(
         "harness.worktrees.list_worktrees", lambda repo: [{"path": "/wt"}]
     )
 
     svc = WorktreeServices(cfg=SimpleNamespace(repo="C:/proj"), parse_bool=bool)
-    code, payload = post_worktrees_add({"branch": "feature/x", "base": "HEAD"}, svc)
+    code, payload = post_worktrees_add({"branch": "feature/x", "base": "HEAD", "repo": "C:/proj"}, svc)
     assert code == 200
     assert payload["branch"] == "feature/x"
     code2, listing = get_worktrees(svc)
@@ -285,14 +285,14 @@ def test_worktrees_add_ok(monkeypatch):
 
 def test_worktrees_remove_missing_path():
     svc = WorktreeServices(cfg=SimpleNamespace(repo="/r"), parse_bool=bool)
-    code, payload = post_worktrees_remove({}, svc)
+    code, payload = post_worktrees_remove({"repo": "/r"}, svc)
     assert code == 400
     assert "path" in payload["error"]
 
 
 def test_worktrees_max_invalid():
     svc = WorktreeServices(cfg=SimpleNamespace(repo="/r"), parse_bool=bool)
-    code, payload = post_worktrees_max({"max": "nope"}, svc)
+    code, payload = post_worktrees_max({"max": "nope", "repo": "/r"}, svc)
     assert code == 400
     assert "Invalid" in payload["error"]
 
@@ -311,6 +311,7 @@ class _FakeSess:
 
     def write(self, data):
         self.writes.append(data)
+        return len(data.encode("utf-8"))
 
     def resize(self, rows, cols):
         self.resized = (rows, cols)

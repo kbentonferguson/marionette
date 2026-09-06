@@ -1,6 +1,9 @@
+import { inputFailureMessage } from "../lib/inputFailure";
+import { imagePath } from "../lib/transport";
+import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
-import { api, type Config, type Job } from "../lib/api";
+import { api, type Config, type Job, type InputReceipt, type InputDocument, type InputSubmission, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import {
@@ -74,6 +77,7 @@ import {
   sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
   updateCommandApproval,
+  sameCommandApproval,
   updateSecretRequest,
 } from "./conversation/streamApply";
 import {
@@ -449,8 +453,10 @@ export default function Conversation({
   }, [input]);
   // Live session id for async queue fences (Clear All / late refresh).
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
-  useEffect(() => {
+  const sessionEpochRef = useRef(0);
+  useLayoutEffect(() => {
     activeSessionIdRef.current = activeSessionId;
+    sessionEpochRef.current += 1;
   }, [activeSessionId]);
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming"|"awaiting_swarm">("idle");
   // Wall clock for the live busy footer ("running · read_file · step 3 · 2m 14s").
@@ -564,13 +570,21 @@ export default function Conversation({
   // harness itself at turn completion (an SSE "queued_prompt" event fires when
   // one starts running) -- so they persist across reloads and survive even if
   // this tab isn't watching. We just mirror the backend list here for display.
-  const [queueItems, setQueueItems] = useState<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
+  const [queueItems, setQueueItems] = useState<ServerQueueItem[]>([]);
   // Ref mirror so the status-transition effect (deps [status]) reads the CURRENT
   // queue when a turn ends, not a stale snapshot, without re-running on poll.
-  const queueItemsRef = useRef<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
+  const queueItemsRef = useRef<ServerQueueItem[]>([]);
   useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
+  const [inputReceipts, setInputReceipts] = useState<InputReceipt[]>([]);
+  const inputRetryKeys = useRef(new InputRetryKeys());
+  const attemptedHandoffs = useRef(new Set<string>());
+  const [queueRecovery, setQueueRecovery] = useState<Awaited<ReturnType<typeof api.queueList>>["recovery"]>([]);
+  const [queueWriteError, setQueueWriteError] = useState<string | null>(null);
+  const queueReadBlockedRef = useRef(false);
+  const queueMutationPendingRef = useRef(false);
+  const queueDrainPendingRef = useRef(false);
   const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
-  const operationalDiagnostic = useOperationalDiagnostic();
+  const operationalDiagnostic = useOperationalDiagnostic({ sessionId: activeSessionId ?? undefined, repo: config?.repo });
   const queueFetchGenRef = useRef(0);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
@@ -647,6 +661,9 @@ export default function Conversation({
     }
   }, [holdSwarmAwait]);
 
+  const [attachedDocuments, setAttachedDocuments] = useState<InputDocument[]>([]);
+  const attachedDocumentsRef = useRef<InputDocument[]>([]);
+  useEffect(() => { attachedDocumentsRef.current = attachedDocuments; }, [attachedDocuments]);
   const [attachedImages, setAttachedImages] = useState<ComposerAttachedImage[]>([]);
   // Live composer attachments for per-session cache across useSessionSwitch.
   const attachedImagesRef = useRef<ComposerAttachedImage[]>([]);
@@ -763,7 +780,7 @@ export default function Conversation({
         return;
       }
       try {
-        setLightboxUrl(api.imageUrl(path));
+        setLightboxUrl(imagePath(path));
       } catch {
         /* ignore */
       }
@@ -856,6 +873,7 @@ export default function Conversation({
   const refreshQueue = (forSessionId: string | null = activeSessionIdRef.current) => {
     const requestSessionId = forSessionId;
     const requestGen = ++queueFetchGenRef.current;
+    if (!requestSessionId) return;
     api.queueList()
       .then((res) => {
         if (!shouldApplyQueueRefresh({
@@ -866,7 +884,19 @@ export default function Conversation({
         })) {
           return;
         }
-        if (res && Array.isArray(res.items)) {
+        if (requestSessionId && res.session_id !== requestSessionId) {
+          queueReadBlockedRef.current = true;
+          setQueueLoadError("Active session changed. Queue refresh is pending.");
+          return;
+        }
+        setQueueRecovery(res.recovery || []);
+        if (res.ok) setInputReceipts(res.receipts || []);
+        queueReadBlockedRef.current = !res.ok;
+        if (!res.ok) {
+          setQueueLoadError(res.error);
+          return;
+        }
+        if (Array.isArray(res.items)) {
           setQueueItems(res.items);
           setQueueLoadError(null);
         }
@@ -880,8 +910,8 @@ export default function Conversation({
         })) {
           return;
         }
-        console.error("Failed to load prompt queue:", err);
-        setQueueLoadError(sharedReadinessNotice(QUEUE_LOAD_FAIL_NOTICE, getActiveDiagnostic()));
+        queueReadBlockedRef.current = true;
+        setQueueLoadError(err instanceof Error ? err.message : sharedReadinessNotice(QUEUE_LOAD_FAIL_NOTICE, getActiveDiagnostic()));
       });
   };
 
@@ -891,6 +921,11 @@ export default function Conversation({
     setQueueItems(blankQueueItemsOnSessionSwitch());
     setMsgQueue(blankMsgQueueOnSessionSwitch());
     setQueueLoadError(null);
+    setQueueWriteError(null);
+    setQueueRecovery([]);
+    setInputReceipts([]);
+    queueItemsRef.current = [];
+    queueReadBlockedRef.current = true;
     setQueueDragIndex(null);
     setQueueDragOverIndex(null);
     refreshQueue(activeSessionId);
@@ -960,17 +995,24 @@ export default function Conversation({
     setQueueDragIndex(null);
     setQueueDragOverIndex(null);
     if (fromIdx === null || fromIdx === targetIdx) return;
+    moveServerQueueItem(fromIdx, targetIdx);
+  };
+
+  const moveServerQueueItem = (fromIdx: number, targetIdx: number) => {
+    if (targetIdx < 0 || targetIdx >= queueItemsRef.current.length) return;
     const sid = activeSessionIdRef.current;
-    setQueueItems((prev) => {
-      const next = reorderByDrag(prev, fromIdx, targetIdx);
-      api.queueReorder(next.map((it) => it.id))
-        .catch((err) => {
-          console.error("Failed to reorder prompt queue:", err);
-          if (activeSessionIdRef.current !== sid) return;
-          refreshQueue(sid);
-        });
-      return next;
-    });
+    const next = reorderByDrag(queueItemsRef.current, fromIdx, targetIdx);
+    api.queueReorder(next.map((it) => it.id), sid)
+      .then((res) => {
+        if (activeSessionIdRef.current !== sid) return;
+        if (!res.ok) throw new Error("Queue reorder was not saved.");
+        setQueueWriteError(null);
+        refreshQueue(sid);
+      })
+      .catch((err: unknown) => {
+        if (activeSessionIdRef.current !== sid) return;
+        setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queue reorder was not saved."));
+      });
   };
 
   const handleQueueDragEnd = () => {
@@ -978,73 +1020,115 @@ export default function Conversation({
     setQueueDragOverIndex(null);
   };
 
-  const handleQueueEdit = (item: { id: string; text: string }) => {
-    // Load the prompt back into the composer for editing, and pull it out of
-    // the queue -- sending again will re-add it (as a normal turn, not a
-    // requeue), matching the existing msgQueue "click to edit" ergonomics.
-    const sid = activeSessionIdRef.current;
-    setInput(item.text);
+  const appendOriginal = (original: { text: string; images: ComposerAttachedImage[]; documents: InputDocument[] }) => {
+    requireImageCapacity(attachedImagesRef.current.length, original.images.length);
+    const images = original.images.map(image => ({ ...image, previewUrl: imagePath(image.path) }));
+    attachedImagesRef.current = [...attachedImagesRef.current, ...images];
+    attachedDocumentsRef.current = [...attachedDocumentsRef.current, ...original.documents];
+    setAttachedImages(attachedImagesRef.current);
+    setAttachedDocuments(attachedDocumentsRef.current);
+    setInput(draft => draft ? `${draft}\n\n${original.text}` : original.text);
+    inputRetryKeys.current.copied(activeSessionIdRef.current || "_draft");
     setEditingIndex(null);
-    setQueueItems((prev) => prev.filter((it) => it.id !== item.id));
-    api.queueRemove(item.id).catch((err) => {
-      console.error("Failed to remove queued prompt for edit:", err);
-      if (activeSessionIdRef.current !== sid) return;
-      refreshQueue(sid);
-    });
     taRef.current?.focus();
+  };
+
+  const copyReceipt = (receipt: InputReceipt) => {
+    try {
+      appendOriginal(receiptDraft(receipt, activeSessionIdRef.current || ""));
+      setQueueWriteError(null);
+    } catch (err) {
+      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Original could not be copied."));
+    }
+  };
+
+  const handleQueueEdit = (item: { id: string; text: string }) => {
+    const sid = activeSessionIdRef.current;
+    const generation = streamGenRef.current;
+    const receipt = inputReceipts.find(r => r.id === item.id);
+    const queued = queueItemsRef.current.find(q => q.id === item.id);
+    try {
+      const original = receipt ? receiptDraft(receipt, sid || "") : {
+        text: item.text,
+        images: (queued?.images || []).map(path => ({ path, name: path.split(/[\\/]/).pop() || path, previewUrl: "" })),
+        documents: (queued?.documents || []).map(ref => ({ ref })),
+      };
+      requireImageCapacity(attachedImagesRef.current.length, original.images.length);
+      // Copy first: even if removal fails or capacity changes during the request,
+      // neither the original nor an existing draft can be lost.
+      appendOriginal(original);
+      api.queueRemove(item.id, sid).then((res) => {
+        if (activeSessionIdRef.current !== sid || streamGenRef.current !== generation) return;
+        if (!res.ok) throw new Error("Queued prompt was not removed. The copy remains in your draft.");
+        setQueueWriteError(null);
+        refreshQueue(sid);
+      }).catch((err: unknown) => {
+        if (activeSessionIdRef.current !== sid || streamGenRef.current !== generation) return;
+        setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queued prompt was not removed. The copy remains in your draft."));
+      });
+    } catch (err) {
+      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Original could not be copied."));
+    }
   };
 
   const handleQueueRemove = (id: string) => {
     const sid = activeSessionIdRef.current;
-    setQueueItems((prev) => prev.filter((it) => it.id !== id));
-    api.queueRemove(id)
-      .then(() => {
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      })
-      .catch((err) => {
-        console.error("Failed to remove queued prompt:", err);
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      });
+    api.queueRemove(id, sid).then((res) => {
+      if (activeSessionIdRef.current !== sid) return;
+      if (!res.ok) throw new Error("Queued prompt was not removed.");
+      setQueueWriteError(null);
+      refreshQueue(sid);
+    }).catch((err: unknown) => {
+      if (activeSessionIdRef.current !== sid) return;
+      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queued prompt was not removed."));
+    });
   };
 
   const handleQueueClearAll = () => {
     const sid = activeSessionIdRef.current;
-    setQueueItems([]);
-    api.queueClear()
-      .then(() => {
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      })
-      .catch((err) => {
-        console.error("Failed to clear prompt queue:", err);
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      });
+    api.queueClear(sid).then((res) => {
+      if (activeSessionIdRef.current !== sid) return;
+      if (!res.ok) throw new Error("Queue was not cleared.");
+      setQueueWriteError(null);
+      refreshQueue(sid);
+    }).catch((err: unknown) => {
+      if (activeSessionIdRef.current !== sid) return;
+      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queue was not cleared."));
+    });
   };
 
   const handleQueueAdd = () => {
-    const raw = input.trim();
+    if (queueMutationPendingRef.current) return;
+    if (!activeSessionIdRef.current) {
+      setQueueWriteError("Choose a session before saving input. Your draft is retained.");
+      return;
+    }
+    const draft = input;
+    const raw = draft;
     const sessionKey = activeSessionIdRef.current || "_draft";
     const text = applyTerminalSelectionsToMessage(raw, peekTerminalSelections(sessionKey));
-    if (!text) return;
-    // Snapshot the attached image paths BEFORE clearing input/attachments, so a
-    // queued prompt carries its images just like a normal turn. The backend
-    // delivers them as real image content when the prompt drains.
+    if (!text.trim() && !attachedImages.length && !attachedDocuments.length) return;
     const sid = activeSessionIdRef.current;
-    const queueImages = attachedImages.map((img) => img.path).filter(Boolean);
-    setInput("");
-    dropTerminalLabels(sessionKey, terminalLabelsFromDraft(raw));
-    setAttachedImages([]);
-    api.queueAdd(text, queueImages)
-      .then(() => {
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      })
-      .catch((err) => {
-        console.error("Failed to add prompt to queue:", err);
-      });
+    const images = attachedImages;
+    const documents = attachedDocuments;
+    const generation = streamGenRef.current;
+    const queueImages = images.map((img) => img.path).filter(Boolean);
+    queueMutationPendingRef.current = true;
+    const retry_key = inputRetryKeys.current.forPayload(sessionKey, { text, original_text: raw, images: queueImages, documents, model: config?.driver });
+    api.queueAdd(text, queueImages, sid, { original_text: raw, documents, retry_key }).then((res) => {
+      if (activeSessionIdRef.current !== sid || streamGenRef.current !== generation) return;
+      if (!res.ok) throw new Error("Prompt was not saved. Your draft is retained.");
+      setInput((current) => current === draft ? "" : current);
+      dropTerminalLabels(sessionKey, terminalLabelsFromDraft(raw));
+      setAttachedImages((current) => current === images ? [] : current);
+      setAttachedDocuments(current => current === documents ? [] : current);
+      inputRetryKeys.current.accepted(sessionKey, retry_key);
+      setQueueWriteError(null);
+      refreshQueue(sid);
+    }).catch((err: unknown) => {
+      if (activeSessionIdRef.current !== sid || streamGenRef.current !== generation) return;
+      setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Prompt was not saved. Your draft is retained."));
+    }).finally(() => { queueMutationPendingRef.current = false; });
   };
 
   // Request notifications permission on mount
@@ -1587,10 +1671,14 @@ export default function Conversation({
     if (!activeSessionId) return;
     const fetchSid = activeSessionId;
     const fetchGen = contextUsageFetchGenRef.current;
-    return api.getContextUsage()
+    return api.getContextUsage(fetchSid)
       .then((res) => {
         if (fetchGen !== contextUsageFetchGenRef.current) return;
-        if (activeSessionIdRef.current !== fetchSid) return;
+        if (activeSessionIdRef.current !== fetchSid || res.session_id !== fetchSid) return;
+        if (!res.available) {
+          setContextUsage(null);
+          return;
+        }
         // Fresh sessions can return partial/non-finite payloads; keep the
         // panel in its loading state rather than rendering NaN or crashing.
         const usage = normalizeContextUsage(res);
@@ -1662,6 +1750,8 @@ export default function Conversation({
     composerInputRef,
     setAttachedImages,
     attachedImagesRef,
+    attachedDocumentsRef,
+    setAttachedDocuments,
     setWikiPrepared,
     setMemoryProposals,
     setDistillNotice,
@@ -2054,6 +2144,9 @@ export default function Conversation({
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const uploadSid = activeSessionIdRef.current;
+    const uploadGen = sessionEpochRef.current;
+    const uploadLive = () => activeSessionIdRef.current === uploadSid && sessionEpochRef.current === uploadGen;
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -2070,8 +2163,9 @@ export default function Conversation({
           }
           setUploadError(null);
           try {
-            const previewUrl = URL.createObjectURL(file);
             const uploaded = await api.uploadImage(file);
+            if (!uploadLive()) return;
+            const previewUrl = URL.createObjectURL(file);
             setAttachedImages((prev) => {
               if (prev.length >= 8) {
                 return prev;
@@ -2083,6 +2177,7 @@ export default function Conversation({
             });
             addedCount++;
           } catch (err) {
+            if (!uploadLive()) return;
             console.error("Failed to upload pasted image:", err);
             flashUploadError("Image upload failed");
           }
@@ -2108,6 +2203,9 @@ export default function Conversation({
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
+    const uploadSid = activeSessionIdRef.current;
+    const uploadGen = sessionEpochRef.current;
+    const uploadLive = () => activeSessionIdRef.current === uploadSid && sessionEpochRef.current === uploadGen;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
     const items = Array.from(e.dataTransfer.items || []);
@@ -2129,6 +2227,7 @@ export default function Conversation({
       }
       const isDirectory = !!(entry && entry.isDirectory)
         || await droppedPathIsDirectory(osPath);
+      if (!uploadLive()) return;
 
       if (isImage) {
         // Images attach as visual context (upload + thumbnail), as before.
@@ -2137,14 +2236,16 @@ export default function Conversation({
           continue;
         }
         try {
-          const previewUrl = URL.createObjectURL(file);
           const uploaded = await api.uploadImage(file);
+          if (!uploadLive()) return;
+          const previewUrl = URL.createObjectURL(file);
           setAttachedImages((prev) => {
             if (prev.length >= 8) return prev;
             return [...prev, { path: uploaded.path, name: uploaded.name, previewUrl }];
           });
           addedCount++;
         } catch (err) {
+          if (!uploadLive()) return;
           console.error("Failed to upload dropped image:", err);
           flashUploadError(uploadErrorMessage(err, "Image upload failed"));
         }
@@ -2160,18 +2261,15 @@ export default function Conversation({
         if (entry?.isDirectory) {
           try {
             const collected = await collectFilesFromDirectoryEntry(entry);
+            if (!uploadLive()) return;
             if (collected.files.length > 0) {
               for (const inner of collected.files) {
                 try {
                   const uploaded = await api.uploadImage(inner.file);
-                  const token = mentionTokenForDroppedPath({
-                    osPath: "",
-                    repo,
-                    uploadedPath: uploaded.path,
-                  });
-                  if (token) mentions.push(token);
-                  else flashUploadError("Dropped file could not be attached");
+                  if (!uploadLive()) return;
+                  setAttachedDocuments(current => [...current, { path: uploaded.path, name: uploaded.name }]);
                 } catch (err) {
+                  if (!uploadLive()) return;
                   console.error("Failed to upload dropped folder file:", err);
                   flashUploadError(uploadErrorMessage(err, "File upload failed"));
                 }
@@ -2184,6 +2282,7 @@ export default function Conversation({
               continue;
             }
           } catch (err) {
+            if (!uploadLive()) return;
             console.error("Failed to read dropped folder:", err);
           }
         }
@@ -2195,10 +2294,8 @@ export default function Conversation({
         continue;
       }
 
-      // Non-image files become an @-mention the agent reads. If the file lives
-      // INSIDE the open workspace, use a plain repo-relative @path (the backend
-      // resolves it directly). Otherwise upload it into the workspace-readable
-      // store and reference the uploaded path -- so external drops work too.
+      // Workspace paths remain mentions; uploaded files are explicit documents
+      // so receipt copies never depend on an expired upload-path mention.
       const insideToken = mentionTokenForDroppedPath({ osPath, repo });
       if (insideToken) {
         mentions.push(insideToken);
@@ -2206,14 +2303,10 @@ export default function Conversation({
       }
       try {
         const uploaded = await api.uploadImage(file);
-        const token = mentionTokenForDroppedPath({
-          osPath: "",
-          repo,
-          uploadedPath: uploaded.path,
-        });
-        if (token) mentions.push(token);
-        else flashUploadError("Dropped file could not be attached");
+        if (!uploadLive()) return;
+        setAttachedDocuments(current => [...current, { path: uploaded.path, name: uploaded.name }]);
       } catch (err) {
+        if (!uploadLive()) return;
         console.error("Failed to upload dropped file:", err);
         flashUploadError(uploadErrorMessage(err, "File upload failed"));
       }
@@ -2819,7 +2912,7 @@ export default function Conversation({
   applyStreamEventRef.current = applyStreamEvent;
 
 
-  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
+  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[], submission: InputSubmission = {}, onAccepted?: () => void) => {
     // Stale transcript = prior session still on screen while B hydrates.
     // Never send into the wrong session.
     const gate = executeSendGate({
@@ -2852,10 +2945,18 @@ export default function Conversation({
     // the live attachedImages composer state.
     const imgsToSend = resume ? [] : (imagesOverride ? imagesOverride : [...attachedImages]);
     const imgPaths = imgsToSend.map((img) => img.path);
+    const submissionSession = activeSessionIdRef.current || "_draft";
+    const requestSubmission: InputSubmission = resume || submission.input_id ? { ...submission, session_id: activeSessionIdRef.current || undefined } : {
+      session_id: activeSessionIdRef.current || undefined,
+      ...submission,
+      documents: submission.documents ?? attachedDocuments,
+      retry_key: submission.retry_key ?? inputRetryKeys.current.forPayload(submissionSession, {
+        text: msg, original_text: submission.original_text, images: imgPaths, documents: submission.documents ?? attachedDocuments, model: config?.driver,
+      }),
+    };
     if (!resume) {
       // A resume turn carries no new user message -- the pilot is continuing off
       // a finished background job, so we don't add a user bubble or send images.
-      setAttachedImages([]);
       setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
       const hasPriorUserTurn = itemsRef.current.some(
         (it) => it.kind === "msg" && it.msg.role === "user",
@@ -2875,8 +2976,8 @@ export default function Conversation({
     const streamer = resume
       ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
       : useAuto
-      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err, imgPaths)
-      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
+      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err, imgPaths, requestSubmission)
+      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths, requestSubmission);
     clearChatEventsPoll();
     localStreamActiveRef.current = true;
     detachedBusyRef.current = false;
@@ -2891,11 +2992,20 @@ export default function Conversation({
       streamGenRef.current === streamGen
       && streamSessionIdRef.current === streamSid
       && cachedSessionIdRef.current === streamSid;
+    let admissionAcknowledged = false;
     cancelRef.current = streamer((ev: any) => {
       // Drop late events after session switch / SSE detach so tool cards from
       // session A never append onto B (bleed) or re-append onto A (infinite
       // Investigated repeats while the busy poll also replaces from disk).
       if (!streamLive()) return;
+      if (!admissionAcknowledged && ev.kind === "input_receipt" && typeof ev.data?.input_id === "string"
+        && ev.data.input_id && (!requestSubmission.input_id || ev.data.input_id === requestSubmission.input_id)
+        && ["accepted", "delivering", "injected"].includes(ev.data.status)) {
+        admissionAcknowledged = true;
+        if (requestSubmission.retry_key) inputRetryKeys.current.accepted(submissionSession, requestSubmission.retry_key);
+        onAccepted?.();
+        refreshQueue(streamSid);
+      }
       applyStreamEvent(ev);
     }, () => {
          if (!streamLive()) return;
@@ -3022,49 +3132,54 @@ export default function Conversation({
   // playlist while nothing ran, or added items after the turn ended), nothing
   // would kick off the next one. Fire it here -- from the stream's TERMINAL
   // callback (cancelRef already nulled), so it never collides with the still-open
-  // stream. Pop the next item, remove it server-side, and send it as a normal
-  // turn. Each turn's terminal callback re-invokes this, so the whole ordered
+  // stream. Mark a durable attempt through handoff, then send that exact input
+  // identity. Each turn's terminal callback re-invokes this, so the whole ordered
   // queue drains by itself, one turn after the next. Resume takes priority: if a
   // background-job continuation is pending, let it run first (it re-enters here
   // when it finishes).
   const maybeDrainQueue = () => {
-    if (cancelRef.current) return;            // a turn is (re)starting -- not idle
-    if (resumeQueuedRef.current) return;      // keep-alive continuation wins
+    if (queueDrainPendingRef.current || queueReadBlockedRef.current || userStoppedRef.current) return;
+    if (cancelRef.current || resumeQueuedRef.current) return;
     const next = queueItemsRef.current[0];
-    if (!next || !next.text) return;
     const kickSid = activeSessionIdRef.current;
+    if (!next || !kickSid || attemptedHandoffs.current.has(`${kickSid}:${next.id}`)) return;
+    const generation = streamGenRef.current;
+    const canKick = () => activeSessionIdRef.current === kickSid
+      && streamGenRef.current === generation && !userStoppedRef.current
+      && !cancelRef.current && !resumeQueuedRef.current && !queueReadBlockedRef.current;
     setSafeTimeout(() => {
-      if (activeSessionIdRef.current !== kickSid) return;
-      if (cancelRef.current || resumeQueuedRef.current) return;
-      setQueueItems((prev) => prev.filter((it) => it.id !== next.id));
-      queueItemsRef.current = queueItemsRef.current.filter((it) => it.id !== next.id);
-      const sid = activeSessionIdRef.current;
-      api.queueRemove(next.id).catch(() => {}).finally(() => {
-        if (activeSessionIdRef.current !== sid) return;
-        refreshQueue(sid);
-      });
-      const nextImgs = (next.images || []).map((p: string) => ({
-        path: p,
-        name: (p.split(/[\\/]/).pop() || p),
-        previewUrl: p,
-      }));
-      // Per-item model stamp (Hermes-style): apply before kicking the turn so a
-      // playlist queued under deepseek does not run under a later kimi pick.
-      const kick = async () => {
-        if (activeSessionIdRef.current !== kickSid) return;
-        const stamped = next.model;
-        if (stamped) {
-          try {
-            await api.swapPilot(stamped);
+      if (!canKick() || queueDrainPendingRef.current) return;
+      queueDrainPendingRef.current = true;
+      void (async () => {
+        try {
+          if (next.model) {
+            const swapped = await api.swapPilot(next.model);
+            if (!canKick()) return;
+            if (!swapped.ok || swapped.deferred) throw new Error("Queued model could not be selected. Input remains queued.");
             window.dispatchEvent(new Event("harness-config-changed"));
-          } catch {
-            /* best-effort; stream start also reconciles _cfg vs live pilot */
           }
+          if (!canKick()) return;
+          // Never retry an uncertain handoff automatically, including a lost response.
+          attemptedHandoffs.current.add(`${kickSid}:${next.id}`);
+          const result = await api.queueHandoff(next.id, kickSid);
+          if (!canKick()) return;
+          if (!result.ok) throw new Error(result.error);
+          if (!result.item.input_id || !result.item.handoff_token) throw new Error("Input handoff was not confirmed. Inspect saved inputs.");
+          queueItemsRef.current = queueItemsRef.current.filter(it => it.id !== next.id);
+          setQueueItems(queueItemsRef.current);
+          setQueueWriteError(null);
+          const images = (next.images || []).map(path => ({ path, name: path, previewUrl: imagePath(path) }));
+          executeSendRef.current(next.text, auto, plan, false, images, {
+            input_id: result.item.input_id, handoff_token: result.item.handoff_token, documents: next.documents?.map(ref => ({ ref })),
+          });
+        } catch (err) {
+          if (activeSessionIdRef.current !== kickSid || streamGenRef.current !== generation) return;
+          setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queue handoff failed. Inspect saved inputs."));
+        } finally {
+          queueDrainPendingRef.current = false;
+          if (activeSessionIdRef.current === kickSid) refreshQueue(kickSid);
         }
-        if (activeSessionIdRef.current !== kickSid) return;
-        executeSendRef.current(next.text, auto, plan, false, nextImgs);
-      };
-      void kick();
+      })();
     }, 60);
   };
   maybeDrainQueueRef.current = maybeDrainQueue;
@@ -3142,7 +3257,7 @@ export default function Conversation({
 
   const send = (mode?: "interrupt") => {
     if (editBusy) return;
-    const raw = input.trim();
+    const raw = input;
     const sid = activeSessionIdRef.current || "_draft";
     const msg = applyTerminalSelectionsToMessage(raw, peekTerminalSelections(sid));
     // Allow a send/steer that is only attached image(s) with no text -- the
@@ -3150,12 +3265,12 @@ export default function Conversation({
     if (shouldBlockEmptySend({
       transcriptStale,
       text: msg,
-      imageCount: attachedImages.length,
+      imageCount: attachedImages.length + attachedDocuments.length,
     })) return;
 
     // Intercept slash commands locally
     const slash = classifyLocalSlashCommand({
-      message: msg,
+      message: msg.trim(),
       isBuiltIn: isBuiltInSlashCommand,
       customNames: customCommands.map((c) => c.name),
     });
@@ -3326,19 +3441,26 @@ export default function Conversation({
       return;
     }
     if (slash.kind === "custom") {
+      const renderSession = activeSessionIdRef.current;
+      const renderEpoch = sessionEpochRef.current;
+      const renderGeneration = streamGenRef.current;
+      const renderLive = () => activeSessionIdRef.current === renderSession
+        && sessionEpochRef.current === renderEpoch && streamGenRef.current === renderGeneration;
       setStatus("thinking");
       api.renderCommand(slash.name, slash.args)
         .then((res) => {
+          if (!renderLive()) return;
           setStatus("done");
-          setInput(res.prompt);
+          setInput(current => current === raw ? res.prompt : current);
           setEditingIndex(null);
           setTimeout(() => {
-            if (taRef.current) {
+            if (renderLive() && taRef.current) {
               taRef.current.focus();
             }
           }, 10);
         })
         .catch((err) => {
+          if (!renderLive()) return;
           setStatus("error");
           setItems((p) => [
             ...p,
@@ -3362,21 +3484,30 @@ export default function Conversation({
     setEditNotice(editNoticeAfterSend(false));
 
     if (composerBusy && !resubmitEdit) {
-      // Images-only is a new-turn send. Mid-turn steer/interrupt needs words
-      // or Stop invents a phantom steer and then drops it as an error.
-      if (!shouldSteerWhileBusy({ text: msg })) return;
+      // Attachments alone are also human input; retain them through admission.
+      if (!shouldSteerWhileBusy({ text: msg }) && !attachedImages.length && !attachedDocuments.length) return;
       // Snapshot the attached image paths BEFORE the async call so we never
       // read a stale/cleared closure value and images are never silently
       // dropped from the steer/interrupt request. Clear the draft only on
       // success (Cursor parity — keep operator text when 4xx/network fails).
       const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
       const deliveryMode = mode === "interrupt" ? "interrupt" as const : undefined;
-      api.steerSession(msg, steerImages, deliveryMode)
+      const steerSid = activeSessionIdRef.current;
+      const steerDraft = input;
+      const steerAttachments = attachedImages;
+      const steerDocuments = attachedDocuments;
+      const steerGeneration = streamGenRef.current;
+      const retry_key = inputRetryKeys.current.forPayload(sid, { text: msg, original_text: raw, images: steerImages, documents: steerDocuments, model: config?.driver });
+      api.steerSession(msg, steerImages, deliveryMode, { sessionId: steerSid, original_text: raw, documents: steerDocuments, retry_key })
         .then((res) => {
-          if (shouldClearSteerDraftOnResult(true)) {
-            setInput("");
+          if (activeSessionIdRef.current !== steerSid || streamGenRef.current !== steerGeneration) return;
+          if (!res.ok) throw new Error("Input was not accepted. Your draft is retained.");
+          if (shouldClearSteerDraftOnResult(res.ok)) {
+            setInput((current) => current === steerDraft ? "" : current);
             dropTerminalLabels(sid, terminalLabelsFromDraft(raw));
-            setAttachedImages([]);
+            setAttachedImages((current) => current === steerAttachments ? [] : current);
+            setAttachedDocuments(current => current === steerDocuments ? [] : current);
+            inputRetryKeys.current.accepted(sid, retry_key);
           }
           const chrome = steerResultChrome({
             action: res?.action,
@@ -3391,6 +3522,7 @@ export default function Conversation({
           setItems((prev) => [...prev, row]);
         })
         .catch((err) => {
+          if (activeSessionIdRef.current !== steerSid || streamGenRef.current !== steerGeneration) return;
           console.error(
             mode === "interrupt"
               ? "Failed to interrupt session:"
@@ -3415,9 +3547,17 @@ export default function Conversation({
     }
 
     const kickSend = () => {
-      setInput("");
-      dropTerminalLabels(sid, terminalLabelsFromDraft(raw));
-      executeSend(msg, auto, plan);
+      const draft = input;
+      const images = attachedImages;
+      const documents = attachedDocuments;
+      const retry_key = inputRetryKeys.current.forPayload(sid, { text: msg, original_text: raw, images: images.map(image => image.path), documents, model: config?.driver });
+      executeSend(msg, auto, plan, false, images, { original_text: raw, documents, retry_key }, () => {
+        setInput(current => current === draft ? "" : current);
+        setAttachedImages(current => current === images ? [] : current);
+        setAttachedDocuments(current => current === documents ? [] : current);
+        dropTerminalLabels(sid, terminalLabelsFromDraft(raw));
+        inputRetryKeys.current.accepted(sid, retry_key);
+      });
     };
 
     // Edit-resubmit must start a new loop, not silently steer into a dead turn.
@@ -3461,12 +3601,18 @@ export default function Conversation({
 
   const stop = () => {
     const sid = activeSessionId;
+    const epoch = sessionEpochRef.current;
+    let stoppedGeneration: number | undefined;
+    const stopLive = () => activeSessionIdRef.current === sid && sessionEpochRef.current === epoch
+      && streamGenRef.current === stoppedGeneration;
     void runStopFlow({
-      stopLocal,
-      interruptSession: () => api.interruptSession(),
+      stopLocal: () => { stopLocal(); stoppedGeneration = streamGenRef.current; },
+      interruptSession: () => api.interruptSession(sid ?? undefined),
       refreshTranscript: sid
         ? async () => {
+            if (!stopLive()) return;
             const tres = await api.sessionTranscript(sid);
+            if (!stopLive()) return;
             const loadedItems = transcriptResponseToItems(tres);
             const settle = lastSettleRef.current;
             const liveIds = liveNonLocalSwarmJobIds();
@@ -3485,6 +3631,7 @@ export default function Conversation({
           }
         : undefined,
     }).then((result) => {
+      if (!stopLive()) return;
       if (result.kind === "interrupt_failed") {
         setEditNotice(result.notice);
         return;
@@ -3524,36 +3671,45 @@ export default function Conversation({
   );
   const handleCommandApproval = useCallback(
     (item: CommandApprovalItem, decision: boolean | "amendment") => {
+      if (item.refreshRequired || !item.approvalId || !item.actionId
+        || !itemsRef.current.some((current) => sameCommandApproval(current, item))) return;
+      const approvalDecision = { ...item, approvalId: item.approvalId, actionId: item.actionId };
       const approveOriginal = decision === true;
       const approveAmendment = decision === "amendment";
       const approve = approveOriginal || approveAmendment;
       setItems((current) => updateCommandApproval(
         current,
-        item.commandHash,
+        item,
         { status: "approving", error: undefined },
       ));
       const request = approveAmendment
-        ? api.approveCommandAmendment(item.sessionId, item.workspaceRoot, item.commandHash)
+        ? api.approveCommandAmendment(approvalDecision)
         : approveOriginal
-          ? api.approveCommand(item.sessionId, item.workspaceRoot, item.commandHash)
-          : api.rejectCommand(item.sessionId, item.workspaceRoot, item.commandHash);
+          ? api.approveCommand(approvalDecision)
+          : api.rejectCommand(approvalDecision);
       void request.then((response) => {
+        if (!itemsRef.current.some((current) => sameCommandApproval(current, item))) return;
         setItems((current) => updateCommandApproval(
           current,
-          item.commandHash,
+          item,
           { status: approve ? "approved" : "rejected", error: undefined },
         ));
         if (approve && "retry_command" in response && response.retry_command) {
           approvedCommandRetryRef.current = response.retry_command;
           maybeRunApprovedCommandRetryRef.current();
         }
-      }).catch((error) => {
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const refreshRequired = message.includes("stale_approval")
+          || message.includes("approval_refresh_required")
+          || message.includes("unsupported_approval_protocol");
         setItems((current) => updateCommandApproval(
           current,
-          item.commandHash,
+          item,
           {
             status: "error",
-            error: error instanceof Error ? error.message : String(error),
+            refreshRequired,
+            error: refreshRequired ? "This approval changed. Refresh the conversation and review the current card." : message,
           },
         ));
       });
@@ -3651,6 +3807,10 @@ export default function Conversation({
   const handleOperationalRecovery = useCallback(async () => {
     if (!operationalDiagnostic) return;
     await executeDiagnosticRecovery(operationalDiagnostic, async () => {
+      if (operationalDiagnostic.scope === "transport" && operationalDiagnostic.operation === "context_usage") {
+        await fetchContextUsage();
+        return;
+      }
       if (operationalDiagnostic.code === AUTH_FAILURE) {
         focusSettingsPage("providers");
         window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
@@ -3672,7 +3832,7 @@ export default function Conversation({
         /* keep diagnostic visible */
       }
     });
-  }, [operationalDiagnostic, auto, plan]);
+  }, [operationalDiagnostic, auto, plan, activeSessionId]);
 
   const handleAuthFailureRetry = useCallback(() => {
     const ask = latestUserAsk(itemsRef.current);
@@ -3790,7 +3950,16 @@ export default function Conversation({
         queueItems={queueItems}
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
-        queueLoadError={queueLoadError}
+        queueLoadError={queueWriteError || queueLoadError}
+        receipts={inputReceipts}
+        onCopyReceipt={copyReceipt}
+        attachedDocuments={attachedDocuments}
+        onRemoveDocument={index => setAttachedDocuments(current => current.filter((_, i) => i !== index))}
+        queueRecovery={queueRecovery}
+        onCopyQueueRecovery={(text) => {
+          setInput((draft) => draft ? `${draft}\n\n${text}` : text);
+          taRef.current?.focus();
+        }}
         queueDragIndex={queueDragIndex}
         queueDragOverIndex={queueDragOverIndex}
         editingIndex={editingIndex}
@@ -3840,6 +4009,7 @@ export default function Conversation({
         handleQueueDragOver={handleQueueDragOver}
         handleQueueDragLeave={handleQueueDragLeave}
         handleQueueDrop={handleQueueDrop}
+        moveServerQueueItem={moveServerQueueItem}
         handleQueueDragEnd={handleQueueDragEnd}
         handleQueueEdit={handleQueueEdit}
         handleQueueRemove={handleQueueRemove}

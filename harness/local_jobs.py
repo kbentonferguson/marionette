@@ -22,6 +22,7 @@ Method Resolution Order keeps behavior identical: ``_register_local_job``,
 import copy
 import os
 import threading
+import uuid
 from typing import Any, Iterable, Optional
 
 from .job_actions import (
@@ -223,6 +224,7 @@ class LocalJobsMixin:
         cwd: str = "",
         batch_id: str = "",
         batch_index: Optional[int] = None,
+        reconcile_action: bool = False,
     ) -> dict:
         """Persist a durable background ``run_command`` row *before* launch.
 
@@ -249,6 +251,25 @@ class LocalJobsMixin:
         )
         now = time.time()
         with self._local_jobs_lock:
+            if reconcile_action:
+                if not action_id:
+                    raise ValueError("run_command requires a non-empty action_id")
+                matches = [row for row in self._local_jobs.values()
+                           if (row.get("job_kind") == COMMAND_JOB_KIND
+                               or row.get("role") == COMMAND_JOB_ROLE)
+                           and not row.get("batch_id")
+                           and row.get("action_id") == action_id]
+                if matches:
+                    if len(matches) != 1:
+                        raise ValueError("Command action identity conflict: multiple prior jobs")
+                    existing = matches[0]
+                    if (existing.get("session_id") != session_id
+                            or existing.get("command_fingerprint") != fp
+                            or existing.get("cwd") != effective_cwd):
+                        raise ValueError("Command action identity conflict: command, session or cwd changed")
+                    return copy.deepcopy(existing)
+            if job_id in self._local_jobs:
+                raise ValueError("Command job identity conflict")
             self._local_job_cancels[job_id] = threading.Event()
             row = {
                 "id": job_id,
@@ -258,6 +279,7 @@ class LocalJobsMixin:
                 "adapter": COMMAND_JOB_ADAPTER,
                 "model": COMMAND_JOB_ADAPTER,
                 "job_kind": COMMAND_JOB_KIND,
+                "launch_id": uuid.uuid4().hex,
                 "session_id": session_id,
                 "action_id": str(action_id or ""),
                 "command_fingerprint": fp,
@@ -293,7 +315,12 @@ class LocalJobsMixin:
             if batch_index is not None:
                 row["batch_index"] = int(batch_index)
             self._local_jobs[job_id] = row
-            self._persist_local_jobs_locked()
+            try:
+                self._persist_local_jobs_locked(required=True)
+            except Exception:
+                self._local_jobs.pop(job_id, None)
+                self._local_job_cancels.pop(job_id, None)
+                raise
             return copy.deepcopy(row)
 
     def _register_command_batch_job(
@@ -327,6 +354,8 @@ class LocalJobsMixin:
         now = time.time()
         preview = f"command batch ({len(ids)} commands)"
         with self._local_jobs_lock:
+            if batch_id in self._local_jobs:
+                raise ValueError("Command batch identity conflict")
             self._local_job_cancels[batch_id] = threading.Event()
             row = {
                 "id": batch_id,
@@ -366,7 +395,12 @@ class LocalJobsMixin:
                 "mixed_terminal": False,
             }
             self._local_jobs[batch_id] = row
-            self._persist_local_jobs_locked()
+            try:
+                self._persist_local_jobs_locked(required=True)
+            except Exception:
+                self._local_jobs.pop(batch_id, None)
+                self._local_job_cancels.pop(batch_id, None)
+                raise
             return copy.deepcopy(row)
 
     def _mark_command_batch_running(self, batch_id: str) -> None:
@@ -423,7 +457,7 @@ class LocalJobsMixin:
     ) -> None:
         """Refresh aggregate status from durable child rows (children own truth)."""
         import time
-        from harness.command_jobs import COMMAND_TERMINAL_STATES
+        from harness.command_jobs import COMMAND_TERMINAL_STATES, command_job_outcome
 
         with self._local_jobs_lock:
             job = self._local_jobs.get(batch_id)
@@ -437,7 +471,13 @@ class LocalJobsMixin:
             statuses: list[str] = []
             for cid in child_ids:
                 child = self._local_jobs.get(cid) or {}
-                st = str(child.get("status") or "registered")
+                outcome = command_job_outcome(child)
+                st = str(outcome["status"])
+                if child and st == "unknown":
+                    child.update(copy.deepcopy(outcome))
+                    child.pop("exit_code", None)
+                    for task in child.get("tasks") or []:
+                        task["status"] = "unknown"
                 statuses.append(st)
                 meta = by_id.get(cid)
                 if meta is None:
@@ -448,11 +488,9 @@ class LocalJobsMixin:
                     }
                     children_meta.append(meta)
                     by_id[cid] = meta
-                meta["status"] = st
-                if child.get("terminal_receipt") is not None:
-                    meta["terminal_receipt"] = copy.deepcopy(child.get("terminal_receipt"))
-                if child.get("exit_code") is not None:
-                    meta["exit_code"] = child.get("exit_code")
+                meta.update(copy.deepcopy(outcome))
+                if st == "unknown":
+                    meta.pop("exit_code", None)
             job["children"] = children_meta
             job["updated_at"] = time.time()
 
@@ -465,6 +503,12 @@ class LocalJobsMixin:
 
             if not statuses:
                 aggregate = "failed"
+            elif "unknown" in statuses:
+                aggregate = "unknown"
+                job["recovery_state"] = "unknown"
+                if job.get("terminal_receipt") is not None:
+                    job["recovery_receipt"] = job["terminal_receipt"]
+                job["terminal_receipt"] = None
             elif not all_terminal:
                 # Children own truth: parent cancel must not mark the aggregate
                 # terminal (or write a durable receipt) while any child is still
@@ -485,6 +529,8 @@ class LocalJobsMixin:
                     aggregate = "completed"
 
             job["status"] = aggregate
+            if aggregate != "unknown":
+                job.pop("recovery_state", None)
             if job.get("tasks"):
                 try:
                     job["tasks"][0]["status"] = aggregate
@@ -500,8 +546,12 @@ class LocalJobsMixin:
                 if summary_parts
                 else f"batch {aggregate}"
             )
+            if aggregate == "unknown":
+                if job.get("artifacts"):
+                    job.setdefault("recovery_artifacts", copy.deepcopy(job["artifacts"]))
+                job["artifacts"] = [{"type": "command_batch", "headline": summary}]
             # Durable terminal receipt only after every child is terminal.
-            if all_terminal:
+            if all_terminal and job.get("terminal_receipt") is None:
                 job["terminal_receipt"] = {
                     "status": aggregate,
                     "summary": summary,
@@ -989,17 +1039,23 @@ class LocalJobsMixin:
                 return False
             if isinstance(job.get("launch_checkpoint"), dict):
                 return True
+            previous = copy.deepcopy(job)
             now = time.time()
             job["launch_checkpoint"] = {
                 "at": now,
                 "phase": "pre_launch",
+                "launch_id": job.get("launch_id") or uuid.uuid4().hex,
                 "session_id": str(job.get("session_id") or ""),
                 "action_id": str(job.get("action_id") or ""),
                 "command_fingerprint": str(job.get("command_fingerprint") or ""),
                 "batch_id": str(job.get("batch_id") or ""),
             }
             job["updated_at"] = now
-            self._persist_local_jobs_locked()
+            try:
+                self._persist_local_jobs_locked(required=True)
+            except Exception:
+                self._local_jobs[job_id] = previous
+                raise
             return True
 
     def _mark_command_job_running(self, job_id: str) -> None:
@@ -1089,7 +1145,9 @@ class LocalJobsMixin:
             # Do not reopen a user-cancelled row as a later timeout/etc.
             if job.get("status") == "cancelled" and terminal != "cancelled":
                 terminal = "cancelled"
+            previous = copy.deepcopy(job)
             job["status"] = terminal
+            job.pop("recovery_state", None)
             job["updated_at"] = time.time()
             job["exit_code"] = int(exit_code)
             job["run_status"] = str(run_status or terminal)
@@ -1137,7 +1195,20 @@ class LocalJobsMixin:
                 "output_spilled": bool(spill_uri),
             }
             parent_batch_id = str(job.get("batch_id") or "")
-            self._persist_local_jobs_locked()
+            try:
+                self._persist_local_jobs_locked(required=True)
+            except Exception:
+                # A result observed in memory is not a durable terminal receipt.
+                # Keep the checkpoint and make subsequent writes/replays honest.
+                previous.update(status="unknown", recovery_state="unknown",
+                                terminal_receipt=None,
+                                recovery_receipt={"status": "unknown",
+                                                  "recovery": "terminal_persistence_failed"})
+                previous.pop("exit_code", None)
+                for task in previous.get("tasks") or []:
+                    task["status"] = "unknown"
+                self._local_jobs[job_id] = previous
+                return False
         # Refresh aggregate after releasing the lock (children own truth).
         if parent_batch_id:
             try:
@@ -1880,28 +1951,35 @@ class LocalJobsMixin:
                 break
             self._persist_local_jobs_locked()
 
-    # Cap persisted history so the on-disk file cannot grow without bound.
+    # Bound provider history; command identities must survive action replay.
     _LOCAL_JOBS_HISTORY_CAP = 200
 
-    def _persist_local_jobs_locked(self) -> None:
+    def _persist_local_jobs_locked(self, *, required: bool = False) -> None:
         """Atomically mirror the current _local_jobs dict to disk. MUST be called
         while holding self._local_jobs_lock. Writes a .tmp then os.replace so a
-        crash mid-write never leaves a half-written (corrupt) file. Best-effort:
-        a persistence failure must never break a running worker."""
+        crash mid-write never leaves a half-written (corrupt) file. Command
+        barriers require success; provider bookkeeping remains best-effort."""
         import json
         try:
             items = list(self._local_jobs.values())
-            # Keep only the most recent N by created_at to bound growth.
-            items.sort(key=lambda j: j.get("created_at") or 0.0)
-            if len(items) > self._LOCAL_JOBS_HISTORY_CAP:
-                items = items[-self._LOCAL_JOBS_HISTORY_CAP:]
+            # Both unresolved checkpoints and settled receipts prevent replay.
+            command_items = [j for j in items if
+                             j.get("job_kind") in ("run_command", "run_command_batch")
+                             or j.get("role") in ("command", "command_batch")]
+            history = [j for j in items if
+                       j.get("job_kind") not in ("run_command", "run_command_batch")
+                       and j.get("role") not in ("command", "command_batch")]
+            history.sort(key=lambda j: j.get("created_at") or 0.0)
+            items = command_items + history[-self._LOCAL_JOBS_HISTORY_CAP:]
             tmp = self._local_jobs_path + ".tmp"
             with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 json.dump({"jobs": items}, f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self._local_jobs_path)
         except Exception:
-            # Persistence is a convenience; never let it take down the session.
-            pass
+            if required:
+                raise
 
     def _persist_local_jobs(self) -> None:
         """Lock-taking wrapper around _persist_local_jobs_locked for callers that
@@ -1920,7 +1998,7 @@ class LocalJobsMixin:
         Wave 4: command/batch rows with an existing terminal receipt keep that
         durable outcome (never rerun or overwrite solely because the process
         restarted). Unfinished command children heal from launch-checkpoint
-        facts into an honest cancelled terminal.
+        facts into unknown outcomes; only unlaunched work is cancelled.
         """
         import json
         try:
@@ -1949,6 +2027,13 @@ class LocalJobsMixin:
                     job.get("job_kind") == "run_command_batch"
                     or job.get("role") == "command_batch"
                 )
+                if is_command_batch:
+                    receipt = job.get("terminal_receipt")
+                    if isinstance(receipt, dict) and receipt.get("recovery") == "terminal_after_restart":
+                        job["recovery_receipt"] = receipt
+                        job["terminal_receipt"] = None
+                    self._local_jobs[jid] = job
+                    continue
                 is_parallel_wave = job.get("job_kind") == "parallel_wave"
                 if is_parallel_wave:
                     # Parent has no private execution; children own interrupt.
@@ -1965,6 +2050,36 @@ class LocalJobsMixin:
                     (is_command_job or is_command_batch)
                     and receipt_status in _TERMINAL_LOCAL_JOB_STATUSES
                 )
+                legacy_unknown = (
+                    isinstance(prior_receipt, dict)
+                    and prior_receipt.get("recovery") == "terminal_after_restart"
+                    and prior_receipt.get("had_launch_checkpoint")
+                )
+                interrupted_command = (
+                    job.get("status") in ("registered", "running", "queued")
+                    and not has_durable_terminal
+                    and (job.get("launch_checkpoint") is not None or job.get("status") == "running")
+                )
+                if is_command_job and (legacy_unknown or interrupted_command or job.get("status") == "unknown"):
+                    if job.get("artifacts"):
+                        job.setdefault("recovery_artifacts", copy.deepcopy(job["artifacts"]))
+                    job["artifacts"] = [{"type": "error", "headline": "Command outcome unknown after backend restart"}]
+                    if prior_receipt is not None:
+                        job["recovery_receipt"] = prior_receipt
+                    elif not job.get("recovery_receipt"):
+                        job["recovery_receipt"] = {
+                            "status": "unknown",
+                            "recovery": "outcome_unknown_after_restart",
+                            "had_launch_checkpoint": job.get("launch_checkpoint") is not None,
+                        }
+                    job["status"] = "unknown"
+                    job["recovery_state"] = "unknown"
+                    job["terminal_receipt"] = None
+                    job.pop("exit_code", None)
+                    for task in job.get("tasks") or []:
+                        task["status"] = "unknown"
+                    self._local_jobs[jid] = job
+                    continue
                 if has_durable_terminal:
                     job["status"] = receipt_status
                     if job.get("tasks"):
@@ -2049,8 +2164,12 @@ class LocalJobsMixin:
                     theirs = str(job.get("session_id") or "")
                     if theirs == mine:
                         self._upsert_display_parallel_wave_locked(job)
-            # Rewrite so the healed statuses are the new on-disk baseline.
-            self._persist_local_jobs_locked()
+            batch_ids = [str(job["id"]) for job in self._local_jobs.values()
+                         if job.get("job_kind") == "run_command_batch" or job.get("role") == "command_batch"]
+        for batch_id in batch_ids:
+            self._sync_command_batch_from_children(batch_id)
+        # Rewrite so the healed statuses are the new on-disk baseline.
+        self._persist_local_jobs()
 
     def cancel_local_job(self, job_id: str) -> bool:
         """Cooperatively cancel a running local (provider-worker) job.

@@ -15,7 +15,7 @@ from harness.session_runners import SessionRunnerRegistry
 
 
 def services(tmp_path):
-    cfg = SimpleNamespace(repo='A', driver='driver-A')
+    cfg = SimpleNamespace(repo='A', driver='driver-A', state_dir=str(tmp_path))
     box = SimpleNamespace(pilot=None, session=SimpleNamespace())
     reg = SessionRunnerRegistry(max_concurrent_sessions=3)
     def build(*, config=None):
@@ -24,7 +24,7 @@ def services(tmp_path):
     svc = AttachServices(
         get_pilot=lambda: box.pilot, set_pilot=lambda p: setattr(box, 'pilot', p),
         get_session=lambda: box.session, set_session=lambda s: setattr(box, 'session', s),
-        cfg=cfg, runners=reg, sessions=SimpleNamespace(active='A'),
+        cfg=cfg, runners=reg, sessions=SimpleNamespace(active='A', rows=lambda: [{'id': 'A'}, {'id': 'B'}]),
         pilot_swap_lock=threading.RLock(), bind_pilot_services=lambda p: None,
         build_conversational_pilot=build, sync_pilot_session_id=lambda: None,
         sessions_state_dir=lambda: str(tmp_path), diag=lambda *a, **k: None,

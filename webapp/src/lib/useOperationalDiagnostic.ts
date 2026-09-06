@@ -4,16 +4,17 @@ import {
   subscribeDiagnostic,
 } from "./operationalDiagnosticBus";
 import {
+  belongsToActiveScope,
   isReadinessDiagnostic,
   panelNotice,
   type DiagnosticScope,
   type OperationalDiagnostic,
 } from "./operationalDiagnostic";
 
-export function useOperationalDiagnostic(): OperationalDiagnostic | null {
+export function useOperationalDiagnostic(active?: { sessionId?: string; repo?: string }): OperationalDiagnostic | null {
   const [diag, setDiag] = useState<OperationalDiagnostic | null>(getActiveDiagnostic);
   useEffect(() => subscribeDiagnostic(setDiag), []);
-  return diag;
+  return diag && active && !belongsToActiveScope(diag, active) ? null : diag;
 }
 
 /** Operational error text for a panel. Readiness root replaces local copy. */

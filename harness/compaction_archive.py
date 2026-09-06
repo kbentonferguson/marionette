@@ -10,15 +10,17 @@ normal transcript display file.
 Layout (same containment as ``save_transcript``):
     ``{state_dir}/transcripts/{safe_session_id}.archive.json``
 
-Writes are atomic UTF-8 JSON. Residual transcript persist must not touch this
-file. Load/append/remove never raise — corrupt, foreign, or oversized files
-fail closed. Repeated Compact Now must not grow the sidecar without limit:
-append and load both apply oldest/newest retention under explicit message and
-serialized-byte caps.
+Complete compactions publish a constant-size manifest pointing to immutable,
+hash-addressed segments. Each segment is bounded by the existing message and
+byte caps; reads validate the chain one segment at a time. Legacy v1 sidecars
+remain readable. The legacy best-effort append API retains its explicit caps.
 """
 
+from collections import deque
 import json
 import os
+import hashlib
+import tempfile
 from typing import Any, Optional
 
 
@@ -29,10 +31,10 @@ _ARCHIVE_SUFFIX = ".archive.json"
 # stays under both caps. Repeated Compact Now drops the middle, not the
 # oldest or newest retained rows, and records a synthetic truncation marker.
 ARCHIVE_MAX_MESSAGES = 400
-ARCHIVE_MAX_SERIALIZED_BYTES = 256 * 1024
+ARCHIVE_MAX_SERIALIZED_BYTES = 8 * 1024 * 1024
 # File-level fail-closed cap (indented envelope is larger than compact
 # message JSON). Never json.load an unbounded sidecar.
-ARCHIVE_LOAD_MAX_BYTES = 512 * 1024
+ARCHIVE_LOAD_MAX_BYTES = 16 * 1024 * 1024
 
 ARCHIVE_TRUNCATION_FLAG = "_archive_truncated"
 ARCHIVE_TRUNCATION_PREFIX = "[compaction-archive truncated:"
@@ -129,21 +131,44 @@ def retain_archive_messages(messages: Any) -> list[dict]:
     return marker if _fits_retention(marker) else []
 
 
-def _atomic_write_json(path: str, data: dict) -> None:
+def json_digest(data: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        data, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+
+
+def _atomic_write_json(path: str, data: Any) -> None:
+    """Publish flushed JSON, sync the directory where supported, then read back."""
     parent = os.path.dirname(path)
     os.makedirs(parent, exist_ok=True)
-    tmp = path + ".tmp"
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
     try:
-        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
-    except Exception:
-        try:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        if os.name != "nt":
+            directory = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        with open(path, encoding="utf-8") as handle:
+            if json_digest(json.load(handle)) != json_digest(data):
+                raise OSError("JSON persistence readback mismatch")
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def verified_archive_digest(state_dir: str, session_id: str, generation: Optional[dict] = None, *, ancestor: str = "") -> str:
+    data = generation if generation is not None else _load_archive_document(state_dir, session_id)
+    if data is None:
+        raise OSError("Compaction archive unavailable or corrupt")
+    for _ in _archive_batches(state_dir, session_id, data, ancestor=ancestor):
+        pass
+    return json_digest(data)
 
 
 def _load_archive_document(state_dir: str, session_id: str) -> Optional[dict]:
@@ -163,10 +188,18 @@ def _load_archive_document(state_dir: str, session_id: str) -> Optional[dict]:
         return None
     if not isinstance(data, dict):
         return None
-    if data.get("version") != ARCHIVE_VERSION:
+    if data.get("version") not in (ARCHIVE_VERSION, 2):
         return None
     messages = data.get("messages")
     if messages is not None and not isinstance(messages, list):
+        return None
+    if data.get("session_id") != safe_session_id(session_id):
+        return None
+    if data.get("version") == 2:
+        if set(data) != {"version", "session_id", "head", "total", "commit_id"}:
+            return None
+        return data
+    if "digest" in data and data["digest"] != json_digest(messages):
         return None
     return data
 
@@ -177,6 +210,22 @@ def load_compaction_archive_messages(state_dir: str, session_id: str) -> list[di
         data = _load_archive_document(state_dir, session_id)
         if data is None:
             return []
+        if data.get("version") == 2:
+            first, total = load_compaction_archive_page(state_dir, session_id, limit=ARCHIVE_MAX_MESSAGES)
+            if total <= len(first):
+                return first
+            half = max(0, (ARCHIVE_MAX_MESSAGES - 1) // 2)
+            last, _ = load_compaction_archive_page(state_dir, session_id, offset=max(0, total - half), limit=half)
+            rows = first[:half] + [_truncation_marker(total - len(first[:half]) - len(last))] + last
+            while rows and not _fits_retention(rows):
+                if not first and not last:
+                    return []
+                if len(first) > len(last):
+                    first = first[:max(0, min(half, len(first)) - 1)]
+                else:
+                    last = last[1:]
+                rows = first[:half] + [_truncation_marker(total - len(first[:half]) - len(last))] + last
+            return rows
         messages = _copy_messages(data.get("messages") or [])
         # Already-bounded documents keep their truncation marker. Re-retain
         # only when a pre-cap sidecar still exceeds the live limits.
@@ -191,13 +240,16 @@ def append_compaction_archive(
     state_dir: str,
     session_id: str,
     messages: Any,
+    *,
+    require_complete: bool = False,
+    commit_id: str = "",
 ) -> bool:
     """Append elided rows before a history rewrite. Never raises.
 
     Subsequent residual transcript writes use a different filename and must
     not replace this sidecar. A later compaction appends; it does not replace
-    earlier elided rows, but both append and load apply retention so the
-    sidecar cannot grow without limit.
+    earlier elided rows. Complete writes use bounded immutable segments;
+    legacy best-effort writes retain the historical retention behavior.
     """
     try:
         safe_sid = safe_session_id(session_id)
@@ -207,6 +259,14 @@ def append_compaction_archive(
         if not incoming:
             return False
         existing = _load_archive_document(state_dir, session_id)
+        if require_complete and existing is None and os.path.exists(
+            compaction_archive_path(state_dir, session_id)
+        ):
+            return False
+        if require_complete or (existing and existing.get("version") == 2):
+            return _append_complete(state_dir, safe_sid, incoming, existing, commit_id)
+        if commit_id and existing and existing.get("commit_id") == commit_id:
+            return True
         prior = _copy_messages((existing or {}).get("messages") or [])
         retained = retain_archive_messages(prior + incoming)
         if not retained:
@@ -214,13 +274,171 @@ def append_compaction_archive(
         payload = {
             "version": ARCHIVE_VERSION,
             "session_id": safe_sid,
+            "commit_id": commit_id,
             "messages": retained,
+            "digest": json_digest(retained),
             "truncated": any(item.get(ARCHIVE_TRUNCATION_FLAG) for item in retained),
         }
         _atomic_write_json(compaction_archive_path(state_dir, safe_sid), payload)
-        return True
+        return _load_archive_document(state_dir, safe_sid) == payload
     except Exception:
         return False
+
+
+def _segment_path(state_dir: str, session_id: str, digest: str) -> str:
+    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise OSError("Invalid archive segment reference")
+    return compaction_archive_path(state_dir, session_id) + ".segments/" + digest + ".json"
+
+
+def _archive_batches(state_dir: str, session_id: str, document: dict, *, ancestor: str = ""):
+    """Validate and yield newest-first batches, with bounded memory and reads."""
+    sid = safe_session_id(session_id)
+    if document.get("session_id") != sid:
+        raise OSError("Foreign archive generation")
+    if document.get("version") == 1:
+        if ancestor:
+            raise OSError("Archive generation is not visible")
+        rows = document.get("messages") or []
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise OSError("Invalid legacy archive rows")
+        if "digest" in document and document["digest"] != json_digest(rows):
+            raise OSError("Legacy archive digest mismatch")
+        yield rows
+        return
+    if document.get("version") != 2:
+        raise OSError("Invalid archive version")
+    remaining = document.get("total")
+    head = document.get("head")
+    if type(remaining) is not int or remaining < 0:
+        raise OSError("Invalid archive count")
+    found = not ancestor
+    while head:
+        found = found or head == ancestor
+        path = _segment_path(state_dir, sid, head)
+        with open(path, "rb") as handle:
+            raw = handle.read(ARCHIVE_LOAD_MAX_BYTES + 1)
+        if len(raw) > ARCHIVE_LOAD_MAX_BYTES:
+            raise OSError("Oversized archive segment")
+        segment = json.loads(raw)
+        if not isinstance(segment, dict) or json_digest(segment) != head:
+            raise OSError("Archive segment digest mismatch")
+        rows = segment.get("messages")
+        if (segment.get("session_id") != sid or segment.get("version") != 2
+                or segment.get("total") != remaining or not isinstance(rows, list)
+                or not rows or any(not isinstance(row, dict) for row in rows)
+                or not _fits_retention(rows)):
+            raise OSError("Invalid archive segment")
+        remaining -= len(rows)
+        if remaining < 0:
+            raise OSError("Invalid archive chain count")
+        head = segment.get("parent")
+        yield rows
+    if remaining != 0:
+        raise OSError("Incomplete archive chain")
+    if not found:
+        raise OSError("Archive generation is not visible")
+
+
+def load_compaction_archive_page(state_dir: str, session_id: str, *,
+                                 offset: int = 0, limit: int = 20,
+                                 role: str = "") -> tuple[list[dict], int]:
+    """Read an exact page; validate every segment before exposing any rows.
+
+    Memory is bounded by one segment plus at most 400 selected rows. Corrupt
+    or missing archives raise, allowing callers to distinguish refusal from
+    an empty archive. Role-filtered offsets count only matching rows.
+    """
+    document = _load_archive_document(state_dir, session_id)
+    if document is None:
+        if os.path.exists(compaction_archive_path(state_dir, session_id)):
+            raise OSError("Compaction archive unavailable or corrupt")
+        return [], 0
+    offset, limit = max(0, offset), max(0, min(ARCHIVE_MAX_MESSAGES, limit))
+    def matches(row):
+        return not role or str(row.get("role") or "").lower() == role
+    if role:
+        total = sum(sum(matches(row) for row in batch)
+                    for batch in _archive_batches(state_dir, session_id, document))
+    else:
+        total = document.get("total") if document.get("version") == 2 else len(document.get("messages") or [])
+        if type(total) is not int or total < 0:
+            raise OSError("Invalid archive count")
+    result = deque()
+    result_bytes = 0
+    end = total
+    for batch in _archive_batches(state_dir, session_id, document):
+        batch = [row for row in batch if matches(row)]
+        start = end - len(batch)
+        lo, hi = max(offset, start), min(offset + limit, end)
+        if lo < hi:
+            for row in reversed(batch[lo - start:hi - start]):
+                size = _serialized_message_bytes([row])
+                result.appendleft((row, size))
+                result_bytes += size
+                while result and result_bytes > ARCHIVE_MAX_SERIALIZED_BYTES:
+                    result_bytes -= result.pop()[1]
+        end = start
+    return [row for row, _ in result], total
+
+
+def _append_complete(state_dir: str, sid: str, incoming: list[dict],
+                     existing: Optional[dict], commit_id: str) -> bool:
+    # The full source must fit a segment. Refuse oversized individual
+    # compactions rather than silently retaining only part of their source.
+    if not _fits_retention(incoming):
+        return False
+    if existing is not None:
+        verified_archive_digest(state_dir, sid, existing)
+        if commit_id and existing.get("commit_id") == commit_id:
+            return True
+    head, total = "", 0
+    if existing and existing.get("version") == 2:
+        head, total = existing["head"], existing["total"]
+    def publish(rows, parent, count):
+        segment = {"version": 2, "session_id": sid, "parent": parent,
+                   "total": count + len(rows), "messages": rows}
+        digest = json_digest(segment)
+        path = _segment_path(state_dir, sid, digest)
+        if not os.path.exists(path):
+            _atomic_write_json(path, segment)
+        return digest, count + len(rows)
+    if existing and existing.get("version") == 1:
+        # Migrate bounded legacy documents without applying retention again.
+        batch = []
+        for row in existing.get("messages") or []:
+            if not _fits_retention(batch + [row]):
+                if not batch:
+                    return False
+                head, total = publish(batch, head, total)
+                batch = []
+            if not _fits_retention([row]):
+                return False
+            batch.append(row)
+        if batch:
+            head, total = publish(batch, head, total)
+    head, total = publish(incoming, head, total)
+    manifest = {"version": 2, "session_id": sid, "head": head,
+                "total": total, "commit_id": commit_id}
+    verified_archive_digest(state_dir, sid, manifest)
+    _atomic_write_json(compaction_archive_path(state_dir, sid), manifest)
+    return _load_archive_document(state_dir, sid) == manifest
+
+
+def restore_archive_generation(state_dir: str, session_id: str, document: Optional[dict]) -> None:
+    """Rollback only the published pointer; immutable orphan segments are safe."""
+    path = compaction_archive_path(state_dir, session_id)
+    if document is None:
+        if os.path.exists(path):
+            os.unlink(path)
+            if os.name != "nt":
+                directory = os.open(os.path.dirname(path), os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        return
+    _atomic_write_json(path, document)
 
 
 def remove_compaction_archive(state_dir: str, session_id: str) -> None:
@@ -229,6 +447,8 @@ def remove_compaction_archive(state_dir: str, session_id: str) -> None:
         path = compaction_archive_path(state_dir, session_id)
         if not path:
             return
+        import shutil
+        shutil.rmtree(path + ".segments", ignore_errors=True)
         trans_dir = os.path.abspath(os.path.join(state_dir, "transcripts"))
         for candidate in (path, path + ".tmp"):
             abs_path = os.path.abspath(candidate)

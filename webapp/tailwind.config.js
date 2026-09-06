@@ -13,7 +13,7 @@ export default {
         bg: "#0f1113", panel: "#181a1d", panel2: "#22262b",
         edge: "#2c3036", edge2: "#3b4046",
         // Neutral cool-grey text: no green tint, no clinical white.
-        txt: "#ececef", muted: "#9aa1ab", faint: "#697079",
+        txt: "#ececef", muted: "#9aa1ab", faint: "#8b919a",
         // Accent: a refined amber kept as the product's identity mark. On a
         // neutral base it reads as intentional warmth, not olive.
         accent: "#e0a45a", accent2: "#23262b",

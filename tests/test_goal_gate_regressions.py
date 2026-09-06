@@ -1,5 +1,5 @@
 from dataclasses import replace
-from threading import Lock
+from threading import RLock
 from types import SimpleNamespace
 
 from harness.goal_mode import (
@@ -149,8 +149,9 @@ def test_queued_goal_control_keeps_system_authorship(tmp_path):
         pass
     session = Session()
     session._prompt_queue = []
-    session._prompt_queue_lock = Lock()
-    session._prompt_queue_path = str(tmp_path / 'queue.json')
+    session._prompt_queue_lock = RLock()
+    session.state_dir = str(tmp_path)
+    session.bind_prompt_queue(str(tmp_path), 'goal-test')
     session._session_goal = SessionGoal().set('Fix tests')
     session._persist_session_goal = lambda: None
     session._history = [{'role': 'assistant', 'content': 'Checking.'}]

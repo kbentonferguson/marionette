@@ -39,6 +39,7 @@ class UsageServices:
     retry_on_locked: Callable[..., Any]
     diag: Callable[..., Any]
     get_pilot: Callable[[], Any]
+    get_runner: Callable[[str], Any] = lambda session_id: None
 
 
 JsonPayload = Union[dict, list]
@@ -133,10 +134,20 @@ def _usage_pilot_by_model() -> list:
         return []
 
 
-def get_context_usage(svc: UsageServices) -> tuple[int, JsonPayload]:
+def get_context_usage(svc: UsageServices, session_id: str = "") -> tuple[int, JsonPayload]:
     """GET /api/context/usage."""
     try:
-        return 200, svc.get_pilot().get_context_usage()
+        from ..deferred_attach import is_deferred_placeholder
+
+        pilot = svc.get_runner(session_id) if session_id else svc.get_pilot()
+        sid = session_id or getattr(pilot, "harness_session_id", "")
+        if pilot is None:
+            return 200, {"available": False, "reason": "no_runner", "session_id": sid}
+        if is_deferred_placeholder(pilot):
+            if not pilot.is_ready():
+                return 200, {"available": False, "reason": "building", "session_id": sid}
+            pilot = pilot.ensure_ready(timeout=0)
+        return 200, {**pilot.get_context_usage(), "available": True, "session_id": sid}
     except Exception as e:
         return 500, {"error": str(e)}
 
@@ -150,7 +161,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     try:
         return _get_usage_body(repo_override, svc)
     except Exception:
-        return 200, attach_billing_envelope({"session": {}, "jobs": []})
+        return 200, attach_billing_envelope({"session": {"read_status": "unavailable"},
+                                             "session_total": {"read_status": "unavailable"}, "jobs": []})
 
 
 def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]:
@@ -199,7 +211,9 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         round(float(boot_meters.get("_provider_cost_usd", 0) or 0.0), 6),
     )
     cached_usage = svc.usage_cache_get(usage_cache_key)
-    if cached_usage is not None:
+    # Active-session totals have independent identity and persisted meters.
+    # A boot-meter fingerprint cannot validate a cached session receipt.
+    if cached_usage is not None and cached_usage.get("session_total") is None:
         return 200, attach_billing_envelope(cached_usage)
     tokens_used = int(boot_meters.get("_tokens_used", 0) or 0)
     t_in = int(boot_meters.get("_tokens_in", 0) or 0)
@@ -224,13 +238,16 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     swarm_cache_unpriced_tokens = 0
     swarm_cached = 0
     swarm_input = 0
+    usage_incomplete = False
+    session_incomplete = False
+    job_coverage = {"expected": None, "read": 0}
     try:
         # Same merged, Marionette-owned job set the tracker uses
         # (/api/swarm/live): harness store + owned CLI rows only.
         from ..cli_job_merge import (
             bulk_load_store_artifacts,
-            cli_stores_by_job,
-            partition_jobs_by_store,
+            job_read_key,
+            job_stores_for_read,
         )
         from ..job_scoping import filter_accountable_jobs
 
@@ -246,96 +263,82 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         if not boot_repos and active_repo:
             boot_repos.add(active_repo)
 
-        all_jobs_by_id: dict = {}
-        store = None
-        cli_store = None
+        all_jobs_by_key: dict = {}
+        stores_by_key: dict = {}
+
+        def collect(scoped, st, cli_st):
+            resolved = job_stores_for_read(scoped, st, cli_st)
+            stores_by_key.update(resolved)
+            keys = []
+            for job in scoped:
+                if not job.get("id"):
+                    continue
+                default = cli_st if job.get("source") == "cli" else st
+                key = job_read_key(job) if job.get("cli_state_dir") else job_read_key(job, default)
+                if key not in all_jobs_by_key or job.get("accounting_owned"):
+                    all_jobs_by_key[key] = job
+                if job.get("accounting_owned"):
+                    keys.append(key)
+            return keys
+
+        boot_keys = set()
         for repo_path in sorted(boot_repos) or [active_repo or None]:
-            scoped, st, cli_st = svc.scoped_jobs_with_stores(
-                repo_root=repo_path or None
-            )
-            if store is None:
-                store = st
-            if cli_store is None and cli_st is not None:
-                cli_store = cli_st
-            for j in scoped:
-                jid = j.get("id")
-                if jid and jid not in all_jobs_by_id:
-                    all_jobs_by_id[jid] = j
-        all_jobs = list(all_jobs_by_id.values())
-
-        # Active-workspace set for session_total (unchanged semantics).
-        active_jobs, active_store, active_cli = svc.scoped_jobs_with_stores(
-            repo_root=repo_override or None
-        )
-        if store is None:
-            store = active_store
-        if cli_store is None:
-            cli_store = active_cli
-
-        # Boot pill: only jobs created during THIS app run (epoch window).
-        jobs = [j for j in all_jobs if svc.job_in_cost_window(j.get("created_at"))]
-        accountable_jobs = filter_accountable_jobs(jobs)
-        registry = svc.swarm_registry()
-        jids = [j.get("id") for j in accountable_jobs if j.get("id")]
-        # Artifacts may live in harness or CLI stores; load from the
-        # union of boot-scoped + active-scoped job ids.
-        arts_source_jobs = list(all_jobs_by_id.values())
-        for j in active_jobs:
-            jid = j.get("id")
-            if jid and jid not in all_jobs_by_id:
-                arts_source_jobs.append(j)
-        harness_jids, cli_jids = partition_jobs_by_store(arts_source_jobs)
-        foreign_cli = cli_stores_by_job(arts_source_jobs)
-
-        arts_by_job: dict = {}
+            try:
+                boot_keys.update(collect(*svc.scoped_jobs_with_stores(repo_root=repo_path or None)))
+            except Exception as e:
+                usage_incomplete = True
+                svc.diag("server.usage_jobs_aggregate", e)
         try:
-            harness_arts = bulk_load_store_artifacts(store, harness_jids)
-            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
-            cli_arts = bulk_load_store_artifacts(cli_store, primary_cli_jids)
-            arts_by_job = {**harness_arts, **cli_arts}
-            for jid, fstore in foreign_cli.items():
-                arts_by_job.update(bulk_load_store_artifacts(fstore, [jid]))
-        except Exception:
-            arts_by_job = None  # fall back to per-job reads
-
-        # Owning-store lookup: each job is priced from its own store.
-        job_by_id = {j.get("id"): j for j in arts_source_jobs if j.get("id")}
-
-        def _owning_store(jid):
-            job = job_by_id.get(jid) or {}
-            if job.get("source") == "cli":
-                return foreign_cli.get(jid) or cli_store
-            return store
-
-        def _job_arts(jid):
-            if arts_by_job is not None:
-                return arts_by_job.get(jid, [])
-            owning = _owning_store(jid)
+            active_keys = collect(*svc.scoped_jobs_with_stores(repo_root=repo_override or None))
+        except Exception as e:
+            active_keys = []
+            session_incomplete = True
+            svc.diag("server.usage_session_aggregate", e)
+        jids = [key for key, job in all_jobs_by_key.items()
+                if key in boot_keys and svc.job_in_cost_window(job.get("created_at"))
+                and filter_accountable_jobs([job])]
+        session_jids = list(dict.fromkeys(key for key in active_keys
+                                        if filter_accountable_jobs([all_jobs_by_key[key]])))
+        job_coverage["expected"] = None if usage_incomplete else len(jids)
+        registry = svc.swarm_registry()
+        arts_by_job: dict = {}
+        unavailable = set()
+        ids_by_store: dict = {}
+        for key, owning in stores_by_key.items():
             if owning is None:
-                return []
-            try:
-                return svc.retry_on_locked(lambda: owning.list_artifacts(jid))
-            except Exception:
-                return []
+                unavailable.add(key)
+            else:
+                ids_by_store.setdefault(key[:2], []).append(key[2])
+        for prefix, ids in ids_by_store.items():
+            failed = set()
+            loaded = bulk_load_store_artifacts(stores_by_key[(*prefix, ids[0])], ids, unavailable=failed)
+            for jid in ids:
+                key = (*prefix, jid)
+                arts_by_job[key] = loaded.get(jid, [])
+                if jid in failed:
+                    unavailable.add(key)
 
-        # Lifetime session_total: active-workspace visible set only
-        # (filter_store_jobs + CLI merge). Dedupe by job id; harness
-        # wins via merge_scoped_cli_jobs order.
-        session_jids: list = []
-        seen_session: set = set()
-        for j in filter_accountable_jobs(active_jobs):
-            jid = j.get("id")
-            if not jid or jid in seen_session:
+        def _job_arts(key):
+            if key in unavailable:
+                raise OSError("Job artifacts unavailable")
+            return arts_by_job.get(key, [])
+
+        for key in jids:
+            jid = key[2]
+            identity = {"job_id": jid, "source": key[1]}
+            if key[0]:
+                identity["job_ref"] = {"job_id": jid, "state_id": key[0]}
+            if key in unavailable:
+                jobs_list.append({**identity, "read_status": "unavailable"})
                 continue
-            seen_session.add(jid)
-            session_jids.append(jid)
-
-        for jid in jids:
+            job_row = dict(identity)
+            jobs_list.append(job_row)
             try:
-                raw_arts = _job_arts(jid)
+                raw_arts = _job_arts(key)
                 # Spend always goes through the injected 2-tuple helper so
                 # hermetic tests can monkeypatch harness.server._job_swarm_accounting.
                 tokens, est_cost_usd = svc.job_swarm_accounting(raw_arts, registry)
+                job_row.update(tokens=tokens, est_cost_usd=est_cost_usd)
                 provenance = "default"
                 job_estimated = True
                 detail = {}
@@ -363,24 +366,42 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                     else:
                         detail = {}
                 except Exception:
-                    pass
+                    usage_incomplete = True
+                    job_row["read_status"] = "unavailable"
                 try:
                     swarm_cached += int(svc.tokens_cached_swarm(raw_arts) or 0)
                 except Exception:
-                    pass
+                    usage_incomplete = True
+                    job_row["read_status"] = "unavailable"
                 try:
                     from .swarm_cost import _tokens_in_swarm
 
                     swarm_input += int(_tokens_in_swarm(raw_arts) or 0)
                 except Exception:
-                    pass
-                jobs_list.append({
-                    "job_id": jid,
+                    usage_incomplete = True
+                    job_row["read_status"] = "unavailable"
+                savings_fields = {}
+                owning = stores_by_key.get(key)
+                if getattr(owning, "root", None):
+                    from ..tool_output_savings import merged_savings_summary, savings_usd
+
+                    summary = merged_savings_summary(
+                        "" if key[1] == "cli" else str(owning.root),
+                        cli_state_dirs=[str(owning.root)] if key[1] == "cli" else None,
+                        job_id=jid,
+                    )
+                    savings_fields = {
+                        "tool_output_tokens_saved": summary.tokens_saved,
+                        "tool_output_savings_usd": round(savings_usd(summary.tokens_saved, price_in), 6),
+                        "tool_output_compactions": summary.record_count,
+                    }
+                job_row.update({
+                    **identity,
                     "tokens": tokens,
                     "est_cost_usd": est_cost_usd,
                     "cost_provenance": provenance,
                     "estimated": bool(job_estimated),
-                    **svc.job_savings_fields(jid),
+                    **savings_fields,
                 })
                 detail_models = {}
                 try:
@@ -401,8 +422,34 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                         },
                     )
             except Exception as e:
+                unavailable.add(key)
+                job_row["read_status"] = "unavailable"
                 svc.diag("server.usage_job_cost", e, msg=f"job={jid}")
-        session_total = svc.active_session_total(session_jids, _job_arts, registry)
+        usage_incomplete = usage_incomplete or bool(unavailable.intersection(jids))
+        job_coverage["read"] = len([k for k in jids if k not in unavailable])
+        for key in set(session_jids).difference(jids, unavailable):
+            try:
+                svc.job_swarm_accounting(_job_arts(key), registry)
+            except Exception as e:
+                unavailable.add(key)
+                svc.diag("server.usage_session_job", e, msg=f"job={key[2]}")
+        session_incomplete = session_incomplete or bool(unavailable.intersection(session_jids))
+        try:
+            session_total = svc.active_session_total([k for k in session_jids if k not in unavailable], _job_arts, registry)
+        except Exception as e:
+            session_incomplete = True
+            svc.diag("server.usage_session_aggregate", e)
+        session_incomplete = session_incomplete or (
+            isinstance(session_total, dict) and session_total.get("read_status") == "unavailable"
+        )
+        if isinstance(session_total, dict):
+            session_total = {**session_total, "job_coverage": {
+                "expected": None if session_incomplete and not session_jids else len(session_jids),
+                "read": len([k for k in session_jids if k not in unavailable]),
+            }}
+        if session_incomplete:
+            session_total = {**(session_total or {}), "read_status": "unavailable"}
+        jids = [k for k in jids if k not in unavailable]
         # Boot-pill savings: epoch job set across boot repos (jids), not
         # active-workspace-only session_jids -- so dir/session swaps keep
         # routing/cache saved meters process-lifetime.
@@ -440,6 +487,7 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                 savings_detail.get("swarm_cache_unpriced_tokens") or 0
             )
         except Exception:
+            usage_incomplete = True
             # Compatible with monkeypatched 3-arg sum_job_set_savings stubs.
             try:
                 routing_saved_usd, cache_saved_usd_swarm = svc.sum_job_set_savings(
@@ -454,6 +502,10 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
                     jids, _job_arts, registry
                 )
     except Exception as e:
+        usage_incomplete = True
+        if session_total is None:
+            session_incomplete = True
+            session_total = {"read_status": "unavailable"}
         svc.diag("server.usage_jobs_aggregate", e)
     # Swarm store jobs: dollars come ONLY from here (usage artifacts x
     # registry). Token display = pilot-only meters (boot total minus
@@ -531,6 +583,8 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         spend_estimated = usage_cost_source != "provider"
     response_data = {
         "session": {
+            **({"read_status": "unavailable"} if usage_incomplete else {}),
+            "job_coverage": job_coverage,
             "tokens_used": tokens_used,
             "est_cost_usd": round(est_session_cost, 6),
             # provider = OpenRouter usage.cost (etc.); estimated =
@@ -591,7 +645,8 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     except Exception:
         pass
     try:
-        svc.usage_cache_put(usage_cache_key, response_data)
+        if not usage_incomplete and not session_incomplete:
+            svc.usage_cache_put(usage_cache_key, response_data)
     except Exception:
         pass
     return 200, attach_billing_envelope(response_data)

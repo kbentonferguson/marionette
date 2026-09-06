@@ -12,6 +12,7 @@ import {
   type AuthPoolsResponse,
 } from "../lib/api";
 import SkillsPane from "./SkillsPane";
+import DeviceAccess from "./DeviceAccess";
 import MemoryPane from "./MemoryPane";
 import SchedulesPane from "./SchedulesPane";
 import { takePendingExpandMemory } from "../lib/memoryDeepLink";
@@ -1144,6 +1145,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("safety", "device access read only grants enrollment revoke sessions") && <DeviceAccess />}
+
         {gate("safety", "browser chrome cookies real profile login") && settings && (
         <div className="space-y-1.5">
           <button
@@ -2369,9 +2372,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Chat archive
           </span>
           <p className="text-[10px] text-muted">
-            Archive hides a session. Ingest copies it into a local vault and markdown
-            backup. Search reads the vault. Compact removes ingested transcripts from
-            the live store; Unarchive restores them.
+            Archive hides a session. Ingest saves its native messages and compaction
+            history in the local vault and backups. Compact replaces verified archived
+            transcripts with small stubs; Unarchive restores their full content.
           </p>
           <p className="text-[10px] text-faint">
             {archiveStatus
@@ -2384,7 +2387,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               setArchiveNotice("");
               try {
                 const report = await api.ingestChatArchive();
-                setArchiveNotice(`Ingested ${Number(report.ingested || 0)} archived session${Number(report.ingested || 0) === 1 ? "" : "s"}.`);
+                setArchiveNotice([
+                  report.ingested ? `Ingested ${report.ingested} archived session${report.ingested === 1 ? "" : "s"}.` : "",
+                  report.skipped_unchanged ? `${report.skipped_unchanged} already up to date.` : "",
+                  report.errors ? `${report.errors} failed to ingest.` : "",
+                ].filter(Boolean).join(" ") || "No archived sessions to ingest.");
                 const st = await api.archiveStatus();
                 setArchiveStatus({
                   vault_present: !!st.vault_present,
@@ -2411,7 +2418,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               setArchiveNotice("");
               try {
                 const report = await api.pruneChatArchive();
-                setArchiveNotice(`Compacted ${Number(report.pruned || 0)} ingested transcript${Number(report.pruned || 0) === 1 ? "" : "s"}.`);
+                setArchiveNotice([
+                  `Compacted ${report.pruned} ingested transcript${report.pruned === 1 ? "" : "s"}.`,
+                  report.skipped ? `${report.skipped} skipped; already compacted or not verified for removal.` : "",
+                ].filter(Boolean).join(" "));
                 const st = await api.archiveStatus();
                 setArchiveStatus({
                   vault_present: !!st.vault_present,
@@ -2432,7 +2442,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               {archiveBusy ? "working" : "compact"}
             </span>
           </button>
-          {archiveNotice ? <p className="text-[10px] text-muted">{archiveNotice}</p> : null}
+          {archiveNotice ? <p role="status" className="text-[10px] text-muted">{archiveNotice}</p> : null}
         </div>
         </>)}
         {gate("advanced", "agent memory durable facts preferences") && (<>

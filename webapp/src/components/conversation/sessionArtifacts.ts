@@ -1,38 +1,33 @@
-/**
- * Artifact gather after sessionTranscript hydrate (session switch).
- */
+/** Scoped artifact gather after transcript hydration. */
+import type { Job } from "../../lib/api";
+import { fetchJobArtifacts, selectJobRef } from "../../lib/jobArtifacts";
+import { collectDisplayArtifacts, mergeUniqueArtifacts, type SessionArtifact } from "./sessionHydrate";
 
-import { api } from "../../lib/api";
-import {
-  collectDisplayArtifacts,
-  mergeUniqueArtifacts,
-  type SessionArtifact,
-} from "./sessionHydrate";
-
-/**
- * Collect display-card artifacts and merge with per-job artifact fetches.
- * When there are no job ids, returns synchronously (same tick as before).
- */
 export function gatherSessionArtifacts(opts: {
   display: unknown;
   jobIds: string[] | undefined;
+  jobs?: Job[];
+  repo?: string;
+  sessionId?: string;
   stillCurrent: () => boolean;
 }): SessionArtifact[] | Promise<SessionArtifact[]> {
+  if (!opts.stillCurrent()) return [];
   const displayArtifacts = collectDisplayArtifacts(opts.display);
-  if (!opts.jobIds || opts.jobIds.length === 0) {
-    return mergeUniqueArtifacts(displayArtifacts, []);
-  }
-  return Promise.all(
-    opts.jobIds.map((jid) =>
-      api.artifacts(jid)
-        .then((arts) => (Array.isArray(arts) ? arts : []))
-        .catch((err) => {
-          console.error("Failed to fetch artifacts for job", jid, err);
-          return [] as SessionArtifact[];
-        }),
-    ),
-  ).then((allJobArts) => {
-    if (!opts.stillCurrent()) return [] as SessionArtifact[];
-    return mergeUniqueArtifacts(displayArtifacts, allJobArts.flat());
+  if (!opts.jobIds?.length) return mergeUniqueArtifacts(displayArtifacts, []);
+  const unavailable = (id: string): SessionArtifact[] => [{
+    type: "note", headline: `Artifact preview unavailable for ${id} in the active workspace and session. Reopen the session to retry.`,
+  }];
+  // Resolve all selections before starting requests; id-only transcript records
+  // are insufficient when the live snapshot contains colliding job ids.
+  const selections = opts.jobIds.map(id => {
+    const candidates = (opts.jobs || []).filter(job => job.id === id);
+    return { id, selection: candidates.length === 1
+      ? selectJobRef(candidates[0], opts.repo || "", opts.sessionId || "") : null };
   });
+  return Promise.all(selections.map(async ({ id, selection }) => {
+    if (!selection) return unavailable(id);
+    try { return await fetchJobArtifacts(selection); }
+    catch { return unavailable(id); }
+  })).then(rows => opts.stillCurrent()
+    ? mergeUniqueArtifacts(displayArtifacts, rows.flat()) : []);
 }

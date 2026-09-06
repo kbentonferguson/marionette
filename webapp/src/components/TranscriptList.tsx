@@ -237,6 +237,9 @@ export type SecretRequestItem = {
 };
 
 export type CommandApprovalItem = {
+  actionId?: string;
+  approvalId?: string;
+  refreshRequired?: boolean;
   kind: "command_approval";
   id: string;
   command: string;
@@ -1746,7 +1749,9 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "command_approval") {
-      const decisionPending = it.status === "pending" || it.status === "error";
+      const refreshRequired = (it.status === "pending" || it.status === "error")
+        && (!it.approvalId || !it.actionId || it.refreshRequired);
+      const decisionPending = !refreshRequired && (it.status === "pending" || it.status === "error");
       const statusCopy = commandApprovalStatusCopy(it.status);
       const amendment = (it.suggestedAmendment || "").trim();
       return (
@@ -1817,7 +1822,7 @@ export const TranscriptList = memo(function TranscriptList({
                     </button>
                   </>
                 ) : (
-                  <span className="text-faint">{statusCopy}</span>
+                  <span className="text-faint">{refreshRequired ? "Refresh this conversation to decide this approval." : statusCopy}</span>
                 )}
               </div>
             </div>
@@ -2166,12 +2171,6 @@ export const TranscriptList = memo(function TranscriptList({
           </span>
         </div>
       )}
-      <div
-        data-testid="feed-bottom-clearance"
-        aria-hidden
-        className="feed-bottom-clearance shrink-0 w-full pointer-events-none"
-        style={{ height: "var(--feed-chrome-clearance, clamp(72px, 12vh, 144px))" }}
-      />
     </div>
   );
 });

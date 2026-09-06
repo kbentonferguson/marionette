@@ -1,10 +1,12 @@
+import { withEndpointDiscovery, withDesktopEndpointDiscovery } from "./endpointFixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  vi.resetModules();
   fetchMock.mockReset();
-  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("fetch", vi.fn(withEndpointDiscovery(fetchMock)));
 });
 
 afterEach(() => {
@@ -16,28 +18,26 @@ afterEach(() => {
 
 describe("nativeGit HTTP fallback", () => {
   it("falls back to /api/git/status when IPC git bridge is missing", async () => {
-    const getJSON = vi.fn().mockResolvedValue({
-      ok: true,
-      branch: "main",
-      files: [{ status: " M", path: "a.ts" }],
+    const requestJSON = vi.fn().mockResolvedValue({
+      kind: "response", status: 200, correlationId: "git-trace",
+      text: JSON.stringify({ ok: true, branch: "main", files: [{ status: " M", path: "a.ts" }] }),
     });
-    (window as any).harnessIPC = { getJSON };
+    (window as any).harnessIPC = { endpointHeaders: true, requestJSON: withDesktopEndpointDiscovery(requestJSON) };
     (window as any).__HARNESS_TOKEN__ = "tok";
 
     const { nativeGit } = await import("../lib/transport");
     const res = await nativeGit.status(".");
     expect(res.ok).toBe(true);
     expect(res.files).toHaveLength(1);
-    expect(getJSON).toHaveBeenCalledWith(expect.stringContaining("/api/git/status?"));
+    expect(requestJSON).toHaveBeenCalledWith("GET", expect.stringContaining("/api/git/status?"), undefined,
+      expect.any(String), expect.objectContaining({ "X-Harness-Protocol": "1", "X-Harness-Endpoint": "fixture-endpoint", "X-Harness-Boot": "fixture-boot" }));
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("uses fetch when no harnessIPC bridge exists (web build)", async () => {
     (window as any).__HARNESS_TOKEN__ = "tok";
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, branch: "main", files: [{ status: " M", path: "a.ts" }] }),
-    });
+    fetchMock.mockResolvedValue(Response.json({ ok: true, branch: "main", files: [{ status: " M", path: "a.ts" }] }));
 
     const { nativeGit } = await import("../lib/transport");
     const res = await nativeGit.status(".");
@@ -57,20 +57,25 @@ describe("nativeGit HTTP fallback", () => {
     expect(res.ok).toBe(true);
     expect(status).toHaveBeenCalledWith("/repo");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to HTTP when IPC git returns ok:false", async () => {
     const status = vi.fn().mockResolvedValue({ ok: false, error: "ipc fail" });
-    (window as any).harnessIPC = { git: { status } };
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, branch: "main", files: [] }),
+    const requestJSON = vi.fn().mockResolvedValue({
+      kind: "response", status: 200, correlationId: "git-trace",
+      text: JSON.stringify({ ok: true, branch: "main", files: [] }),
     });
+    (window as any).harnessIPC = { git: { status }, endpointHeaders: true, requestJSON: withDesktopEndpointDiscovery(requestJSON) };
 
     const { nativeGit } = await import("../lib/transport");
     const res = await nativeGit.status(".");
     expect(res.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalled();
+    expect(status).toHaveBeenCalledWith(".");
+    expect(requestJSON).toHaveBeenCalledWith("GET", expect.stringContaining("/api/git/status?"), undefined,
+      expect.any(String), expect.objectContaining({ "X-Harness-Boot": "fixture-boot" }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

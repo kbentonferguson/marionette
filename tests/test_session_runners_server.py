@@ -235,6 +235,7 @@ def test_checkpoint_binds_to_turn_session_not_active_view(tmp_path):
     import harness.server as srv
 
     old_sessions = srv._sessions
+    old_runners = srv._runners
     old_pilot = srv._pilot
     old_cfg_state = srv._cfg.state_dir
     old_cfg_repo = srv._cfg.repo
@@ -259,6 +260,9 @@ def test_checkpoint_binds_to_turn_session_not_active_view(tmp_path):
         )
 
         srv._sessions = store
+        srv._runners = SessionRunnerRegistry()
+        srv._runners.get_or_create(sid_a, lambda: pilot_a)
+        srv._runners.get_or_create(sid_b, lambda: pilot_b)
         srv._cfg.state_dir = state_dir
         # Simulate: turn started on A, then UI switched active view to B.
         turn_ctx = {"session_id": sid_a, "pilot": pilot_a}
@@ -273,6 +277,7 @@ def test_checkpoint_binds_to_turn_session_not_active_view(tmp_path):
         assert loaded_b == []  # B must not be overwritten by A's checkpoint
     finally:
         srv._sessions = old_sessions
+        srv._runners = old_runners
         srv._pilot = old_pilot
         srv._cfg.state_dir = old_cfg_state
         srv._cfg.repo = old_cfg_repo

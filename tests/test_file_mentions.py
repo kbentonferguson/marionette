@@ -94,16 +94,16 @@ def test_read_file_mention_io_failure_honesty():
     )
 
 
-def test_at_file_quoted_spaced_path_on_send():
+def test_at_file_quoted_spaced_path_on_send(owned_server):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
         spaced = os.path.join(real_tmp, "cool file.txt")
         with open(spaced, "w") as fh:
             fh.write("SPACED CONTENTS")
 
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -117,10 +117,9 @@ def test_at_file_quoted_spaced_path_on_send():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
-                msg = 'Look at @"cool file.txt"'
+                msg = '  Look at @"cool file.txt"\n\t'
                 res = _get(
                     port,
                     "/api/chat?message=" + urllib.parse.quote(msg),
@@ -133,6 +132,10 @@ def test_at_file_quoted_spaced_path_on_send():
 
                 mock_pilot.send.assert_called_once()
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == msg
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced files:" in sent_msg
                 assert "--- File: cool file.txt ---" in sent_msg
                 assert "SPACED CONTENTS" in sent_msg
@@ -141,12 +144,12 @@ def test_at_file_quoted_spaced_path_on_send():
                 httpd.shutdown()
 
 
-def test_at_file_confinement_rejects_outside():
+def test_at_file_confinement_rejects_outside(owned_server):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -160,8 +163,7 @@ def test_at_file_confinement_rejects_outside():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(
                     port,
@@ -174,6 +176,10 @@ def test_at_file_confinement_rejects_outside():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == '@"../outside"'
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 # Path-like outside tokens get an honest File skip — never silent,
                 # and never treated as a CodeGraph symbol name.
                 assert "Referenced files:" in sent_msg
@@ -184,16 +190,16 @@ def test_at_file_confinement_rejects_outside():
                 httpd.shutdown()
 
 
-def test_at_file_truncation_honesty_on_send():
+def test_at_file_truncation_honesty_on_send(owned_server):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
         big = os.path.join(real_tmp, "huge.txt")
         with open(big, "w") as fh:
             fh.write("Z" * (50 * 1024 + 40))
 
-        mock_pilot = MagicMock()
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
+        mock_pilot = owned_server._pilot
+        mock_pilot.send = MagicMock(side_effect=lambda *_a, **_k: (_ for _ in ()))
+        mock_pilot.drain_swarm_results = MagicMock(return_value=[])
 
         with patch("harness.server._pilot", mock_pilot), patch(
             "harness.server._pilot_preflight", return_value=None
@@ -207,8 +213,7 @@ def test_at_file_truncation_honesty_on_send():
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
-                sess = srv_inst._sessions.create()
-                srv_inst._sessions._active = sess["id"]
+                assert srv_inst._runners.get(srv_inst._sessions.active) is mock_pilot
 
                 res = _get(port, "/api/chat?message=@huge.txt", headers)
                 while True:
@@ -217,6 +222,10 @@ def test_at_file_truncation_honesty_on_send():
                         break
 
                 sent_msg = mock_pilot.send.call_args[0][0]
+                receipt, = mock_pilot.input_receipts()
+                assert receipt["original_text"] == "@huge.txt"
+                assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
+                assert sent_msg != receipt["original_text"]
                 assert "Referenced files:" in sent_msg
                 assert "truncated" in sent_msg
                 assert "50KB per-file cap" in sent_msg

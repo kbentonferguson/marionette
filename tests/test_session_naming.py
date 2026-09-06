@@ -123,7 +123,7 @@ def test_sessions_rename_endpoint(tmp_path):
         httpd.shutdown()
 
 
-def test_first_message_auto_titles(tmp_path):
+def test_first_message_auto_titles(tmp_path, monkeypatch):
     httpd, port, srv = _server()
     srv._cfg.state_dir = str(tmp_path)
     srv._sessions.path = str(tmp_path / "harness_sessions.json")
@@ -134,15 +134,18 @@ def test_first_message_auto_titles(tmp_path):
         sess = srv._sessions.create()
         sid = sess["id"]
         assert sess["title"] == "New session"
+        pilot = srv._attach_view(sid, load_transcript_on_create=False)
+        monkeypatch.setattr(pilot, "send", lambda *_a, **_k: (event for event in ()))
+        monkeypatch.setattr(srv, "_pilot_preflight", lambda: None)
         
-        # Mock actual streaming chat call
-        # It should trigger set_title_if_default
-        try:
-            _get(port, f"/api/chat?message={urllib.parse.quote('why does /api/usage return 0?')}")
-        except Exception:
-            # We don't care if the actual stream fails (e.g. key/preflight issues)
-            # because the auto-titling logic runs first
-            pass
+        with _get(port, f"/api/chat?message={urllib.parse.quote('why does /api/usage return 0?')}") as response:
+            assert response.status == 200
+            for line in response:
+                if line.startswith(b"data: "):
+                    event = json.loads(line[6:])
+                    assert event["kind"] != "error", event
+                    if event["kind"] == "done":
+                        break
 
         # urlopen returns as soon as the SSE headers arrive; the handler updates
         # the title immediately after those headers on another thread.

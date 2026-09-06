@@ -112,6 +112,7 @@ def test_home_session_create_rerecords_after_forget(tmp_path, monkeypatch):
         save_active_transcript=lambda: None,
         attach_view=lambda *a, **k: None,
         sync_pilot_session_id=lambda: None,
+        clear_active_pilot=lambda: None,
         diag=lambda *a: None,
         is_app_install_root=lambda p: False,
         ensure_home_workspace=srv._ensure_home_workspace,

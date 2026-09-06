@@ -16,6 +16,7 @@ import http.client
 import json
 import os
 import socket
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Dict, List, Optional
@@ -137,6 +138,19 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._pin = pin
         super().__init__(*args, **kwargs)
 
+    # Python 3.9 has no 308 dispatch; use the same validated redirect path.
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
+    @staticmethod
+    def _origin(url):
+        parsed = urllib.parse.urlsplit(url)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").encode("idna").decode("ascii").lower()
+        port = parsed.port
+        if port is None:
+            port = {"http": 80, "https": 443}.get(scheme)
+        return scheme, host, port
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         from .url_safety import is_safe_url_pinned, normalize_url_for_request
 
@@ -150,8 +164,25 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         if self._pin is not None and pinned_ip:
             ip = pinned_ip.split("%")[0] if "%" in pinned_ip else pinned_ip
             self._pin.ip = ip
+        same_origin = self._origin(req.full_url) == self._origin(newurl)
         newurl = normalize_url_for_request(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        compatible_code = 307 if code == 308 and req.get_method() in {"GET", "HEAD"} else code
+        redirected = super().redirect_request(req, fp, compatible_code, msg, headers, newurl)
+        # Configured credential names are arbitrary: only transport metadata
+        # may cross origins. Host must be regenerated for the destination.
+        safe_headers = {"accept", "accept-encoding", "user-agent", "mcp-protocol-version"}
+        for name in list(redirected.headers):
+            if name.lower() == "host" or (not same_origin and name.lower() not in safe_headers):
+                redirected.remove_header(name)
+        # urllib drops this separate store wholesale. Preserve same-origin
+        # credentials (and safe cross-origin metadata), keeping wire precedence.
+        for name, value in req.unredirected_hdrs.items():
+            if name.lower() in {"host", "content-length", "content-type"}:
+                continue
+            if same_origin or name.lower() in safe_headers:
+                redirected.remove_header(name)
+                redirected.add_unredirected_header(name, value)
+        return redirected
 
 
 class HttpMcpClient:

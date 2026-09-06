@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Callable, Optional
+from .pilot_replacement import replacement_gate
 
 DEFAULT_MAX_CONCURRENT_SESSIONS = 3
 
@@ -109,6 +110,8 @@ def _is_busy(runner: Any) -> bool:
     Deferred cold-attach shells mid-build also count as busy: eviction already
     skips them, and lease_exhausted busy lists must not report them idle.
     """
+    if getattr(runner, "_input_admissions", 0):
+        return True
     if getattr(runner, "defer_building", False):
         return True
     fn = getattr(runner, "is_turn_busy", None)
@@ -201,9 +204,14 @@ class SessionRunnerRegistry:
         replace the SAME view's runner and copy meters must pass
         ``notify=False`` to avoid double-counting.
         """
-        runner = self._runners.pop(session_id, None)
+        runner = self._runners.get(session_id)
         if runner is None:
             return None
+        with replacement_gate(runner):
+            if getattr(runner, '_input_admissions', 0):
+                raise RuntimeError('input admission in progress -- retry removing the session')
+            runner._replacement_retired = True
+            self._runners.pop(session_id, None)
         try:
             self._order.remove(session_id)
         except ValueError:
@@ -238,6 +246,8 @@ class SessionRunnerRegistry:
         False for placeholder→real so meters are not folded).
         """
         old = self._runners.get(session_id)
+        if old is runner:
+            return old
         if old is None:
             if len(self._runners) >= self._max:
                 self._evict_idle_oldest_first()
@@ -248,7 +258,11 @@ class SessionRunnerRegistry:
             self._runners[session_id] = runner
             self._order.append(session_id)
             return None
-        self._runners[session_id] = runner
+        with replacement_gate(old):
+            if getattr(old, '_input_admissions', 0):
+                raise RuntimeError('input admission in progress -- retry replacing the runner')
+            old._replacement_retired = True
+            self._runners[session_id] = runner
         if notify and self._on_drop is not None:
             try:
                 self._on_drop(session_id, old)
@@ -270,9 +284,9 @@ class SessionRunnerRegistry:
         runner = self._runners.get(session_id)
         if runner is None:
             return "missing"
-        # Cold-attach placeholders are busy for leases, but must not paint the
-        # composer as mid-turn "thinking" (New Session spinner flash).
-        if getattr(runner, "defer_building", False):
+        # Runner construction reserves a lease without starting a model turn.
+        if (getattr(runner, "defer_building", False)
+                or getattr(runner, "_replacement_pending", False)):
             return "attaching"
         return "running" if _is_busy(runner) else "idle"
 

@@ -99,7 +99,7 @@ def _schema_bytes(schema: list) -> str:
     return json.dumps(schema, sort_keys=True, separators=(",", ":"))
 
 
-def test_first_send_captures_snapshot_second_reuses_object(monkeypatch):
+def test_first_send_caches_schema_but_dispatch_gets_isolated_copy(monkeypatch):
     monkeypatch.setenv("HARNESS_TOOL_DISCOVERY", "1")
     mcp = _MutableMcp([])
     session = _session(mcp)
@@ -107,7 +107,8 @@ def test_first_send_captures_snapshot_second_reuses_object(monkeypatch):
     first = session._tools_schema_snapshot
     assert first is not None
     assert session.pilot.tools_seen
-    assert session.pilot.tools_seen[0] is first
+    assert session.pilot.tools_seen[0] == first
+    assert session.pilot.tools_seen[0] is not first
     first_bytes = _schema_bytes(first)
 
     mcp._tools.append(_mcp_tool("github", "create_issue", "Create issue"))
@@ -115,7 +116,9 @@ def test_first_send_captures_snapshot_second_reuses_object(monkeypatch):
     second = session._build_visible_tools_schema()
     assert second is first
     assert _schema_bytes(second) == first_bytes
-    assert session.pilot.tools_seen[-1] is first
+    assert session.pilot.tools_seen[-1] == first
+    assert session.pilot.tools_seen[-1] is not first
+    assert session.pilot.tools_seen[-1] is not session.pilot.tools_seen[0]
 
 
 def test_reload_hatch_rebuilds_after_discovered_tools_change(monkeypatch):

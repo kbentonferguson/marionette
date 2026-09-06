@@ -157,10 +157,22 @@ from .api.cost import (  # noqa: E402
 from .api.swarm_cost import _cache_saved_usd_swarm_detail  # noqa: E402
 
 
+def _clear_active_pilot() -> None:
+    global _pilot
+    with _pilot_swap_lock:
+        active_id = _runners.active_view_id
+        if active_id:
+            _runners.detach_view(active_id)
+        _pilot = None
+
+
 def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
+    session_id = _runners.active_view_id or _sessions.active or ""
+    if isinstance(_pilot, ConversationalSession) and session_id:
+        _pilot.bind_prompt_queue(_sessions_state_dir(), session_id)
     try:
-        _pilot.harness_session_id = _runners.active_view_id or _sessions.active or ""
+        _pilot.harness_session_id = session_id
         reload_goal = getattr(_pilot, "reload_session_goal", None)
         if callable(reload_goal):
             reload_goal()
@@ -1110,7 +1122,7 @@ _runners._on_drop = _fold_runner_meters_into_boot_carry
 _mcp = McpManager()
 # Serialize pilot rebinds so a /api/pilot swap and a workspace-switch rebuild
 # cannot interleave their history-copy/rebind steps and leave a torn _pilot.
-_pilot_swap_lock = threading.Lock()
+_pilot_swap_lock = threading.RLock()
 # One-shot resume latch for self-edit backend restarts. Set ONLY by
 # /api/session/persist or /api/restart (the explicit restart path); never by a
 # trailing user turn alone. Survives *same Electron app-run* backend respawn via
@@ -1516,6 +1528,8 @@ def _session_services():
         save_active_transcript=_save_active_transcript,
         attach_view=_attach_view,
         sync_pilot_session_id=_sync_pilot_session_id,
+        clear_active_pilot=_clear_active_pilot,
+        pilot_swap_lock=_pilot_swap_lock,
         diag=_diag,
         is_app_install_root=_is_app_install_root,
         ensure_home_workspace=_ensure_home_workspace,
@@ -1557,6 +1571,8 @@ def _stream_services():
         finalize_turn=_finalize_turn,
         upload_dir=_UPLOAD_DIR,
         auto_budget_from_env=lambda: AutoBudget.from_env(),
+        pilot_swap_lock=_pilot_swap_lock,
+        get_runners=lambda: _runners,
     )
 
 
@@ -1912,6 +1928,7 @@ def _usage_services():
         retry_on_locked=_retry_on_locked,
         diag=_diag,
         get_pilot=lambda: _pilot,
+        get_runner=_runners.get,
     )
 
 
@@ -2088,37 +2105,40 @@ def _perform_pilot_swap(model: str) -> None:
     Freezes cost meters into boot carry at the OLD pilot's rates before the
     rebuild so historical ``est_cost_usd`` cannot jump when the new model is
     cheaper or dearer. Token meters are not copied onto the replacement.
-    Caller must ensure the pilot is not mid-turn. Raises on build failure.
+    Reserves the idle runner through publication. Raises on busy/build failure.
     """
     global _pilot
-    # Finish deferred cold build before reading history — placeholders keep
-    # turns in _transcript with empty _history; copying that would wipe disk.
-    if is_deferred_placeholder(_pilot) or callable(
-        getattr(_pilot, "ensure_ready", None)
-    ):
-        _ensure_active_pilot_ready()
+    from .pilot_replacement import LivePilotReplacement, prepare_replacement
+
+    _ensure_active_pilot_ready()
     with _pilot_swap_lock:
-        old_history = _history_for_pilot_swap(_pilot)
-        old_auto_distill = getattr(_pilot, "_auto_distill", False)
-        old_pilot = _pilot
-        # Freeze spend at old rates before retargeting _cfg.driver.
-        try:
-            _freeze_pilot_meters_into_boot_carry(old_pilot)
-        except Exception:
-            pass
-        # S3: pilot swap owns the outgoing warm ACP process.
-        try:
-            release = getattr(old_pilot, "release_warm_acp", None)
-            if callable(release):
-                release(reason="session_switch")
-        except Exception:
-            pass
+        old_pilot = _ensure_active_pilot_ready()
+        active_id = _runners.active_view_id or _sessions.active
         prev_driver = _cfg.driver
         try:
-            _cfg.driver = model
-            _apply_model_context_window()
-            # Frozen per-runner config; meters already in carry -- start clean.
-            _pilot = ConversationalSession(_runner_config_snapshot())
+            with LivePilotReplacement(old_pilot) as replacement:
+                running_driver = getattr(getattr(old_pilot, "config", None), "driver", None)
+                if isinstance(running_driver, str) and running_driver.strip():
+                    prev_driver = running_driver
+                _cfg.driver = model
+                _apply_model_context_window()
+                config = _runner_config_snapshot()
+                runtime_dir = getattr(old_pilot, "state_dir", None)
+                if isinstance(runtime_dir, str) and runtime_dir:
+                    config = _dc_replace(config, state_dir=runtime_dir)
+                new_pilot = ConversationalSession(config)
+                _bind_pilot_services(new_pilot)
+                prepare_replacement(old_pilot, new_pilot, active_id or "",
+                                    _sessions_state_dir(), _history_for_pilot_swap(old_pilot),
+                                    actions_snapshot=replacement.actions_snapshot)
+                if (_pilot is not old_pilot
+                        or (_runners.active_view_id or _sessions.active) != active_id
+                        or (active_id and _runners.get(active_id) is not old_pilot)):
+                    raise RuntimeError("active session changed while replacing pilot")
+                if active_id:
+                    _runners.replace(active_id, new_pilot, notify=False)
+                _pilot = new_pilot
+                replacement.commit()
         except Exception:
             _cfg.driver = prev_driver
             try:
@@ -2126,25 +2146,17 @@ def _perform_pilot_swap(model: str) -> None:
             except Exception as e:
                 _diag("server.pilot_swap_context_rollback", e)
             raise
-        if old_history is not None:
-            _pilot._history = old_history
-        _pilot._auto_distill = old_auto_distill
-        _pilot._mcp = _mcp
+        # Preparation failures never fold meters or close the working driver.
         try:
-            _bind_pilot_services(_pilot)
-        except Exception:
-            # Older call sites relied on bare _mcp assign; binding is best-effort.
-            pass
-        try:
-            _sync_pilot_session_id()
+            _freeze_pilot_meters_into_boot_carry(old_pilot)
         except Exception:
             pass
-        active_id = _sessions.active or _runners.active_view_id
-        if active_id:
-            # notify=False: meters already frozen above; drop must not re-fold.
-            _runners.drop(active_id, notify=False)
-            _runners.get_or_create(active_id, lambda: _pilot)
-            _runners.set_active_view(active_id)
+        try:
+            release = getattr(old_pilot, "release_warm_acp", None)
+            if callable(release):
+                release(reason="session_switch")
+        except Exception as e:
+            _diag("server.pilot_swap_warm_acp_close", e)
     _save_workspace_driver(_cfg.repo, model)
 
 
@@ -2343,6 +2355,26 @@ from .api.wiki import (  # noqa: E402
     wiki_status_extras as _wiki_status_extras,
 )
 
+_endpoint_instance = None
+_endpoint_lock = threading.Lock()
+
+
+def _endpoint_identity():
+    from pathlib import Path
+    from puppetmaster.host_lifecycle import record_host_start
+    from .endpoint_identity import EndpointIdentity
+
+    global _endpoint_instance
+    with _endpoint_lock:
+        if _endpoint_instance is None:
+            record = record_host_start(_session.state().store)
+            boot_id = getattr(record, "boot_id", "")
+            _endpoint_instance = EndpointIdentity(
+                Path(_state_home()) / "endpoint_identity.json", boot_id,
+            )
+        return _endpoint_instance
+
+
 # Per-process auth token (defense-in-depth). Written owner-only (chmod 600 on
 # POSIX, NTFS ACL on Windows) so the local client (Electron main / served page)
 # can read it; required on mutating endpoints. Origin/Host validation below is
@@ -2526,6 +2558,7 @@ def _route_services():
     """Service factories + helpers closed over by http_routes tables."""
     from types import SimpleNamespace
     return SimpleNamespace(
+        endpoint_identity=lambda: _endpoint_identity(),
         review_services=_review_services,
         job_services=_job_services,
         session_control_services=_session_control_services,
@@ -2577,6 +2610,12 @@ def _get_routes():
     return _GET_ROUTES
 
 
+def _device_grants():
+    from pathlib import Path
+    from .device_grants import DeviceGrantStore
+    return DeviceGrantStore(Path(_state_home()) / 'devices', _endpoint_identity().endpoint_id)
+
+
 class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self):
         # A client (the Electron renderer) closing the socket mid-request --
@@ -2597,7 +2636,10 @@ class Handler(BaseHTTPRequestHandler):
             from .correlation import get_correlation_id
             from .diag import note
 
-            msg = fmt % args if args else str(fmt)
+            if '?' in getattr(self, 'path', '') or 'X-Harness-Device-Token' in getattr(self, 'headers', {}) or getattr(self, 'path', '').startswith('/api/device'):
+                msg = 'device or query request (target omitted)'
+            else:
+                msg = fmt % args if args else str(fmt)
             cid = get_correlation_id()
             note("server.access", msg=f"{cid} {msg}" if cid else msg)
         except Exception:
@@ -2609,7 +2651,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if origin and origin != "null" and _origin_ok(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token, X-Correlation-Id")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token, X-Correlation-Id, X-Harness-Protocol, X-Harness-Endpoint, X-Harness-Boot")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
     def _bind_correlation(self) -> None:
@@ -2623,10 +2665,24 @@ class Handler(BaseHTTPRequestHandler):
         """Reject cross-origin / rebound / unauthenticated requests. Returns True
         if the request should be BLOCKED (and sends the 403)."""
         self._bind_correlation()
+        from .api.devices import ambiguous_headers, handle
+        if ambiguous_headers(self.headers):
+            self.close_connection = True
+            self._send(400, json.dumps({'error': 'ambiguous headers'}))
+            return True
         if not _host_ok(self.headers.get("Host", "")):
             self._send(403, json.dumps({"error": "host not allowed"})); return True
         if not _origin_ok(self.headers.get("Origin", "")):
             self._send(403, json.dumps({"error": "origin not allowed"})); return True
+        if handle(self, _device_grants, _endpoint_identity, lambda: _sessions.path, _sse_ring_lookup):
+            return True
+        from .api.endpoint import validate_request
+        # Device credentials never fall through to the local owner credential.
+        if "X-Harness-Device-Token" in self.headers or self._token_ok():
+            failure = validate_request(self.headers, urlparse(self.path).path, _endpoint_identity)
+            if failure is not None:
+                self._send(failure[0], json.dumps(failure[1]))
+                return True
         return False
 
     def _token_ok(self) -> bool:
@@ -2634,10 +2690,15 @@ class Handler(BaseHTTPRequestHandler):
         # treated as untrusted data (prevents token leakage into logs/errors).
         # Sole exception: legacy Electron streaming GETs from a loopback peer
         # (see legacy_stream_query_token_ok, applied in do_GET only).
-        return _secrets.compare_digest(self.headers.get("X-Harness-Token", ""), _TOKEN)
+        try:
+            return _secrets.compare_digest(self.headers.get("X-Harness-Token", ""), _TOKEN)
+        except TypeError:
+            return False
 
     def _legacy_stream_token_ok(self, u) -> bool:
         """TEMPORARY update-skew compat -- see legacy_stream_query_token_ok."""
+        if "X-Harness-Protocol" in self.headers or "X-Harness-Device-Token" in self.headers:
+            return False
         return legacy_stream_query_token_ok(
             method=self.command or "",
             path=u.path,
@@ -2651,6 +2712,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if getattr(self, '_device_no_store', False):
+            self.send_header('Cache-Control', 'no-store')
         try:
             from .correlation import get_correlation_id
 
@@ -2679,7 +2742,18 @@ class Handler(BaseHTTPRequestHandler):
         status, body, ctype = _wiki_api.handle_wiki_connect(parse_qs(u.query))
         return self._send(status, body, ctype)
 
+    def do_HEAD(self):
+        if not self._guard():
+            self._send(405, '')
+
+    do_PUT = do_HEAD
+    do_PATCH = do_HEAD
+    do_TRACE = do_HEAD
+    do_CONNECT = do_HEAD
+
     def do_OPTIONS(self):
+        if self._guard():
+            return
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_DELETE(self):
@@ -2788,6 +2862,9 @@ class Handler(BaseHTTPRequestHandler):
         # Loopback wiki handoff: browser navigates here with a one-shot nonce
         # (no harness token). Must run before the centralized auth gate.
         if u.path == "/api/wiki/connect":
+            from .api.devices import ambiguous_headers
+            if ("X-Harness-Device-Token" in self.headers or ambiguous_headers(self.headers)) and self._guard():
+                return
             return self._handle_wiki_connect(u)
         # CENTRALIZED AUTH GATE: every GET except wiki connect requires the
         # token. Electron talks over the authenticated IPC/token path; there
@@ -2838,10 +2915,10 @@ class Handler(BaseHTTPRequestHandler):
         from .api.streams import stream_run
         return stream_run(self, prompt, images, _stream_services())
 
-    def _stream_auto(self, objective: str, images=None):
+    def _stream_auto(self, objective: str, images=None, **receipt_args):
         """Stream the fully-auto loop (governor-bounded) over SSE."""
         from .api.streams import stream_auto
-        return stream_auto(self, objective, _stream_services(), images=images)
+        return stream_auto(self, objective, _stream_services(), images=images, **receipt_args)
 
     def _swap_pilot(self, model: str):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).
@@ -2860,12 +2937,31 @@ class Handler(BaseHTTPRequestHandler):
             self, sid, _terminal_services(), parse_terminal_start_offset(start_offset),
         )
 
-    def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False):
+    def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False, **receipt_args):
         """Stream the conversational PILOT loop over SSE."""
         from .api.streams import stream_chat
         return stream_chat(
-            self, message, images, _stream_services(), plan=plan, resume=resume,
+            self, message, images, _stream_services(), plan=plan, resume=resume, **receipt_args,
         )
+
+
+def _persist_turn_transcript(ctx) -> None:
+    with _pilot_swap_lock:
+        sid = ""
+        pilot = None
+        if ctx:
+            sid = (ctx.get("session_id") or "") if isinstance(ctx, dict) else ""
+            pilot = ctx.get("pilot") if isinstance(ctx, dict) else None
+        if not pilot:
+            pilot = _pilot
+        if not sid:
+            sid = getattr(pilot, "harness_session_id", "") or (_sessions.active or "")
+        if (getattr(pilot, "_replacement_pending", False)
+                or getattr(pilot, "_replacement_retired", False)):
+            return
+        if sid and pilot is not None and _runners.get(sid) is pilot:
+            save_transcript(_cfg.state_dir or _tf.gettempdir(),
+                            sid, pilot.export_transcript_data())
 
 
 def _checkpoint_transcript(ctx=None) -> None:
@@ -2878,18 +2974,7 @@ def _checkpoint_transcript(ctx=None) -> None:
     so a mid-turn view switch cannot overwrite the newly active session's file.
     """
     try:
-        sid = ""
-        pilot = None
-        if ctx:
-            sid = (ctx.get("session_id") or "") if isinstance(ctx, dict) else ""
-            pilot = ctx.get("pilot") if isinstance(ctx, dict) else None
-        if not pilot:
-            pilot = _pilot
-        if not sid:
-            sid = getattr(pilot, "harness_session_id", "") or (_sessions.active or "")
-        if sid and pilot is not None:
-            save_transcript(_cfg.state_dir or _tf.gettempdir(),
-                            sid, pilot.export_transcript_data())
+        _persist_turn_transcript(ctx)
     except Exception as e:
         import sys
         print(f"[transcript checkpoint error] {e!r}", file=sys.stderr)
@@ -2906,6 +2991,11 @@ def _finalize_turn(ctx) -> None:
     Prefer turn-bound session_id/pilot from ``ctx`` so a mid-turn view switch
     cannot overwrite the newly active session's transcript.
     """
+    pilot = ctx.get("pilot") if isinstance(ctx, dict) else _pilot
+    with _pilot_swap_lock:
+        if (getattr(pilot, "_replacement_pending", False)
+                or getattr(pilot, "_replacement_retired", False)):
+            return
     try:
         from .hooks import run_hooks
         run_hooks("postRun", ctx)
@@ -2913,18 +3003,7 @@ def _finalize_turn(ctx) -> None:
         import sys
         print(f"[postRun hook error] {e!r}", file=sys.stderr)
     try:
-        sid = ""
-        pilot = None
-        if ctx and isinstance(ctx, dict):
-            sid = ctx.get("session_id") or ""
-            pilot = ctx.get("pilot")
-        if not pilot:
-            pilot = _pilot
-        if not sid:
-            sid = getattr(pilot, "harness_session_id", "") or (_sessions.active or "")
-        if sid and pilot is not None:
-            save_transcript(_cfg.state_dir or _tf.gettempdir(),
-                            sid, pilot.export_transcript_data())
+        _persist_turn_transcript(ctx)
     except Exception as e:
         import sys
         print(f"[transcript persist error] {e!r}", file=sys.stderr)
@@ -3179,7 +3258,8 @@ def boot_mcp_servers(mcp: Any = None, diag: Any = None) -> None:
         note("mcp.boot_fail", exc=exc)
 
 
-def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> None:
+def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
+          lifetime_receipt: str | None = None) -> None:
     import errno
     import sys
     import urllib.request
@@ -3198,8 +3278,17 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except Exception:
             pass
 
+    lifetime = None
+    if lifetime_receipt:
+        if host != "127.0.0.1" or force:
+            raise ValueError("External backend requires loopback and no force")
+        from .backend_lifetime import prepare
+        lifetime = prepare(lifetime_receipt)
+
     marker_dir = _state_home()
     marker_path = os.path.join(marker_dir, "backend.json")
+    if lifetime is not None and os.path.exists(marker_path):
+        raise SystemExit("External backend marker already exists; resolve it through its owner")
 
     if not force:
         try:
@@ -3363,6 +3452,10 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
             except Exception:
                 pass
         threading.Thread(target=_boot_archive, name="chat-archive-ingest", daemon=True).start()
+        if lifetime is not None:
+            from pathlib import Path
+            lifetime.publish(port, _endpoint_identity().describe(), Path(_TOKEN_FILE))
+            atexit.register(lifetime.close)
         srv.serve_forever()
     except SystemExit:
         raise
@@ -3379,6 +3472,9 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
             pass
         raise
     finally:
+        if lifetime is not None:
+            lifetime.close()
+        srv.server_close()
         _mcp.stop_all()
         _cleanup_marker(marker_path, os.getpid())
 

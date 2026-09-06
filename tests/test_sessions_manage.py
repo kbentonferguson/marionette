@@ -7,6 +7,8 @@ import os
 from http.server import ThreadingHTTPServer
 
 import pytest
+from tests.test_session_queue_durability import factory
+from harness.session_runners import SessionRunnerRegistry
 from harness.sessions import save_transcript, load_transcript
 
 
@@ -260,7 +262,7 @@ def test_sessions_settle_rejects_unknown_and_foreign_workspace(tmp_path):
         httpd.shutdown()
 
 
-def test_sessions_delete_and_transcript_removal(tmp_path):
+def test_sessions_delete_and_transcript_removal(tmp_path, monkeypatch, factory):
     httpd, port, srv = _server()
     srv._cfg.state_dir = str(tmp_path)
     srv._cfg.repo = ""
@@ -274,6 +276,10 @@ def test_sessions_delete_and_transcript_removal(tmp_path):
         
         sid1 = meta1["id"]
         sid2 = meta2["id"]
+        monkeypatch.setattr(srv, '_runners', SessionRunnerRegistry())
+        monkeypatch.setattr(srv, '_pilot', factory(''))
+        srv._attach_view(sid2, factory=lambda: srv._pilot)
+
         
         # Save transcript for first session
         messages = [{"role": "user", "content": "hi session one"}]

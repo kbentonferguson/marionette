@@ -34,6 +34,13 @@ _GOOD_SUMMARY = (
 
 
 class MockPilot:
+    def fork_for_compaction(self, *, model):
+        from copy import copy
+        local = copy(self)
+        if model:
+            local.model = model
+        return local
+
     name = "mock"
 
     def __init__(self, return_text=_GOOD_SUMMARY):

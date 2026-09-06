@@ -46,14 +46,11 @@ describe("three-column board resize screenshots", () => {
     const result = runScreenshotScript();
     if (result.error || result.status !== 0) {
       const detail = [
+        `Electron exited with status ${result.status}, signal ${result.signal}`,
         result.error && result.error.message,
         result.stderr,
         result.stdout,
       ].filter(Boolean).join("\n");
-      if (process.platform === "linux" && /DISPLAY|xvfb|GPU|ozone|sandbox|SUID/i.test(detail)) {
-        assert.ok(true, "skipped headless electron screenshot: " + detail.slice(0, 200));
-        return;
-      }
       assert.equal(result.status, 0, detail);
     }
     const payload = JSON.parse((result.stdout || "").trim().split("\n").pop());

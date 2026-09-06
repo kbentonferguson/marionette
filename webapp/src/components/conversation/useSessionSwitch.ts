@@ -1,9 +1,10 @@
+import { lastSelectedProjectRoot } from "../../lib/panelTransition";
 /**
  * Warm-cache session switch effect. Mid-turn reattach lives in chatEventsReattach.
  */
 
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { api } from "../../lib/api";
+import { api, type InputDocument } from "../../lib/api";
 import { clearSessionTodos } from "../../lib/sessionTodos";
 import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
@@ -18,7 +19,6 @@ import {
 } from "./transcriptItems";
 import {
   clearRecoveredSessionFailNotice,
-  emptySessionSwitchState,
   emptyTranscriptAfterRetryDecision,
   runnerBusySwitchDecision,
   sessionStateFailureSwitchDecision,
@@ -30,6 +30,7 @@ import {
 import { resolveComposerDraftOnSwitch } from "./composerDraftCache";
 import {
   releaseDroppedComposerAttachmentPreviews,
+  resolveComposerDocumentsOnSwitch,
   resolveComposerAttachmentsOnSwitch,
   type ComposerAttachedImage,
 } from "./composerAttachmentCache";
@@ -113,6 +114,8 @@ export type UseSessionSwitchDeps = {
   setInput: Dispatch<SetStateAction<string>>;
   /** Live composer text; kept in sync by Conversation for per-session draft cache. */
   composerInputRef: MutableRefObject<string>;
+  setAttachedDocuments?: Dispatch<SetStateAction<InputDocument[]>>;
+  attachedDocumentsRef?: MutableRefObject<InputDocument[]>;
   setAttachedImages: Dispatch<SetStateAction<ComposerAttachedImage[]>>;
   /** Live composer attachments; kept in sync by Conversation for per-session cache. */
   attachedImagesRef: MutableRefObject<ComposerAttachedImage[]>;
@@ -236,6 +239,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       composerInputRef.current = restored;
       setInput(restored);
 
+      if (deps.attachedDocumentsRef && deps.setAttachedDocuments) {
+        const docs = resolveComposerDocumentsOnSwitch(prevId, activeSessionId, deps.attachedDocumentsRef.current);
+        deps.attachedDocumentsRef.current = docs;
+        deps.setAttachedDocuments(docs);
+      }
       // Per-session composer attachments: same cache/restore contract as drafts.
       // Keep outgoing blob URLs alive in the cache; only revoke uncached drops.
       const currentAttachments = attachedImagesRef.current;
@@ -329,14 +337,11 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     cachedSessionIdRef.current = activeSessionId;
 
     if (!activeSessionId) {
-      // Project/session list may briefly report no active id while the next
-      // root's sessions load. Keep prior transcript dimmed instead of flashing
-      // the first-run empty placeholder; clear only when there was nothing.
-      const emptySwitch = emptySessionSwitchState(itemsRef.current.length);
-      if (emptySwitch.clearItems) {
-        setItems([]);
-      }
-      setTranscriptStale(emptySwitch.stale);
+      // LeftRail preserves the prior ID during project loads. Null means the
+      // active session was explicitly removed, or none has been selected yet.
+      itemsRef.current = [];
+      setItems([]);
+      setTranscriptStale(false);
       setSessionSwitchPending(false);
       setTurnOpen(false);
       setStatus("idle");
@@ -412,6 +417,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       }
       void startChatEventsReattach();
     };
+    const artifactRepo = lastSelectedProjectRoot();
     const readStillCurrent = captureTranscriptRead(activeSessionId, itemsRef, streamGenRef);
     const applyRunnerBusy = (
       runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
@@ -576,7 +582,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         // Nested worker actions survive restart on local jobs; fold onto cards
         // after display hydrate so investigation rows stay complete on reload.
         // Same shouldApplySwarmLiveMerge fence as the busy-poll path in Conversation.
-        void api.swarmLive().then((live) => {
+        const liveRead = api.swarmLive(artifactRepo || undefined);
+        void liveRead.then((live) => {
           const pollSid = activeSessionId;
           if (!shouldApplySwarmLiveMerge({
             pollGen: loadGen,
@@ -635,21 +642,20 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           );
         });
 
-        // Gather all artifacts from (a) card entries in res.display + job fetches.
-        const artsOrPromise = gatherSessionArtifacts({
+        // Reuse the live read for JobRefs; never resolve a transcript id alone.
+        const artifactCurrent = () => !cancelled && loadGen === transcriptLoadGenRef.current
+          && cachedSessionIdRef.current === activeSessionId
+          && lastSelectedProjectRoot() === artifactRepo;
+        void liveRead.catch(() => null).then(live => gatherSessionArtifacts({
           display: res.display,
           jobIds: res.job_ids,
-          stillCurrent: () => loadGen === transcriptLoadGenRef.current,
+          jobs: live?.jobs,
+          repo: artifactRepo,
+          sessionId: activeSessionId,
+          stillCurrent: artifactCurrent,
+        })).then(unique => {
+          if (artifactCurrent() && unique.length > 0) onArtifacts(unique);
         });
-        const emitArts = (unique: { type: string; headline: string }[]) => {
-          if (loadGen !== transcriptLoadGenRef.current) return;
-          if (unique.length > 0) onArtifacts(unique);
-        };
-        if (artsOrPromise instanceof Promise) {
-          void artsOrPromise.then(emitArts);
-        } else {
-          emitArts(artsOrPromise);
-        }
 
       })
       .catch(() => {

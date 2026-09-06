@@ -4,10 +4,10 @@ Wiki rule Concurrency Seam Testing (v0.9.105): contend the lock with a
 barrier, then assert the post-join partition. No wall-clock latency checks.
 
 Production seam (harness/steer_mixin.py):
-- drop_queued_steers:50 takes ``_steer_lock`` and returns stripped items
+- drop_queued_steers:50 takes ``_steer_lock`` and returns literal items
 - _abandoned_turn_blocks_steer_enqueue:174 is True only when
   ``_stop_holds_idle`` coincides with ``_busy.locked()``
-- enqueue_steer:194 strips blanks, refuses abandon, then appends under lock
+- enqueue_steer ignores blanks, refuses abandon, then appends under lock
 - drain_steer:211 pops the whole queue under the same lock
 """
 from __future__ import annotations
@@ -207,8 +207,12 @@ def test_enqueue_steer_ignores_blank_and_whitespace():
     assert list(host._steer_queue) == []
     assert host._pending_steer_drop_notice is None
 
-    host.enqueue_steer("  keep me  ")
-    assert host.drain_steer() == ["keep me"]
+    literal = "  keep me  "
+    host.enqueue_steer(literal)
+    action, = list(host._session_actions)
+    assert action.text == literal
+    assert host._format_steer_user_content(action.text) == literal
+    assert host.drain_steer() == [literal]
     assert list(host._session_actions) == []
 
 

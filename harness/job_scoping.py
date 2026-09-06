@@ -365,7 +365,7 @@ def resolve_job_accounting(
     owned = False
     scope = ACCOUNTING_SCOPE_VISIBILITY
 
-    if jid and jid in registered:
+    if source != "cli" and jid and jid in registered:
         owned = True
         scope = ACCOUNTING_SCOPE_MARIONETTE
     elif source == "cli":
@@ -427,10 +427,14 @@ def annotate_jobs_accounting(
     cli_cost_merge: bool | None = None,
 ) -> list[dict]:
     """Tag every visible job row with accounting ownership metadata."""
+    from .cli_job_merge import job_read_key
+
+    task_map = tasks_by_job or {}
     out: list[dict] = []
     for job in jobs or []:
         jid = job.get("id")
-        tasks = (tasks_by_job or {}).get(jid, []) if jid else []
+        key = job_read_key(job)
+        tasks = task_map.get(key, []) if job.get("source") == "cli" else task_map.get(jid, [])
         out.append(
             annotate_job_accounting(
                 job,

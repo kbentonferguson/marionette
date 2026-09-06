@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { api, type Config } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
@@ -24,6 +25,7 @@ import {
 } from "./components/conversation/composerInput";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
+import { SHELL_EXTRA_CENTER_W, useResponsiveShell } from "./lib/useResponsiveShell";
 import { reclampRailWidths } from "./lib/railLayout";
 import {
   setConfigured,
@@ -68,26 +70,44 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateAvailability | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
+    setActiveSessionId((current) => expectedPreviousId && current !== expectedPreviousId ? current : id);
+  }, []);
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
 
+  const [leftW, setLeftW] = useState(() => num(LS.left, 248));
+  const {
+    width, compact, view, setView, desktopLeftOpen, desktopRightOpen,
+    leftOpen, rightOpen, setLeftOpen, setRightOpen,
+  } = useResponsiveShell(bool(LS.leftOpen, true), bool(LS.rightOpen, false) && hasStoredRightPaneCards());
+  const previousSessionId = useRef<string | null>(null);
+  useEffect(() => {
+    if (compact && previousSessionId.current && previousSessionId.current !== activeSessionId) setView("chat");
+    previousSessionId.current = activeSessionId;
+  }, [activeSessionId, compact, setView]);
   useEffect(() => {
     setArtifacts([]);
-    // StatusBar tok/$ must not keep a prior session's spend painted under a
-    // new id (zeros-guard used to freeze stale 83.9k-style totals).
-    window.dispatchEvent(
-      new CustomEvent("harness-session-changed", {
-        detail: { sessionId: activeSessionId },
-      }),
-    );
+    window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: activeSessionId } }));
   }, [activeSessionId]);
-
-  const [leftW, setLeftW] = useState(() => num(LS.left, 248));
-  const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
-  // Default hidden: chat-first layout; RightDock surfaces floating tools.
-  const [rightOpen, setRightOpen] = useState(
-    () => bool(LS.rightOpen, false) && hasStoredRightPaneCards(),
-  );
+  const shellRef = useRef<HTMLDivElement>(null);
+  const navigationRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!compact) return;
+    const revealConversation = () => setView("chat");
+    window.addEventListener("harness-open-file", revealConversation);
+    return () => {
+      window.removeEventListener("harness-open-file", revealConversation);
+    };
+  }, [compact, setView]);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && shellRef.current?.contains(active)
+      && active.closest('[data-shell-hidden="true"]')) {
+      if (compact) navigationRef.current?.focus();
+      else shellRef.current?.focus();
+    }
+  }, [compact, leftOpen, rightOpen]);
   const [rightW, setRightW] = useState(() => num(LS.rightW, 520));
   const pendingRightTab = useRef<string | null>(null);
   const leftWRef = useRef(leftW);
@@ -98,41 +118,23 @@ export default function App() {
   const openRightTo = (tab: string) => {
     const target = tab || "state";
     pendingRightTab.current = target;
-    setRightOpen((open) => {
-      if (open) {
-        // Pane already mounted — the rightOpen effect only runs on transitions,
-        // so apply the focus now. Without this, Add key / hotkeys are no-ops
-        // when the right rail is already open.
-        pendingRightTab.current = null;
-        window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: target }));
-      }
-      return true;
-    });
+    if (rightOpen) {
+      pendingRightTab.current = null;
+      window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: target }));
+    }
+    setRightOpen(true);
   };
-  const closeEmptyRightPane = useCallback(() => setRightOpen(false), []);
+  const closeEmptyRightPane = useCallback(() => setRightOpen(false), [setRightOpen]);
   const toggleRight = useCallback(() => {
-    setRightOpen((open) => {
-      if (open) return false;
-      // First open (or re-open after every card was closed) must seed a tab.
-      // Bare setRightOpen(true) mounts an empty board that immediately
-      // onEmpty-closes — the Ctrl+J flash.
-      if (!hasStoredRightPaneCards()) {
-        pendingRightTab.current = lastRightTab();
-      }
-      return true;
-    });
-  }, []);
+    if (!rightOpen && !hasStoredRightPaneCards()) pendingRightTab.current = lastRightTab();
+    setRightOpen(!rightOpen);
+  }, [rightOpen, setRightOpen]);
   const requestRightMinWidth = useCallback((minPx: number) => {
-    const next = reclampRailWidths(
-      leftWRef.current,
-      Math.max(rightWRef.current, minPx),
-      leftOpen,
-      true,
-      window.innerWidth,
-    );
-    setLeftW(next.leftW);
-    setRightW(next.rightW);
-  }, [leftOpen]);
+    if (!compact) setRightW(previous => Math.max(previous, minPx));
+  }, [compact]);
+  // Reserve 480px for content plus the 68px dock, beyond railLayout's 360px center.
+  // Clamp presentation only; resizing the window must not rewrite saved widths.
+  const displayed = reclampRailWidths(leftW, rightW, leftOpen, rightOpen, width - SHELL_EXTRA_CENTER_W);
 
   const [showWizard, setShowWizard] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -227,28 +229,8 @@ export default function App() {
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
 
-  // Re-clamp persisted rail widths against the real window width on mount,
-  // when either rail opens/closes, and whenever the window shrinks. Resizers
-  // clamp only during a drag, so a wide saved layout restored into a small
-  // window could otherwise crush the chat column below MIN_CENTER_W.
-  useEffect(() => {
-    const reclampRails = () => {
-      const next = reclampRailWidths(
-        leftWRef.current,
-        rightWRef.current,
-        leftOpen,
-        rightOpen,
-        window.innerWidth,
-      );
-      setLeftW(next.leftW);
-      setRightW(next.rightW);
-    };
-    reclampRails();
-    window.addEventListener("resize", reclampRails);
-    return () => window.removeEventListener("resize", reclampRails);
-  }, [leftOpen, rightOpen]);
-  useEffect(() => { localStorage.setItem(LS.leftOpen, leftOpen ? "1" : "0"); }, [leftOpen]);
-  useEffect(() => { localStorage.setItem(LS.rightOpen, rightOpen ? "1" : "0"); }, [rightOpen]);
+  useEffect(() => { localStorage.setItem(LS.leftOpen, desktopLeftOpen ? "1" : "0"); }, [desktopLeftOpen]);
+  useEffect(() => { localStorage.setItem(LS.rightOpen, desktopRightOpen ? "1" : "0"); }, [desktopRightOpen]);
   useEffect(() => { localStorage.setItem(LS.rightW, String(rightW)); }, [rightW]);
 
   // After the floating tools become visible, apply pending focus from the dock / hotkeys.
@@ -264,14 +246,12 @@ export default function App() {
     const onFocusTab = (e: Event) => {
       const tab = (e as CustomEvent).detail;
       if (!tab || typeof tab !== "string") return;
-      setRightOpen((open) => {
-        if (!open) pendingRightTab.current = tab;
-        return true;
-      });
+      if (!rightOpen) pendingRightTab.current = tab;
+      setRightOpen(true);
     };
     window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
     return () => window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
-  }, []);
+  }, [rightOpen, setRightOpen]);
 
   // hotkeys (Cursor-style, adapted for the harness). Most map to panels/sessions/nav;
   // IDE-only ones (inline edit, autocomplete) do not apply to an orchestration harness.
@@ -302,7 +282,7 @@ export default function App() {
         case "i":                                                          // focus chat input (Cursor: toggle sidepanel)
         // Cmd/Ctrl+L focuses the composer. TerminalPane capture steals this
         // when the live xterm has a selection (Add to chat).
-        case "l": e.preventDefault(); window.dispatchEvent(new Event("harness-focus-input")); break;
+        case "l": e.preventDefault(); if (compact) flushSync(() => setView("chat")); window.dispatchEvent(new Event("harness-focus-input")); break;
         case "n":                                                          // new session (Cursor: new chat)
         case "r": e.preventDefault(); window.dispatchEvent(new Event("harness-new-session")); break;
         default: break;
@@ -310,7 +290,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleRight]);
+  }, [toggleRight, rightOpen, setRightOpen, setLeftOpen, compact, setView]);
 
   useEffect(() => {
     const ipc = (window as unknown as {
@@ -361,9 +341,18 @@ export default function App() {
           }}
         />
       )}
+      {compact && (
+        <nav aria-label="Workspace views" className="flex shrink-0 gap-2 px-2 py-1">
+          <button ref={navigationRef} type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={view === "chat"} onClick={() => setView("chat")}>Chat</button>
+          <button type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={leftOpen} onClick={() => setLeftOpen(v => !v)}>Sessions</button>
+          <button type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={rightOpen} onClick={toggleRight}>Panels</button>
+        </nav>
+      )}
       {/* Left rail and tool cards sit on the conversation surface. */}
       <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
         <div
+          ref={shellRef}
+          tabIndex={-1}
           className={`relative flex-1 min-w-0 h-full flex overflow-hidden border border-[var(--shell-panel-border)] ${
             leftOpen && rightOpen
               ? "rounded-none"
@@ -379,29 +368,28 @@ export default function App() {
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          {leftOpen && (
+          {(leftOpen || compact || desktopLeftOpen) && (
             <>
-              <div style={{ width: leftW }} className="shell-inset-panel shrink-0 h-full">
-                <LeftRail jobsRefresh={jobsRefresh} onSessionChange={setActiveSessionId} />
+              <div data-shell-hidden={!leftOpen} style={{ width: compact ? "100%" : displayed.leftW, display: leftOpen ? undefined : "none" }} className="shell-inset-panel shrink-0 h-full min-w-0">
+                <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
               </div>
-              <Resizer
+              {!compact && leftOpen && <Resizer
                 side="left"
                 onResize={(dx) => {
                   const next = reclampRailWidths(
-                    leftWRef.current + dx,
+                    displayed.leftW + dx,
                     rightWRef.current,
                     true,
                     rightOpen,
-                    window.innerWidth,
+                    width - SHELL_EXTRA_CENTER_W,
                   );
                   setLeftW(next.leftW);
-                  setRightW(next.rightW);
                 }}
-              />
+              />}
             </>
           )}
-          <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
-            <div className="flex-1 min-h-0 min-w-0">
+          <div className="relative flex-1 min-w-0 min-h-0 flex" style={{ display: compact && view !== "chat" ? "none" : undefined }} data-shell-hidden={compact && view !== "chat"}>
+            <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
               <ErrorBoundary label="Chat">
                 <Conversation
                   config={config}
@@ -418,25 +406,25 @@ export default function App() {
               onCollapse={() => setRightOpen(false)}
             />
           </div>
-          {rightOpen && (
+          {rightOpen && !compact && (
             <Resizer
               side="right"
               onResize={(dx) => {
                 const next = reclampRailWidths(
                   leftWRef.current,
-                  rightWRef.current + dx,
+                  displayed.rightW + dx,
                   leftOpen,
                   true,
-                  window.innerWidth,
+                  width - SHELL_EXTRA_CENTER_W,
                 );
-                setLeftW(next.leftW);
                 setRightW(next.rightW);
               }}
             />
           )}
           <div
             className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
-            style={{ width: rightW }}
+            data-shell-hidden={!rightOpen}
+            style={{ width: compact ? "100%" : displayed.rightW }}
           >
             <ErrorBoundary label="Tool board">
               <RightPane

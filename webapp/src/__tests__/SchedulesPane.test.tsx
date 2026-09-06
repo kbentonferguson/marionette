@@ -90,12 +90,10 @@ describe("SchedulesPane", () => {
     render(<SchedulesPane />);
     await waitFor(() => expect(screen.getByText("nightly")).toBeInTheDocument());
 
-    const checkbox = screen.getByTitle("Enable / disable") as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Pause nightly" }));
 
     await waitFor(() => {
-      expect(disableSchedule).toHaveBeenCalledWith("abc");
+      expect(disableSchedule).toHaveBeenCalledWith("abc", undefined);
       expect(getSchedules.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
@@ -120,7 +118,7 @@ describe("SchedulesPane", () => {
 
     render(<SchedulesPane />);
     await waitFor(() => expect(screen.getByText("nightly")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("History"));
+    fireEvent.click(screen.getByRole("button", { name: "History for nightly" }));
     await waitFor(() => {
       expect(getScheduleHistory).toHaveBeenCalledWith("abc", 20);
       expect(screen.getByText(/objective met and verified/)).toBeInTheDocument();
@@ -147,7 +145,7 @@ describe("SchedulesPane", () => {
     await waitFor(() => {
       expect(screen.getByText("watch")).toBeInTheDocument();
     });
-    expect(screen.getByText(/monitor/)).toBeInTheDocument();
-    expect(screen.getByText(/fail-suppress/)).toBeInTheDocument();
+    expect(screen.getByText(/Monitor continuity/)).toBeInTheDocument();
+    expect(screen.getByText(/Failure notifications suppressed/)).toBeInTheDocument();
   });
 });

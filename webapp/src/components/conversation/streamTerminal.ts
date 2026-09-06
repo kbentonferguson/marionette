@@ -2,6 +2,7 @@
  * Pure helpers for stream onDone / onError terminal chrome.
  */
 
+import { inputFailureMessage } from "../../lib/inputFailure";
 import {
   CAUSE_CONTENT_FILTER,
   CAUSE_INCOMPLETE,
@@ -56,6 +57,8 @@ export function streamErrorText(
   ) {
     return terminalCauseCopy(named);
   }
+  const inputMessage = inputFailureMessage(err);
+  if (inputMessage) return `[error] ${inputMessage}`;
   const status = streamErrorHttpStatus(err);
   if (status === 401 || status === 403) {
     return (

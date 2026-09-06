@@ -1,4 +1,7 @@
+import type { JobControlSelection } from "./jobControl";
 // Typed harness API -- thin wrappers over the transport seam.
+import { getActiveDiagnostic, clearDiagnostic } from "./operationalDiagnosticBus";
+import { normalizeContextUsage } from "../components/conversation/contextUsageColors";
 import {
   getJSON,
   getJSONSoft,
@@ -20,6 +23,25 @@ import {
 import type { SessionExportPayload } from "./sessionExport";
 import { pluginInstallPayload } from "./pluginSourceUrls";
 
+export type CommandApprovalDecision = {
+  sessionId: string;
+  workspaceRoot: string;
+  commandHash: string;
+  actionId: string;
+  approvalId: string;
+};
+
+function commandApprovalBody(decision: CommandApprovalDecision) {
+  return {
+    session_id: decision.sessionId,
+    workspace_root: decision.workspaceRoot,
+    command_hash: decision.commandHash,
+    approval_protocol: 1,
+    expected_action_id: decision.actionId,
+    expected_approval_id: decision.approvalId,
+  };
+}
+
 export type { ChatEventFrame, StoreEvent } from "./transport";
 export type { SessionSearchHit } from "./sessionSearch";
 
@@ -32,6 +54,11 @@ export type ChatEventReplay = TransportChatEventReplay & {
 
 /** Unified store cursor payload (GET /api/session/events). */
 export type StoreEventsSince = TransportStoreEventsSince;
+
+export type WorktreeCleanup = {
+  removed: string[]; count: number; remaining: number;
+  skipped: { path: string; reason: string }[];
+};
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -214,7 +241,10 @@ export type Task = {
   retryable?: boolean;
 };
 export type Job = {
+  read_status?: "unavailable";
+  unavailable_fields?: ("artifacts" | "tasks")[];
   id: string;
+  job_ref?: { job_id: string; state_id: string };
   goal: string;
   /** running | completed | partial | failed | cancelled | timed_out | … */
   status: string;
@@ -466,7 +496,10 @@ export function jobArtifactList(j: Job): Artifact[] {
   return Array.isArray(j.artifacts) ? j.artifacts : [];
 }
 export type SwarmLive = {
+  read_status?: "unavailable";
   session: {
+    read_status?: "unavailable";
+    job_coverage?: { expected: number | null; read: number };
     tokens_used: number;
     est_cost_usd: number;
     cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
@@ -537,7 +570,9 @@ export type Workspace = {
   /** Sibling worktree path when this branch is checked out elsewhere. */
   worktree_path?: string;
 };
-export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
+export type SessionForkPreview = { revision: string; boundaries: { event_id: number; label: string; role: string }[] };
+
+export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
 export type SessionGoal = {
   text: string;
@@ -684,10 +719,11 @@ export type ScheduleInfo = {
   repo?: string;
   swarm_adapter?: string;
   driver?: string;
+  delivery_mode?: string;
   enabled: boolean;
   timezone?: string;
-  /** Control plane is host-local; IANA per-schedule zones are deferred. */
-  timezone_mode?: "host_local" | string;
+  timezone_mode?: "host_local" | "iana";
+  revision?: number;
   display_status?: string;
   last_status?: string;
   last_run_at?: number;
@@ -701,6 +737,22 @@ export type ScheduleInfo = {
   notepad?: string;
   monitor_mode?: boolean;
   failure_deliver?: "route" | "suppress" | string;
+};
+
+export type ScheduleWrite = Pick<ScheduleInfo, "name" | "objective" | "cron"> & {
+  request_id?: string;
+  repo: string;
+  timezone?: string;
+  enabled?: boolean;
+  swarm_adapter?: string;
+  driver?: string;
+  max_tokens?: number;
+  max_seconds?: number;
+  max_swarms?: number;
+  missed_policy?: string;
+  notepad?: string;
+  monitor_mode?: boolean;
+  failure_deliver?: string;
 };
 
 export type ScheduleRun = {
@@ -781,6 +833,8 @@ export type RecommendResult = {
 
 export type UsageData = {
   session: {
+    read_status?: "unavailable";
+    job_coverage?: { expected: number | null; read: number };
     tokens_used: number;
     est_cost_usd: number;
     /** provider = billed usage.cost; estimated = token*catalog; mixed = both; plan_estimated = subscription credits (no API receipt). */
@@ -894,7 +948,8 @@ export type UsageData = {
   // Lifetime running total for the active chat session (persisted across
   // app restarts/updates, unlike `session` which is boot-scoped).
   session_total?: {
-    session_id: string;
+    read_status?: "unavailable";
+    session_id?: string;
     est_cost_usd: number;
     input_tokens: number;
     output_tokens: number;
@@ -1288,6 +1343,53 @@ export type ContextUsageResponse = {
 // api.chat() for why (URL length limits silently drop large pastes).
 const CHAT_STASH_THRESHOLD = 4000;
 
+export type QueueRecovery = { kind: "legacy" | "unreadable"; path: string; content: string | null };
+export type InputDocument = { ref: string; name?: string } | { path: string; name?: string; sha256?: string; byte_length?: number };
+export type InputSubmission = { original_text?: string; session_id?: string; documents?: InputDocument[]; retry_key?: string; input_id?: string; handoff_token?: string };
+
+function inputQuery(input: InputSubmission): string {
+  const query = new URLSearchParams();
+  if (input.original_text !== undefined) query.set("original_text", input.original_text);
+  if (input.documents?.length) query.set("documents", JSON.stringify(input.documents));
+  if (input.session_id) query.set("session_id", input.session_id);
+  if (input.retry_key) query.set("retry_key", input.retry_key);
+  if (input.input_id) query.set("input_id", input.input_id);
+  if (input.handoff_token) query.set("handoff_token", input.handoff_token);
+  return query.size ? `&${query}` : "";
+}
+
+export type InputAttachment = {
+  ref: string;
+  kind: "image" | "document";
+  name: string;
+  byte_length: number;
+  sha256: string;
+};
+export type InputReceipt = {
+  id: string;
+  original_text: string;
+  delivery_text?: string;
+  attachments: InputAttachment[];
+  model: string;
+  retry_key?: string;
+  payload_digest: string;
+  created_at: number;
+  status: "accepted" | "delivering" | "injected" | "dropped" | "uncertain";
+  reason: string;
+  held: boolean;
+};
+export type ServerQueueItem = {
+  id: string;
+  input_id?: string;
+  text: string;
+  images?: string[];
+  documents?: string[];
+  model?: string;
+};
+export type QueueReadResult =
+  | { ok: true; session_id: string; items: ServerQueueItem[]; recovery: QueueRecovery[]; receipts?: InputReceipt[]; held_items?: ServerQueueItem[] }
+  | { ok: false; session_id: string; code: string; error: string; recovery: QueueRecovery[] };
+
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
   probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
@@ -1446,8 +1548,13 @@ export const api = {
     }
     return getJSON<SwarmLive>(path);
   },
-  swarmCancel: (jobId: string) =>
-    postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"), { job_id: jobId }),
+  swarmCancel: (selection: JobControlSelection | string) => {
+    const captured = typeof selection === "string" ? selection
+      : { ...selection, job_ref: { ...selection.job_ref } };
+    return postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"),
+      typeof captured === "string" ? { job_id: captured } : { selection: captured },
+      typeof captured === "string" ? undefined : { sessionId: captured.session_id, repo: captured.repo });
+  },
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
   switchWorkspace: (name: string, opts?: { allow_dirty?: boolean }) =>
@@ -1487,6 +1594,10 @@ export const api = {
     const raw = await getJSON<unknown>(`/api/sessions/search?${qs}`);
     return normalizeSessionSearchHits(raw);
   },
+  previewSessionFork: (sessionId: string) =>
+    postJSON<SessionForkPreview>("/api/session/fork", { session_id: sessionId, preview: true }, { failureKind: "action" }),
+  forkSession: (args: { session_id: string; event_id: number; revision: string; request_id: string }) =>
+    postJSON<Session>("/api/session/fork", args, { failureKind: "action" }),
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   /** Session runners/state. Pass ``consumeResume`` only from the Conversation
    * resume-kick path — plain polls must peek so they cannot steal the latch.
@@ -1646,7 +1757,7 @@ export const api = {
   // POST rather than DELETE: the packaged Electron preload only bridges
   // getJSON/postJSON, so a DELETE falls through to an unroutable fetch.
   deleteSession: (id: string) =>
-    postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { id }),
+    postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { id }, { failureKind: "action" }),
   submitSecret: (body: { session_id: string; connector: string; field: string; value: string }) =>
     postJSON<{ ok: boolean; provided: boolean; connector: string; field: string; resume?: boolean }>("/api/secrets/submit", body),
   dismissSecret: (body: { session_id: string; connector: string; field: string }) =>
@@ -1674,7 +1785,7 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return getJSON<{ present?: boolean; state?: string; connectors?: Record<string, Record<string, string>> }>(`/api/secrets/presence${suffix}`);
   },
-  approveCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+  approveCommand: (decision: CommandApprovalDecision) =>
     postJSON<{
       ok: boolean;
       decision: "approved";
@@ -1682,12 +1793,8 @@ export const api = {
       workspace_root: string;
       command_hash: string;
       retry_command: string;
-    }>("/api/commands/approve", {
-      session_id: sessionId,
-      workspace_root: workspaceRoot,
-      command_hash: commandHash,
-    }),
-  approveCommandAmendment: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+    }>("/api/commands/approve", commandApprovalBody(decision), { failureKind: "action" }),
+  approveCommandAmendment: (decision: CommandApprovalDecision) =>
     postJSON<{
       ok: boolean;
       decision: "approved_amendment";
@@ -1696,19 +1803,12 @@ export const api = {
       command_hash: string;
       original_command_hash: string;
       retry_command: string;
-    }>("/api/commands/approve-amendment", {
-      session_id: sessionId,
-      workspace_root: workspaceRoot,
-      command_hash: commandHash,
-    }),
-  rejectCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+    }>("/api/commands/approve-amendment", commandApprovalBody(decision), { failureKind: "action" }),
+  rejectCommand: (decision: CommandApprovalDecision) =>
     postJSON<{ ok: boolean; decision: "rejected"; command_hash: string }>(
       "/api/commands/reject",
-      {
-        session_id: sessionId,
-        workspace_root: workspaceRoot,
-        command_hash: commandHash,
-      },
+      commandApprovalBody(decision),
+      { failureKind: "action" },
     ),
   clearSessions: () =>
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
@@ -1753,19 +1853,9 @@ export const api = {
     }
     return saved[0];
   },
-  // Durable src for an uploaded image. Sent-message thumbnails (and reloaded
-  // transcripts) load the saved file from disk via this GET; a newly sent
-  // message may briefly show a composer blob: preview until this URL succeeds.
-  // An <img> tag loads a raw browser resource -- it does NOT route through the
-  // Electron IPC transport the way getJSON/stream do. In the packaged app the
-  // renderer is served from file:// (win.loadFile), so a RELATIVE "/api/image"
-  // src resolves to file:///api/image and fails -> broken thumbnail. Build an
-  // ABSOLUTE backend URL using the port Electron injects as window.__HARNESS_PORT__
-  // (present on load and respawn). Auth is NOT a query token: Electron's
-  // session webRequest injects X-Harness-Token on exact-origin loopback /api/
-  // subresources; the plain web build relies on same-origin cookies/headers.
-  // Optional `retry` is a harmless cache-buster so the browser issues a fresh
-  // request after a transient failure / port respawn.
+  // Compatibility locator for saved images. Protected image locators must be
+  // rendered through ImageResource/TranscriptImage so the transport supplies
+  // authentication and endpoint identity. Never put credentials in the URL.
   imageUrl: (path: string, opts?: { retry?: number }): string => {
     let rel = withToken("/api/image?path=" + encodeURIComponent(path));
     if (opts?.retry != null && opts.retry > 0) {
@@ -1777,7 +1867,7 @@ export const api = {
     }
     return rel;
   },
-  chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[]) => {
+  chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[], submission: InputSubmission = {}) => {
     // The chat stream is an SSE GET (EventSource is GET-only), so the message
     // normally rides in the URL query string. A large paste (e.g. a huge
     // transcript) can push that URL past the HTTP request-line limit and the
@@ -1787,19 +1877,19 @@ export const api = {
     // short id via ?mid= instead. Small messages keep the original, simpler
     // query-param path unchanged.
     const imagesStr = images && images.length > 0 ? images.join("|") : "";
-    const needsStash = message.length > CHAT_STASH_THRESHOLD || imagesStr.length > CHAT_STASH_THRESHOLD;
+    const needsStash = encodeURIComponent(message).length + encodeURIComponent(imagesStr).length + inputQuery(submission).length > CHAT_STASH_THRESHOLD;
     let cancelled = false;
     let cancelStream: (() => void) | null = null;
     const startStream = (url: string) => {
       if (cancelled) return;
-      cancelStream = stream(url, onEvent, onDone, onError);
+      cancelStream = stream(url + inputQuery(needsStash ? { ...submission, documents: undefined, original_text: undefined } : submission), onEvent, onDone, onError);
     };
     if (needsStash) {
-      postJSON<{ id: string }>("/api/chat/stash", { message, images: images || [] })
+      postJSON<{ id: string }>("/api/chat/stash", { message, images: images || [], ...submission })
         .then((res) => {
           startStream(`/api/chat?mid=${encodeURIComponent(res.id)}${plan ? "&plan=true" : ""}`);
         })
-        .catch((e) => onError?.(e));
+        .catch((e) => { if (!cancelled) onError?.(e); });
     } else {
       let url = `/api/chat?message=${encodeURIComponent(message)}${plan ? "&plan=true" : ""}`;
       if (imagesStr) {
@@ -1922,25 +2012,25 @@ export const api = {
     ),
   memoryProposeDismiss: (id: string) =>
     postJSON<{ ok: boolean; error?: string }>("/api/memory/propose/dismiss", { id }),
-  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, images?: string[]) => {
+  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, images?: string[], submission: InputSubmission = {}) => {
     // Same URL-length hazard as chat() (autopilot objective can be a large
     // pasted brief) -- route big ones through the stash, small ones inline.
     // Image paths ride alongside the objective (query or stash) so autopilot
     // turns get the same attachments the chat path already supports.
     const imagesStr = images && images.length > 0 ? images.join("|") : "";
-    const needsStash = objective.length > CHAT_STASH_THRESHOLD || imagesStr.length > CHAT_STASH_THRESHOLD;
+    const needsStash = encodeURIComponent(objective).length + encodeURIComponent(imagesStr).length + inputQuery(submission).length > CHAT_STASH_THRESHOLD;
     let cancelled = false;
     let cancelStream: (() => void) | null = null;
     const startStream = (url: string) => {
       if (cancelled) return;
-      cancelStream = stream(url, onEvent, onDone, onError);
+      cancelStream = stream(url + inputQuery(needsStash ? { ...submission, documents: undefined, original_text: undefined } : submission), onEvent, onDone, onError);
     };
     if (needsStash) {
-      postJSON<{ id: string }>("/api/chat/stash", { message: objective, images: images || [] })
+      postJSON<{ id: string }>("/api/chat/stash", { message: objective, images: images || [], ...submission })
         .then((res) => {
           startStream(`/api/auto?mid=${encodeURIComponent(res.id)}`);
         })
-        .catch((e) => onError?.(e));
+        .catch((e) => { if (!cancelled) onError?.(e); });
     } else {
       let url = `/api/auto?objective=${encodeURIComponent(objective)}`;
       if (imagesStr) {
@@ -1959,13 +2049,13 @@ export const api = {
       `/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=json`,
     ),
 
-  getWorktrees: () => getJSON<{ worktrees: Worktree[]; max: number }>("/api/worktrees"),
-  addWorktree: (branch: string, base?: string) => postJSON<Worktree>("/api/worktrees/add", { branch, base }),
-  removeWorktree: (path: string, force?: boolean) => postJSON<{ ok: boolean }>("/api/worktrees/remove", { path, force }),
-  pruneWorktrees: () => postJSON<{ ok: boolean }>("/api/worktrees/prune", {}),
-  pruneEditBranches: () =>
-    postJSON<{ ok: boolean; deleted: string[]; count: number }>("/api/worktrees/prune-edit-branches", {}),
-  setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
+  getWorktrees: (repo?: string) => getJSON<{ repo: string; worktrees: Worktree[]; max: number }>(`/api/worktrees${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),
+  addWorktree: (branch: string, base?: string, repo?: string) => postJSON<Worktree & { cleanup?: WorktreeCleanup }>("/api/worktrees/add", { branch, base, repo }),
+  removeWorktree: (path: string, force?: boolean, repo?: string) => postJSON<{ ok: boolean }>("/api/worktrees/remove", { path, force, repo }),
+  pruneWorktrees: (repo?: string) => postJSON<{ ok: boolean }>("/api/worktrees/prune", { repo }),
+  pruneEditBranches: (repo?: string) =>
+    postJSON<{ ok: boolean; deleted: string[]; count: number; skipped?: { branch?: string; path: string; reason: string }[] }>("/api/worktrees/prune-edit-branches", { repo }),
+  setWorktreeMax: (max: number, repo?: string) => postJSON<{ ok: boolean; cleanup?: WorktreeCleanup }>("/api/worktrees/max", { max, repo }),
 
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string; created_session?: boolean }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
@@ -2044,28 +2134,48 @@ export const api = {
     text: string,
     images?: string[],
     deliveryMode?: DeliveryMode,
-    opts?: { turnInputMode?: TurnInputMode; expectedTurnId?: string },
+    opts?: InputSubmission & { turnInputMode?: TurnInputMode; expectedTurnId?: string; sessionId?: string | null },
   ) =>
-    postJSON<{ ok: boolean; action?: string; kind?: string; code?: string }>(
+    postJSON<{ ok: boolean; action?: string; kind?: string; code?: string; input_id?: string }>(
       "/api/session/steer",
       {
         text,
+        original_text: opts?.original_text,
+        documents: opts?.documents,
+        retry_key: opts?.retry_key,
         images: images && images.length ? images : undefined,
         ...(deliveryMode ? { delivery_mode: deliveryMode } : {}),
+        ...(opts?.sessionId ? { session_id: opts.sessionId } : {}),
         ...(opts?.turnInputMode ? { turn_input_mode: opts.turnInputMode } : {}),
         ...(opts?.expectedTurnId ? { expected_turn_id: opts.expectedTurnId } : {}),
       },
+      { failureKind: "action" },
     ),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own
   // complete turn one after the previous fully finishes. Distinct from steer
   // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /
   // removed / reordered before they run.
-  queueList: () => getJSON<{ items: { id: string; text: string; images?: string[]; model?: string }[] }>(withToken("/api/session/queue")),
-  queueAdd: (text: string, images?: string[]) => postJSON<{ ok: boolean; item: { id: string; text: string; images?: string[]; model?: string } }>("/api/session/queue", { text, images: images || [] }),
-  queueRemove: (id: string) => postJSON<{ ok: boolean; id: string }>("/api/session/queue", { id }),
-  queueReorder: (ids: string[]) => postJSON<{ ok: boolean; items: { id: string; text: string; images?: string[]; model?: string }[] }>("/api/session/queue/reorder", { ids }),
-  queueClear: () => postJSON<{ ok: boolean; cleared: number }>("/api/session/queue", { clear: true }),
-  getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
+  queueList: () => getJSON<QueueReadResult>(withToken("/api/session/queue"), { failureKind: "action" }),
+  queueAdd: (text: string, images?: string[], session_id?: string | null, submission: InputSubmission = {}) => postJSON<{ ok: boolean; item: ServerQueueItem }>("/api/session/queue", { text, images: images || [], session_id, ...submission }, { failureKind: "action" }),
+  queueHandoff: (id: string, session_id: string) => postJSON<{ ok: true; item: ServerQueueItem & { input_id: string; handoff_token: string } } | { ok: false; error: string }>("/api/session/queue", { handoff: id, session_id }, { failureKind: "action" }),
+  queueRemove: (id: string, session_id?: string | null) => postJSON<{ ok: boolean; id: string }>("/api/session/queue", { id, session_id }, { failureKind: "action" }),
+  queueReorder: (ids: string[], session_id?: string | null) => postJSON<{ ok: boolean; items: { id: string; text: string; images?: string[]; model?: string }[] }>("/api/session/queue/reorder", { ids, session_id }, { failureKind: "action" }),
+  queueClear: (session_id?: string | null) => postJSON<{ ok: boolean; cleared: number }>("/api/session/queue", { clear: true, session_id }, { failureKind: "action" }),
+  getContextUsage: async (sessionId: string) => {
+    const prior = getActiveDiagnostic();
+    const response = await getJSON<
+      | ({ available: true; session_id: string } & ContextUsageResponse)
+      | { available: false; session_id: string; reason: "building" | "no_runner" }
+    >(`/api/context/usage?session_id=${encodeURIComponent(sessionId)}`, {
+      sessionId, operation: "context_usage",
+    });
+    if (response.available && response.session_id === sessionId && normalizeContextUsage(response)
+      && prior?.scope === "transport" && prior.operation === "context_usage"
+      && prior.sessionId === sessionId && getActiveDiagnostic()?.id === prior.id) {
+      clearDiagnostic(prior);
+    }
+    return response;
+  },
 
   getCheckpoints: () => getJSON<Checkpoint[]>(withToken("/api/checkpoints")),
   restoreCheckpoint: (id: string) => postJSON<{ ok: boolean; restored_files: string[]; auto_snapshot_id: string }>("/api/checkpoints/restore", { id }),
@@ -2078,29 +2188,15 @@ export const api = {
   removeHook: (id: string) => postJSON<{ ok: boolean }>("/api/hooks/remove", { id }),
 
   getSchedules: () => getJSON<{ schedules: ScheduleInfo[] }>("/api/schedules"),
-  addSchedule: (body: {
-    name: string;
-    objective: string;
-    cron: string;
-    repo?: string;
-    swarm_adapter?: string;
-    driver?: string;
-    max_tokens?: number;
-    max_seconds?: number;
-    max_swarms?: number;
-    missed_policy?: string;
-    notepad?: string;
-    monitor_mode?: boolean;
-    failure_deliver?: string;
-  }) => postJSON<ScheduleInfo>("/api/schedules/add", body),
-  updateSchedule: (id: string, patch: Partial<ScheduleInfo>) =>
-    postJSON<ScheduleInfo>("/api/schedules/update", { id, ...patch }),
-  enableSchedule: (id: string) => postJSON<ScheduleInfo>("/api/schedules/enable", { id }),
-  disableSchedule: (id: string) => postJSON<ScheduleInfo>("/api/schedules/disable", { id }),
+  addSchedule: (body: ScheduleWrite) => postJSON<ScheduleInfo>("/api/schedules/add", body, { failureKind: "action" }),
+  updateSchedule: (id: string, patch: Partial<Omit<ScheduleWrite, "enabled" | "request_id">> & { revision?: number }) =>
+    postJSON<ScheduleInfo>("/api/schedules/update", { ...patch, id }, { failureKind: "action" }),
+  enableSchedule: (id: string, revision?: number) => postJSON<ScheduleInfo>("/api/schedules/enable", { id, revision }, { failureKind: "action" }),
+  disableSchedule: (id: string, revision?: number) => postJSON<ScheduleInfo>("/api/schedules/disable", { id, revision }, { failureKind: "action" }),
   removeSchedule: (id: string) =>
-    postJSON<{ ok: boolean; outcome?: string }>("/api/schedules/remove", { id }),
-  runScheduleNow: (id: string) =>
-    postJSON<{ ok: boolean; run: ScheduleRun }>("/api/schedules/run-now", { id }),
+    postJSON<{ ok: boolean; outcome?: string }>("/api/schedules/remove", { id }, { failureKind: "action" }),
+  runScheduleNow: (id: string, revision?: number) =>
+    postJSON<{ ok: boolean; run: ScheduleRun }>("/api/schedules/run-now", { id, revision }, { failureKind: "action" }),
   getScheduleHistory: (id: string, limit = 50) =>
     getJSON<{ id: string; runs: ScheduleRun[] }>(
       `/api/schedules/history?id=${encodeURIComponent(id)}&limit=${limit}`,
@@ -2161,7 +2257,7 @@ export const api = {
   disconnectGit: () => postJSON<GitStatus>("/api/git/disconnect", {}),
 
   getReviews: () => getJSON<PendingReview[]>(withToken("/api/reviews")),
-  applyReview: (id: string, decisions: Record<string, "accept" | "reject">) =>
-    postJSON<{ ok: boolean; applied_files: string[]; rejected_hunks: string[]; checkpoint_id: string | null; message: string }>("/api/reviews/apply", { id, decisions }),
+  applyReview: (id: string, decisions: Record<string, "accept" | "reject">, scope: "review" | "selected" = "review") =>
+    postJSON<{ ok: boolean; applied_files: string[]; rejected_hunks: string[]; checkpoint_id: string | null; message: string }>("/api/reviews/apply", { id, decisions, scope }),
   dismissReview: (id: string) => postJSON<{ ok: boolean }>("/api/reviews/dismiss", { id }),
 };

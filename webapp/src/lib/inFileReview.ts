@@ -8,7 +8,6 @@ import { pathsReferToSameFile } from "./workspaceMutationEvents";
 import {
   forEachReviewHunkDecision,
   reviewHunkDecisionKey,
-  seedApplyDecisions,
 } from "./reviewDecisions";
 
 export type HunkLineKind = "context" | "add" | "del" | "meta";
@@ -131,20 +130,19 @@ export function collectInFilePendingHunks(
   return out;
 }
 
-/**
- * Build a fully seeded apply_review payload for one in-file Accept/Reject.
- * Other hunks keep the pane default (accept) so harness reject-default cannot
- * silently drop them.
- */
+/** Build decisions for only the selected pending hunk. */
 export function buildInFileApplyDecisions(
   review: PendingReview,
   decisionId: string,
   decision: "accept" | "reject",
 ): Record<string, "accept" | "reject"> {
-  const namespaced: Record<string, "accept" | "reject"> = {
-    [reviewHunkDecisionKey(review.id, decisionId)]: decision,
-  };
-  return seedApplyDecisions(review, namespaced);
+  const selected: Record<string, "accept" | "reject"> = {};
+  forEachReviewHunkDecision(review, (hunk, id) => {
+    if (id === decisionId && (!hunk.status || hunk.status === "pending")) {
+      selected[id] = decision;
+    }
+  });
+  return selected;
 }
 
 export type InFileApplyResult = {
@@ -159,7 +157,7 @@ export async function applyInFileHunkDecision(
   decision: "accept" | "reject",
 ): Promise<InFileApplyResult> {
   const payload = buildInFileApplyDecisions(review, decisionId, decision);
-  const res = await api.applyReview(review.id, payload);
+  const res = await api.applyReview(review.id, payload, "selected");
   if (!res.ok) {
     return { ok: false, message: res.message || "Failed to apply" };
   }

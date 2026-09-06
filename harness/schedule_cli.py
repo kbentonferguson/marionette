@@ -17,8 +17,8 @@ ScheduleStore and scheduler daemon. It mirrors the manual-dispatch + ANSI _c
 style of cli.py. Cron expressions are validated at `add`/`edit` time (parsed
 and the next three fire times printed); an invalid expression exits 1.
 
-Cron times are host-local naive datetimes. Per-schedule IANA zones are
-deferred. Next-fire previews are labeled ``host-local``. A repeated local
+Cron times use host-local time unless --timezone selects an IANA zone.
+Next-fire previews show the selected zone and UTC offset. A repeated local
 minute fires at most once (minute-stable ``last_fire_at``). Missed windows
 follow ``--missed-policy`` (default ``once``: coalesce; ``skip``: no catch-up;
 ``all``: every missed minute, cap 100). Delivery is at-least-once: a superseded
@@ -31,8 +31,10 @@ is deferred.
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 
 from .schedule_core import (
@@ -56,19 +58,20 @@ def _c(code: str, s: str) -> str:
     return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
 
 
-def _next_fires(cron: CronExpr, count: int = 3) -> List[datetime]:
+def _next_fires(cron: CronExpr, count: int = 3, timezone: str = "") -> List[datetime]:
     out: List[datetime] = []
-    cur = datetime.now()
+    cur = datetime.now(ZoneInfo(timezone)) if timezone else datetime.now()
     for _ in range(count):
         cur = next_real_fire_after(cron, cur)
         out.append(cur)
     return out
 
 
-def _print_next_fires(cron: CronExpr) -> None:
-    print("next fires (host-local):")
-    for dt in _next_fires(cron):
-        print(f"  {dt.isoformat(sep=' ', timespec='minutes')} host-local")
+def _print_next_fires(cron: CronExpr, timezone: str = "") -> None:
+    label = timezone or "host-local"
+    print(f"next fires ({label}):")
+    for dt in _next_fires(cron, timezone=timezone):
+        print(f"  {dt.isoformat(sep=' ', timespec='minutes')} {label}")
 
 
 def _reject_negative_ceilings(max_tokens, max_seconds, max_swarms) -> Optional[str]:
@@ -101,13 +104,13 @@ def _cmd_add(args) -> int:
         name=args.name,
         objective=args.objective,
         cron=args.cron,
-        repo=args.repo or "",
+        repo=os.path.abspath(args.repo),
         swarm_adapter=args.swarm_adapter,
         driver=args.driver or "",
         max_tokens=args.max_tokens,
         max_seconds=args.max_seconds,
         max_swarms=args.max_swarms,
-        timezone="",
+        timezone=args.timezone,
         missed_policy=parse_missed_policy(getattr(args, "missed_policy", None)),
         notepad=clip_notepad(getattr(args, "notepad", None)),
         monitor_mode=bool(getattr(args, "monitor_mode", False)),
@@ -119,7 +122,7 @@ def _cmd_add(args) -> int:
         print(_c("31", f"invalid schedule: {exc}"))
         return 1
     print(_c("32", f"added schedule {sched.id} ({sched.name})"))
-    _print_next_fires(cron)
+    _print_next_fires(cron, sched.timezone)
     return 0
 
 
@@ -135,7 +138,7 @@ def _cmd_list(args) -> int:
         mode = timezone_mode(s)
         print(_c("36", f"{s.id}") + f"  {s.name}  [{state}]")
         print(
-            f"    cron={s.cron!r} tz=host-local ({mode}) "
+            f"    cron={s.cron!r} tz={s.timezone or 'host-local'} ({mode}) "
             f"missed={parse_missed_policy(s.missed_policy)} "
             f"fail={parse_failure_deliver(s.failure_deliver)} "
             f"monitor={int(bool(s.monitor_mode))} "
@@ -165,8 +168,10 @@ def _cmd_edit(args) -> int:
         fields["objective"] = args.objective
     if args.cron is not None:
         fields["cron"] = args.cron
+    if args.timezone is not None:
+        fields["timezone"] = args.timezone
     if args.repo is not None:
-        fields["repo"] = args.repo
+        fields["repo"] = os.path.abspath(args.repo)
     if args.driver is not None:
         fields["driver"] = args.driver
     if args.swarm_adapter is not None:
@@ -197,9 +202,9 @@ def _cmd_edit(args) -> int:
         print(_c("31", f"no such schedule: {args.id}"))
         return 1
     print(_c("32", f"updated {updated.id} ({updated.name})"))
-    if args.cron is not None:
+    if args.cron is not None or args.timezone is not None:
         cron = CronExpr.parse(updated.cron)
-        _print_next_fires(cron)
+        _print_next_fires(cron, updated.timezone)
     return 0
 
 
@@ -297,7 +302,7 @@ def _run_schedule(argv) -> int:
         prog="harness schedule",
         description=(
             "Manage scheduled unattended objectives. Cron uses host-local "
-            "time (per-schedule IANA timezone is deferred). HTTP/UI can list "
+            "time or an IANA zone selected with --timezone. HTTP/UI can list "
             "and mutate schedules; the local daemon is still required for "
             "unattended cron fire. Missed fires follow --missed-policy "
             "(once/skip/all); delivery is at-least-once under lease recovery. "
@@ -318,7 +323,8 @@ def _run_schedule(argv) -> int:
         ),
     )
     p_add.add_argument("--objective", required=True)
-    p_add.add_argument("--repo", default=None)
+    p_add.add_argument("--repo", required=True)
+    p_add.add_argument("--timezone", default="", help="IANA timezone; empty uses host-local")
     p_add.add_argument("--driver", default=None)
     p_add.add_argument("--swarm-adapter", dest="swarm_adapter", default="agentic")
     p_add.add_argument("--max-tokens", dest="max_tokens", type=int, default=0)
@@ -358,6 +364,7 @@ def _run_schedule(argv) -> int:
     p_edit.add_argument("--objective", default=None)
     p_edit.add_argument("--cron", default=None)
     p_edit.add_argument("--repo", default=None)
+    p_edit.add_argument("--timezone", default=None)
     p_edit.add_argument("--driver", default=None)
     p_edit.add_argument("--swarm-adapter", dest="swarm_adapter", default=None)
     p_edit.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)

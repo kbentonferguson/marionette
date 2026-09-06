@@ -77,7 +77,7 @@ def test_api_artifacts_returns_payload(monkeypatch):
         httpd.shutdown()
 
 
-def test_api_artifacts_degrades_on_locked(monkeypatch):
+def test_api_artifacts_reports_unavailable_on_locked(monkeypatch):
     monkeypatch.setattr(
         server, "_session",
         _Session(_State(exc=sqlite3.OperationalError("database is locked"))))
@@ -89,9 +89,12 @@ def test_api_artifacts_degrades_on_locked(monkeypatch):
             method="GET",
             headers={"X-Harness-Token": server._TOKEN},
         )
-        resp = urllib.request.urlopen(req, timeout=10)
-        assert resp.status == 200
-        assert json.loads(resp.read().decode()) == []
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected explicit unavailable response"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 503
+            assert json.loads(exc.read()) == {"error": "Artifact records could not be read."}
     finally:
         httpd.shutdown()
 

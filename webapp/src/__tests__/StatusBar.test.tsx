@@ -691,3 +691,16 @@ it("fences late goal mutations and state reads across session switches", async (
   expect(screen.queryByText("Late B")).not.toBeInTheDocument();
   expect(mockGetSessionState).toHaveBeenLastCalledWith({ sessionId: "C" });
 });
+
+it("shows incomplete usage instead of known zero and recovers on retry", async () => {
+  mockGetUsage.mockResolvedValue({ ...processUsage, session: {
+    ...processUsage.session, tokens_used: 0, est_cost_usd: 0, read_status: "unavailable",
+  } });
+  render(<><StatusBar {...statusBarProps} /><EconomicsPane /></>);
+  const retries = await screen.findAllByRole("button", { name: "App-run usage partial / unavailable. Retry" });
+  expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  mockGetUsage.mockResolvedValue(processUsage);
+  fireEvent.click(retries[0]);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument());
+  expect(screen.getAllByText("$0.55").length).toBeGreaterThan(0);
+});

@@ -13,6 +13,7 @@ Workspace scoping (``session_visible_for_workspace``):
 """
 
 import atexit
+import hashlib
 import json
 import os
 import re
@@ -349,65 +350,71 @@ class SessionStore:
             self._save()
             return {**meta, "active": True, "workspace_root": ws_root}
 
-    def fork_at(self, parent_id: str, at_event_id: int, state_dir: str) -> Optional[dict]:
-        """Fork a session at a 1-based rematerialized history index.
-
-        ``at_event_id`` indexes ``rematerialize_driver_messages(load_transcript(...))``,
-        not an SSE cursor. Child transcript is the prefix through that index;
-        the parent transcript is unchanged. Stamps a single ThreadForked
-        pointer on each row (not a lineage DAG).
-        """
-        parent_id = (parent_id or "").strip()
-        if not parent_id:
-            return None
-        try:
-            cutoff = int(at_event_id)
-        except (TypeError, ValueError):
-            raise ValueError("bad event_id")
-        if cutoff < 1:
-            raise ValueError("bad event_id")
+    def fork_preview(self, parent_id: str, state_dir: str) -> Optional[dict]:
         with self._lock:
-            parent = None
-            for row in self._sessions:
-                if row.get("id") == parent_id:
-                    parent = row
-                    break
+            if not any(row.get("id") == parent_id for row in self._sessions):
+                return None
+            messages = rematerialize_driver_messages(load_transcript(state_dir, parent_id))
+            return {"revision": _fork_revision(messages),
+                    "boundaries": _fork_boundaries(messages)}
+
+    def fork_at(
+        self, parent_id: str, at_event_id: int, state_dir: str,
+        *, revision: Optional[str] = None, request_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Copy a persisted, tool-complete history prefix; never access a runner."""
+        if type(at_event_id) is not int or at_event_id < 1:
+            raise ValueError("bad event_id")
+        cutoff = at_event_id
+        with self._lock:
+            parent = next((r for r in self._sessions if r.get("id") == parent_id), None)
             if parent is None:
                 return None
-            raw = load_transcript(state_dir or "", parent_id)
+            if request_id:
+                for row in self._sessions:
+                    origin = row.get("forked_from", {})
+                    if origin.get("parent_id") == parent_id and origin.get("request_id") == request_id:
+                        if origin.get("at_event_id") != cutoff or origin.get("revision") != revision:
+                            raise ForkConflict("request_id already used for a different fork")
+                        return {**row, "active": row["id"] == self._active}
+            raw = load_transcript(state_dir, parent_id)
             messages = rematerialize_driver_messages(raw)
-            if cutoff > len(messages):
+            actual_revision = _fork_revision(messages)
+            if revision is not None and revision != actual_revision:
+                raise ForkConflict("Source history changed. Refresh fork boundaries and try again.")
+            if cutoff not in {b["event_id"] for b in _fork_boundaries(messages)}:
                 raise ValueError("bad event_id")
-            prefix = list(messages[:cutoff])
             child_id = uuid.uuid4().hex[:12]
             child = asdict(SessionMeta(
-                id=child_id,
-                title=parent.get("title") or "New session",
-                created=time.time(),
-                repo=parent.get("repo") or "",
-                branch=parent.get("branch") or "",
-                workspace_root=session_stored_root(parent),
+                id=child_id, title="Fork of " + (parent.get("title") or "New session"),
+                created=time.time(), repo=parent.get("repo") or "",
+                branch=parent.get("branch") or "", workspace_root=session_stored_root(parent),
             ))
-            child["forked_from"] = {
-                "parent_id": parent_id,
-                "at_event_id": cutoff,
-            }
-            parent["forked_to"] = {
-                "child_id": child_id,
-                "at_event_id": cutoff,
-            }
+            origin = {"parent_id": parent_id, "at_event_id": cutoff}
+            if revision is not None:
+                origin["revision"] = actual_revision
+            if request_id:
+                origin["request_id"] = request_id
+            child["forked_from"] = origin
+            payload = {"history": messages[:cutoff]} if isinstance(raw, dict) else messages[:cutoff]
+            save_transcript(state_dir, child_id, payload)
+            # save_transcript is best-effort for live turns; a fork must be durable
+            # before its row becomes selectable.
+            if load_transcript(state_dir, child_id) != payload:
+                raise OSError("Could not persist fork transcript")
+            previous_link = parent.get("forked_to")
+            parent["forked_to"] = {"child_id": child_id, "at_event_id": cutoff}
             self._sessions.append(child)
-            self._save()
-        if isinstance(raw, dict):
-            child_payload: Any = {"history": prefix}
-        else:
-            child_payload = prefix
-        save_transcript(state_dir or "", child_id, child_payload)
-        return {
-            **child,
-            "active": child_id == self._active,
-            "workspace_root": session_stored_root(child),
-        }
+            try:
+                self._save(immediate=True)
+            except OSError:
+                self._sessions.remove(child)
+                if previous_link is None:
+                    parent.pop("forked_to", None)
+                else:
+                    parent["forked_to"] = previous_link
+                raise
+            return {**child, "active": False, "workspace_root": session_stored_root(child)}
 
     def switch(self, sid: str) -> dict:
         with self._lock:
@@ -819,6 +826,37 @@ def derive_title(prompt: str) -> str:
     return title
 
 
+class ForkConflict(ValueError):
+    """The caller's persisted history revision or retry identity no longer matches."""
+
+
+def _fork_revision(messages: list) -> str:
+    return hashlib.sha256(json.dumps(messages, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+
+
+def _fork_boundaries(messages: list) -> list:
+    pending: set[str] = set()
+    boundaries = []
+    for index, message in enumerate(messages, 1):
+        role = message.get("role")
+        if pending and role != "tool":
+            return boundaries
+        if role == "assistant":
+            calls = message.get("tool_calls") or []
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("id"), str):
+                    return boundaries
+                pending.add(call["id"])
+        elif role == "tool":
+            call_id = message.get("tool_call_id")
+            if call_id not in pending:
+                return boundaries
+            pending.remove(call_id)
+        if not pending and role in ("user", "assistant") and message.get("phase") != "commentary":
+            boundaries.append({"event_id": index, "label": _message_plain_text(message)[:120], "role": role})
+    return boundaries
+
+
 _DRIVER_ROLES = frozenset({"user", "assistant", "tool"})
 
 
@@ -849,6 +887,16 @@ def rematerialize_driver_messages(transcript: Any) -> list:
     return out
 
 
+def _write_transcript(state_dir: str, safe_sid: str, messages: Any) -> None:
+    from .compaction_archive import _atomic_write_json
+
+    path = os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
+    from .native_publication import native_publication
+    with native_publication(state_dir):
+        _atomic_write_json(path, messages)
+        _invalidate_preview_cache(path)
+
+
 def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
     if not session_id:
         return
@@ -856,17 +904,17 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
     safe_sid = "".join(c for c in session_id if c.isalnum() or c in ("-", "_"))
     if not safe_sid:
         return
-    trans_dir = os.path.join(state_dir, "transcripts")
-    os.makedirs(trans_dir, exist_ok=True)
-    p = os.path.join(trans_dir, f"{safe_sid}.json")
-    tmp = p + ".tmp"
+    from .history_compaction_journal import (
+        recover_compaction_commit,
+    )
+    from .native_publication import native_publication
+
     try:
-        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(messages, f, indent=2)
-        os.replace(tmp, p)
-        _invalidate_preview_cache(p)
+        with native_publication(state_dir):
+            recover_compaction_commit(state_dir, safe_sid)
+            _write_transcript(state_dir, safe_sid, messages)
     except Exception:
-        pass
+        return
     # Best-effort FTS index update — never raise on the hot persist path.
     try:
         from .session_fts import index_session_transcript
@@ -882,6 +930,9 @@ def load_transcript(state_dir: str, session_id: str) -> Any:
     if not safe_sid:
         return []
     p = os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
+    from .history_compaction_journal import recover_compaction_commit
+
+    recover_compaction_commit(state_dir, safe_sid)
     if not os.path.exists(p):
         return []
     try:

@@ -6,6 +6,7 @@ import os
 import hashlib
 import pytest
 
+from harness.command_approval_identity import ApprovalExpectation
 from harness.conversation import ConversationalSession
 from harness.config import HarnessConfig
 from harness.pilot import PilotAction
@@ -69,6 +70,10 @@ def test_guard_blocks_dangerous_in_auto_mode(tmp_path):
         b"ssh prod systemctl stop nginx"
     ).hexdigest()
     assert s._approved_commands == set()
+    pending = s._pending_command_approvals[blocked[0]["command_hash"]]
+    assert blocked[0]["approval_protocol"] == 1
+    assert blocked[0]["approval_id"] == pending["approval_id"]
+    assert blocked[0]["action_id"] == pending["action_id"]
 
 
 def test_guard_allows_dangerous_in_interactive(tmp_path):
@@ -127,6 +132,7 @@ def test_approved_hash_is_one_shot_and_does_not_approve_other_command(
     assert session.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=True,
     )
 
@@ -171,6 +177,7 @@ def test_consume_reapprove_race_keeps_fresh_same_hash_approval(
     assert session.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=True,
     )
 
@@ -267,6 +274,7 @@ def test_pending_command_approval_is_durable_in_display_transcript(tmp_path):
     decided = session.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=False,
     )
     assert decided is not None
@@ -318,6 +326,7 @@ def test_load_history_restores_pending_approval_for_decide(tmp_path):
     decided = restored.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=True,
     )
     assert decided is not None
@@ -347,6 +356,7 @@ def test_load_history_reject_after_restore(tmp_path):
     decided = restored.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=False,
     )
     assert decided is not None
@@ -368,6 +378,7 @@ def test_load_history_leaves_decided_approvals_display_only(tmp_path):
     session.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=True,
     )
     exported = session.export_transcript_data()
@@ -389,6 +400,7 @@ def test_load_history_leaves_decided_approvals_display_only(tmp_path):
     assert restored.decide_command_approval(
         command_hash=command_hash,
         workspace_root=pending["workspace_root"],
+        expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
         approve=True,
     ) is None
 
@@ -496,8 +508,9 @@ def test_load_history_skips_malformed_pending_display_rows(tmp_path):
 
     assert list(session._pending_command_approvals) == [good_hash]
     assert session._pending_command_approvals[good_hash]["action_id"] == "call-good"
-    # Display is preserved verbatim (including malformed rows).
-    assert session._display_transcript == display
+    # Malformed rows remain readable; the valid historical card gains identity.
+    assert session._display_transcript[:4] == display[:4]
+    assert session._display_transcript[4]["approval_id"] == session._pending_command_approvals[good_hash]["approval_id"]
 
 
 def test_load_history_refuses_benign_card_evil_hash_escalation(tmp_path):

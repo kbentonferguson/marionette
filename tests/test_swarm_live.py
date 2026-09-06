@@ -143,19 +143,21 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
                 _get(port, "/api/usage", headers=headers).read().decode()
             )["session"]["est_cost_usd"]
 
-            # Monkeypatching _scoped_jobs_with_stores bypasses annotate_jobs_accounting;
-            # tag fake store rows as Marionette-owned so session totals count them.
+            from puppetmaster.store_factory import create_store
+            store = create_store("sqlite", str(Path(tmp_dir) / "durable"))
+            job = store.create_job("Recorded session cost")
+            # Keep the accounting injection while reading a real owning store.
             _owned_harness_job = {
-                "id": "job_fake1",
+                "id": job.id,
                 "source": "harness",
                 "accounting_owned": True,
                 "accounting_scope": "marionette",
             }
-            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [{"id": "job_fake1"}])
+            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [{"id": job.id}])
             monkeypatch.setattr(
                 srv,
                 "_scoped_jobs_with_stores",
-                lambda repo_root=None: ([_owned_harness_job], srv._session.state().store, None),
+                lambda repo_root=None: ([_owned_harness_job], store, None),
             )
             monkeypatch.setattr(
                 srv, "_scoped_jobs_snapshot", lambda repo_root=None: [_owned_harness_job]
@@ -164,8 +166,6 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
             )
             # Live session totals read persistable_pm_receipt.spend_usd.
-            # 1.22.40 workers attach() only; an empty test store can fail
-            # load_pm_cost_report. Receipt application must still run.
             monkeypatch.setattr(
                 "harness.financial_receipt.load_pm_cost_report",
                 lambda store, job_id, registry=None: {"job_id": job_id},
@@ -173,7 +173,7 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             monkeypatch.setattr(
                 "harness.financial_receipt.persistable_pm_receipt",
                 lambda report: {
-                    "job_id": "job_fake1",
+                    "job_id": job.id,
                     "spend_usd": 0.37,
                     "spend_basis": "measured",
                     "estimated": False,

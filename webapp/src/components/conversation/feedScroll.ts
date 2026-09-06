@@ -40,15 +40,6 @@ export function chooseFeedFollowFlush(): "before_paint" {
 /** Feed scrollport overflow-anchor — auto; pin hysteresis owns unstick (never "none"). */
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
-/** CSS custom property on the chat column; drives scroll-padding-bottom on the feed scrollport. */
-export const FEED_CHROME_CLEARANCE_VAR = "--feed-chrome-clearance";
-
-/** Bottom spacer so the last stream line sits above the composer/status stack. */
-export function feedBottomClearancePx(chromeHeight: number): number {
-  if (!Number.isFinite(chromeHeight) || chromeHeight <= 0) return 96;
-  return Math.max(72, Math.min(Math.round(chromeHeight), 480));
-}
-
 /** Authoritative scrollTop for stick-to-bottom (not scrollToIndex align:end). */
 export function scrollToFeedEnd(scrollHeight: number, clientHeight: number): number {
   return Math.max(0, scrollHeight - clientHeight);

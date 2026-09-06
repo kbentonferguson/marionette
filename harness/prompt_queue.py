@@ -1,216 +1,305 @@
 from __future__ import annotations
 
-"""Prompt-queue mixin: playlist CRUD + persistence used by the turn loop.
+from .pilot_replacement import input_projection
 
-Extracted mechanically from harness/conversation.py to continue decomposing the
-ConversationalSession god-object, matching ToolDispatchMixin's contract: these
-methods operate purely through `self` (``_prompt_queue``, ``_prompt_queue_lock``,
-``_prompt_queue_path``, ``config``) provided by the concrete class -- the mixin
-defines no state and no __init__.
+"""Session-owned prompt playlist. A successful mutation has reached disk.
 
-Method Resolution Order keeps behavior identical: enqueue/list/remove/reorder/
-clear and the drain helpers still resolve via inheritance.
+Human originals live in the native input document; this file is only the
+runnable playlist projection. Receipt attempts precede consumption.
 """
 
+import copy
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+import tempfile
+import threading
+import uuid
 from typing import Optional
 
 
+ORIGINAL_TEXT_UNSET = object()
+
+
+class PromptQueueError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+    def payload(self) -> dict:
+        return {"ok": False, "code": self.code, "error": str(self)}
+
+
+_OWNER_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_OWNER_LOCKS_LOCK = threading.Lock()
+
+
 class PromptQueueMixin:
-    """Mixin holding prompt-queue persistence and playlist operations.
+    def bind_prompt_queue(self, state_root: str, session_id: str) -> None:
+        """Bind once, after the real ID is known. Never consult the active view."""
+        if not session_id:
+            raise ValueError("prompt queue requires a session ID")
+        owner = (os.path.normcase(os.path.realpath(state_root)), session_id)
+        with self._prompt_queue_lock:
+            previous = getattr(self, '_prompt_queue_owner', None)
+            if previous is not None:
+                if previous != owner:
+                    raise PromptQueueError('queue_owner_changed', 'Prompt queue belongs to another session.')
+                return
+            with _OWNER_LOCKS_LOCK:
+                lock = _OWNER_LOCKS.setdefault(owner, threading.RLock())
+            self._prompt_queue_owner = owner
+            self._prompt_queue_owner_lock = lock
+            name = hashlib.sha256(session_id.encode('utf-8')).hexdigest() + '.json'
+            self._prompt_queue_path = os.path.join(owner[0], 'prompt_queues', name)
+            # No legacy import: unscoped input has no provable session owner.
+            self._prompt_queue_legacy_paths = list(dict.fromkeys([
+                os.path.join(owner[0], 'prompt_queue.json'),
+                os.path.join(os.path.realpath(self.state_dir), 'prompt_queue.json'),
+            ]))
 
-    The concrete class (ConversationalSession) supplies the state these
-    methods read/write via `self`. This mixin defines no __init__ and no
-    instance state of its own.
-    """
+    def _queue_lock(self):
+        with self._prompt_queue_lock:
+            if getattr(self, '_prompt_queue_owner', None) is None:
+                # CLI without a GUI ID gets a unique durable invocation namespace.
+                sid = getattr(self, 'harness_session_id', '') or 'cli-' + uuid.uuid4().hex
+                self.bind_prompt_queue(self.state_dir, sid)
+            return self._prompt_queue_owner_lock
 
-    def _save_prompt_queue(self) -> None:
-        """Atomically mirror the current _prompt_queue to disk. Writes a .tmp
-        then os.replace so a crash mid-write never leaves a corrupt file. Reads a
-        snapshot under the lock, then writes OUTSIDE the lock so callers that
-        already hold self._prompt_queue_lock do not deadlock (the lock is not
-        reentrant). Best-effort: a persistence failure must never raise."""
-        import json
-        import os
-        try:
-            with self._prompt_queue_lock:
-                items = [dict(x) for x in self._prompt_queue]
-        except Exception:
-            return
-        try:
-            tmp = self._prompt_queue_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                json.dump({"queue": items}, f)
-            os.replace(tmp, self._prompt_queue_path)
-        except Exception:
-            # Persistence is a convenience; never let it take down the session.
-            pass
+    @contextmanager
+    def _queue_transaction(self):
+        # The process lock covers multiple runner objects. The file lock covers
+        # separate backends; never unlink it (that would split lock ownership).
+        with self._queue_lock():
+            lock_file = None
+            try:
+                os.makedirs(os.path.dirname(self._prompt_queue_path), exist_ok=True)
+                lock_file = open(self._prompt_queue_path + '.lock', 'a+b')
+                if os.name == 'nt':
+                    import msvcrt
+                    if os.fstat(lock_file.fileno()).st_size == 0:
+                        lock_file.write(b'0')
+                        lock_file.flush()
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                if lock_file is not None:
+                    lock_file.close()
+                raise PromptQueueError('queue_write_failed', 'Prompt queue could not be locked for saving. Your previous queue is unchanged.') from exc
+            try:
+                yield
+            finally:
+                # Closing releases the OS lock even after a failed mutation.
+                lock_file.close()
 
-    def _load_prompt_queue(self) -> None:
-        """Reload the prompt queue written by a prior process. Tolerates a
-        missing or corrupt file by leaving the queue empty. Each item must be a
-        dict with a text key to be kept."""
-        import json
+    def _read_queue(self) -> list:
         try:
-            with open(self._prompt_queue_path, "r", encoding="utf-8") as f:
+            with open(self._prompt_queue_path, encoding='utf-8') as f:
                 data = json.load(f)
         except FileNotFoundError:
-            return
-        except Exception:
-            # Corrupt/unreadable file: start empty rather than crash on restart.
-            return
-        queue = data.get("queue") if isinstance(data, dict) else None
-        if not isinstance(queue, list):
-            return
-        restored: list[dict] = []
-        for it in queue:
-            if not isinstance(it, dict) or "text" not in it:
-                continue
-            restored.append({
-                "id": str(it.get("id") or ""),
-                "text": str(it.get("text") or ""),
-                "images": [str(p) for p in (it.get("images") or []) if p],
-                "model": str(it.get("model") or ""),
-                **({"source": "goal_mode"} if it.get("source") == "goal_mode" else {}),
-            })
-        with self._prompt_queue_lock:
-            self._prompt_queue = restored
+            return []
+        except (OSError, ValueError) as exc:
+            raise PromptQueueError('queue_read_failed', 'Prompt queue cannot be read. Original file retained for recovery.') from exc
+        owner = self._prompt_queue_owner
+        if (not isinstance(data, dict) or data.get('version') != 1
+                or data.get('session_id') != owner[1] or not isinstance(data.get('queue'), list)):
+            raise PromptQueueError('queue_read_failed', 'Invalid prompt queue. Original file retained for recovery.')
+        for item in data['queue']:
+            if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                    or not item['id'] or not isinstance(item.get('text'), str)
+                    or not isinstance(item.get('images'), list)
+                    or any(not isinstance(p, str) for p in item['images'])
+                    or not isinstance(item.get('model'), str)):
+                raise PromptQueueError('queue_read_failed', 'Invalid prompt queue item. Original file retained for recovery.')
+        ids = [item['id'] for item in data['queue']]
+        if len(set(ids)) != len(ids):
+            raise PromptQueueError('queue_read_failed', 'Duplicate prompt IDs. Original file retained for recovery.')
+        return data['queue']
 
-    # ------------------------------------------------------------------
-    # Prompt queue: sequential playlist of full user turns. Distinct from
-    # the steer queue (which is a mid-turn interrupt). See __init__ note.
-    # All methods are lock-guarded and never raise; they return neutral
-    # values on unexpected input rather than exploding the caller.
-    # ------------------------------------------------------------------
-    def enqueue_prompt(self, text: str, images: Optional[list] = None,
-                       model: Optional[str] = None, *, source: str = "") -> dict:
-        """Append a full prompt to the queue and return the created item.
-
-        Empty/whitespace-only text is rejected with an empty item -- callers
-        (server / UI) validate before invoking, this is defense in depth.
-
-        A queued prompt runs as its own fresh user turn, so it can carry image
-        attachments (list of file paths). They are stored verbatim after basic
-        sanitization and delivered when the prompt drains (see the turn loop).
-
-        ``model`` (optional) stamps the pilot driver that should run this item
-        when it drains -- Hermes-style per-prompt selection. Mid-turn playlist
-        drain skips items whose model differs from the live pilot so the turn
-        can end and the deferred swap can apply before the next turn starts.
-        """
+    def _commit_queue(self, items: list) -> None:
+        """Caller holds owner lock across read, snapshot, write, and publication."""
+        tmp = None
         try:
-            t = (text or "").strip()
-            if not t:
-                return {"id": "", "text": "", "images": [], "model": ""}
-            imgs = [str(p) for p in (images or []) if p and str(p).strip()]
-            import uuid as _uuid
-            m = (model or "").strip()
-            item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs, "model": m}
-            if source == "goal_mode":
-                item["source"] = source
-            with self._prompt_queue_lock:
-                self._prompt_queue.append(item)
-            self._save_prompt_queue()
-            return dict(item)
-        except Exception:
-            return {"id": "", "text": "", "images": [], "model": ""}
+            parent = os.path.dirname(self._prompt_queue_path)
+            os.makedirs(parent, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n',
+                    dir=parent, prefix='.queue-', suffix='.tmp', delete=False) as f:
+                tmp = f.name
+                json.dump({'version': 1, 'session_id': self._prompt_queue_owner[1], 'queue': items}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._prompt_queue_path)
+        except (OSError, ValueError, TypeError) as exc:
+            raise PromptQueueError('queue_write_failed', 'Prompt queue was not saved. Your previous queue is unchanged; keep your draft and retry.') from exc
+        finally:
+            if tmp is not None and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        self._prompt_queue = copy.deepcopy(items)
+
+    def _load_prompt_queue(self) -> None:
+        with self._queue_lock():
+            self._prompt_queue = self._read_queue()
+
+    def prompt_queue_recovery(self) -> list:
+        """Read-only evidence, never a runnable projection or an implicit import."""
+        with self._queue_lock():
+            paths = [(p, 'legacy') for p in self._prompt_queue_legacy_paths]
+            try:
+                self._read_queue()
+            except PromptQueueError:
+                paths.append((self._prompt_queue_path, 'unreadable'))
+            recovery = []
+            for path, kind in paths:
+                try:
+                    with open(path, encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    content = None
+                recovery.append({'kind': kind, 'path': path, 'content': content})
+            return recovery
+
+    @contextmanager
+    def _input_queue_transaction(self):
+        from .input_receipts import session_input_store
+        store = session_input_store(self)
+        with store.transaction():
+            with self._queue_transaction():
+                yield store, store._read(), self._read_queue()
+
+    @input_projection
+    def enqueue_prompt(self, text: str, images: Optional[list] = None,
+                       model: Optional[str] = None, *, source: str = '',
+                       retry_key=None, documents=None, upload_root=None,
+                       input_id=None, original_text=ORIGINAL_TEXT_UNSET) -> dict:
+        delivery_text = text or ''
+        text = delivery_text.strip()
+        if not text and not images and not documents and not input_id:
+            return {'id': '', 'text': '', 'images': [], 'model': ''}
+        from .input_receipts import session_input_store
+        store = session_input_store(self)
+        with store.transaction():
+            item = {'id': uuid.uuid4().hex, 'text': text or '(see attached file)',
+                    'images': [str(p) for p in (images or []) if p and str(p).strip()],
+                    'model': (model or '').strip(), 'owner_instance': store.instance}
+            if source == 'goal_mode':
+                item['source'] = source
+            else:
+                if input_id:
+                    receipt = store.get(input_id)
+                else:
+                    receipt = store.admit(delivery_text, original_text=original_text, images=images, documents=documents,
+                                          upload_root=upload_root or getattr(self, '_input_upload_root', None),
+                                          model=item['model'], retry_key=retry_key)
+                if 'delivery_text' in receipt:
+                    item['text'] = receipt['delivery_text'].strip() or '(see attached file)'
+                item['id'] = receipt['id']
+                item['input_id'] = receipt['id']
+                item['images'] = [a['ref'] for a in receipt['attachments'] if a['kind'] == 'image']
+                item['documents'] = [a['ref'] for a in receipt['attachments'] if a['kind'] == 'document']
+            with self._input_queue_transaction() as (store, document, items):
+                if item.get('input_id'):
+                    receipt = next(r for r in document['inputs'] if r['id'] == item['input_id'])
+                    if receipt['status'] != 'accepted' or receipt['owner_instance'] != store.instance:
+                        return {**item, 'held': True}
+                existing = next((row for row in items if row['id'] == item['id']), None)
+                if existing:
+                    if item.get('input_id') and receipt.get('reason') == 'interrupt_followup' and existing.get('owner_instance') != store.instance:
+                        existing['owner_instance'] = store.instance
+                        self._commit_queue(items)
+                    return copy.deepcopy(existing)
+                self._commit_queue(items + [item])
+            return copy.deepcopy(item)
 
     def list_prompts(self) -> list:
-        """Return a snapshot copy of the queue in order."""
-        try:
-            with self._prompt_queue_lock:
-                return [dict(x) for x in self._prompt_queue]
-        except Exception:
-            return []
+        with self._input_queue_transaction() as (store, document, items):
+            receipts = {r['id']: r for r in document['inputs']}
+            runnable = [item for item in items if self._prompt_is_runnable(item, store, receipts)]
+            self._prompt_queue = copy.deepcopy(runnable)
+            return copy.deepcopy(runnable)
+
+    @staticmethod
+    def _prompt_is_runnable(item, store, receipts):
+        if item.get('owner_instance') != store.instance:
+            return False
+        if not item.get('input_id'):
+            return item.get('source') == 'goal_mode'
+        receipt = receipts.get(item['input_id'])
+        return bool(receipt and receipt['status'] == 'accepted' and receipt['owner_instance'] == store.instance)
+
+    def held_prompts(self) -> list:
+        with self._input_queue_transaction() as (store, document, items):
+            receipts = {r['id']: r for r in document['inputs']}
+            return copy.deepcopy([item for item in items if not self._prompt_is_runnable(item, store, receipts)])
+
+    def input_receipts(self) -> list:
+        from .input_receipts import session_input_store
+        return session_input_store(self).list()
 
     def remove_prompt(self, id: str) -> bool:
-        """Remove the item with the given id. Returns False if not found."""
-        try:
-            if not id:
+        with self._input_queue_transaction() as (store, document, items):
+            remaining = [x for x in items if x['id'] != id]
+            if len(remaining) == len(items):
                 return False
-            with self._prompt_queue_lock:
-                found = False
-                for i, it in enumerate(self._prompt_queue):
-                    if it.get("id") == id:
-                        del self._prompt_queue[i]
-                        found = True
-                        break
-            if found:
-                self._save_prompt_queue()
-            return found
-        except Exception:
-            return False
+            for row in document['inputs']:
+                if row['id'] == id and row['status'] not in ('injected', 'dropped'):
+                    row.update(status='dropped', reason='removed_from_playlist')
+            store._write(document)
+            self._commit_queue(remaining)
+            return True
 
     def reorder_prompts(self, ordered_ids: list) -> list:
-        """Reorder the queue to match the given id order.
-
-        Unknown ids are ignored. Any items whose ids are NOT mentioned in
-        ordered_ids are appended at the end in their existing relative order.
-        Returns the new snapshot.
-        """
-        try:
-            ids = [str(x) for x in (ordered_ids or []) if x]
-            with self._prompt_queue_lock:
-                by_id = {it.get("id"): it for it in self._prompt_queue}
-                new_order: list[dict] = []
-                seen: set = set()
-                for id_ in ids:
-                    it = by_id.get(id_)
-                    if it is not None and id_ not in seen:
-                        new_order.append(it)
-                        seen.add(id_)
-                for it in self._prompt_queue:
-                    iid = it.get("id")
-                    if iid not in seen:
-                        new_order.append(it)
-                        seen.add(iid)
-                self._prompt_queue = new_order
-                snapshot = [dict(x) for x in self._prompt_queue]
-            self._save_prompt_queue()
-            return snapshot
-        except Exception:
-            with self._prompt_queue_lock:
-                return [dict(x) for x in self._prompt_queue]
+        with self._input_queue_transaction() as (store, document, items):
+            by_id = {x['id']: x for x in items}
+            ordered = []
+            for id_ in ordered_ids or []:
+                if id_ in by_id:
+                    ordered.append(by_id.pop(id_))
+            ordered.extend(by_id.values())
+            self._commit_queue(ordered)
+            receipts = {r['id']: r for r in document['inputs']}
+            return copy.deepcopy([item for item in ordered if self._prompt_is_runnable(item, store, receipts)])
 
     def clear_prompts(self) -> int:
-        """Empty the queue. Returns the number of items removed."""
-        try:
-            with self._prompt_queue_lock:
-                n = len(self._prompt_queue)
-                self._prompt_queue = []
-            self._save_prompt_queue()
-            return n
-        except Exception:
-            return 0
+        with self._input_queue_transaction() as (store, document, items):
+            ids = {item['id'] for item in items}
+            for row in document['inputs']:
+                if row['id'] in ids and row['status'] not in ('injected', 'dropped'):
+                    row.update(status='dropped', reason='playlist_cleared')
+            store._write(document)
+            self._commit_queue([])
+            return len(items)
 
     def _next_queued_needs_driver_swap(self) -> bool:
-        """True if the head queue item is stamped for a different pilot model.
-
-        Mid-turn playlist drain must not run a mismatched model inside the
-        current step loop -- leave the item queued so the turn ends and the
-        deferred swap can apply before the next turn starts.
-        """
-        try:
-            with self._prompt_queue_lock:
-                if not self._prompt_queue:
-                    return False
-                m = str(self._prompt_queue[0].get("model") or "").strip()
-                if not m:
-                    return False
-                return m != str(self.config.driver or "").strip()
-        except Exception:
-            return False
+        items = self.list_prompts()
+        return bool(items and items[0]['model'] and items[0]['model'] != str(self.config.driver or '').strip())
 
     def _pop_next_prompt(self) -> dict:
-        """Pop and return the first queued prompt, or {} if the queue is empty.
+        return self.handoff_prompt()
 
-        Internal helper for the turn-completion drain. Never raises.
-        """
-        try:
-            with self._prompt_queue_lock:
-                if not self._prompt_queue:
-                    return {}
-                popped = self._prompt_queue.pop(0)
-            self._save_prompt_queue()
-            return popped
-        except Exception:
-            return {}
+    def handoff_prompt(self, input_id=None) -> dict:
+        """Commit delivery attempt before consumption; never reclaim an old attempt."""
+        with self._input_queue_transaction() as (store, document, items):
+            receipts = {r['id']: r for r in document['inputs']}
+            candidates = [item for item in items if self._prompt_is_runnable(item, store, receipts)]
+            if not candidates:
+                return {}
+            item = candidates[0]
+            if input_id is not None and item['id'] != input_id:
+                raise PromptQueueError('input_handoff_conflict', 'Only the current live playlist head can be handed off.')
+            if item.get('input_id'):
+                token = uuid.uuid4().hex
+                receipts[item['input_id']].update(status='delivering', reason='playlist_handoff',
+                                                handoff_token=token, handoff_claimed=False, transcript_digest=store._transcript_digest())
+                item['handoff_token'] = token
+                store._write(document)
+            self._commit_queue([row for row in items if row['id'] != item['id']])
+            return copy.deepcopy(item)

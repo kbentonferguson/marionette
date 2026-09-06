@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from threading import RLock
 from unittest.mock import MagicMock
 
 from harness.api.sessions import (
@@ -26,6 +27,7 @@ def _session_svc(runners: SessionRunnerRegistry, *, active: str = "sess-a"):
 
     return SimpleNamespace(
         sessions=sessions,
+        pilot_swap_lock=RLock(),
         runners=runners,
         cfg=SimpleNamespace(repo="/tmp/repo"),
         get_pilot=lambda: pilot,

@@ -84,6 +84,33 @@ def test_build_seatbelt_profile_confines_writes():
     assert "(allow process*)" in profile
 
 
+@pytest.mark.parametrize("network", ["allow", "deny"])
+def test_seatbelt_network_policy_is_explicit(network):
+    profile = os_sandbox.build_seatbelt_profile(["/repo"], network=network)
+    assert f"({network} network*)" in profile
+    assert "(deny default)" in profile
+    assert "(allow default)" not in profile
+
+
+@pytest.mark.parametrize(
+    "mode,network,expected",
+    [("required", None, "deny"), ("auto", None, "allow"),
+     ("required", "allow", "allow"), ("auto", "deny", "deny")],
+)
+def test_child_network_policy(mode, network, expected):
+    env = {"HARNESS_OS_SANDBOX": mode}
+    if network is not None:
+        env["HARNESS_OS_SANDBOX_NETWORK"] = network
+    assert os_sandbox.resolve_child_network_policy(env) == expected
+
+
+@pytest.mark.parametrize("network", ["allow", "deny"])
+def test_bwrap_network_namespace_policy(monkeypatch, network):
+    monkeypatch.setattr(os_sandbox.shutil, "which", lambda name: "/usr/bin/bwrap")
+    argv = os_sandbox.build_bwrap_argv(["/repo"], "true", network=network)
+    assert ("--unshare-net" in argv) == (network == "deny")
+
+
 def test_build_bwrap_argv_includes_bind_and_sh_c(monkeypatch):
     monkeypatch.setattr(os_sandbox.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
     argv = os_sandbox.build_bwrap_argv(["/repo"], "echo hi")

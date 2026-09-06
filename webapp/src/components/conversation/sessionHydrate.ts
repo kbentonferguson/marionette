@@ -40,20 +40,6 @@ export function mergeUniqueArtifacts(
 }
 
 /**
- * When activeSessionId clears mid-project-switch: keep prior rows dimmed
- * instead of flashing the first-run empty placeholder.
- */
-export function emptySessionSwitchState(priorItemCount: number): {
-  clearItems: boolean;
-  stale: boolean;
-} {
-  if (priorItemCount === 0) {
-    return { clearItems: true, stale: false };
-  }
-  return { clearItems: false, stale: true };
-}
-
-/**
  * Keep thinking/executing/streaming/awaiting_swarm chrome when runner is busy.
  * Matches preserveOrThinking / isAgentLoopOpen so Investigating stays armed.
  */

@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 import urllib.request
 import urllib.error
 
-from .base import DriverResponse, SYSTEM_PROMPT
+from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
 
 
@@ -115,14 +115,18 @@ class GeminiDriver:
 
             elif role == "tool":
                 tc_id = msg.get("tool_call_id") or ""
-                content_val = msg.get("content") or ""
+                content_val = tool_result_content(msg)
+                try:
+                    response = json.loads(content_val)
+                except (ValueError, TypeError):
+                    response = None
+                if not isinstance(response, dict):
+                    response = {"content": content_val}
                 name = tool_id_to_name.get(tc_id, tc_id)
                 parts.append({
                     "functionResponse": {
                         "name": name,
-                        "response": {
-                            "content": content_val
-                        }
+                        "response": response
                     }
                 })
                 gemini_role = "user"

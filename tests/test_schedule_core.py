@@ -291,21 +291,20 @@ def test_display_status_invalid_cron():
     assert s.display_status() == "invalid_cron"
 
 
-def test_validate_timezone_empty_only_iana_deferred():
+def test_validate_timezone_host_local_and_iana():
     assert validate_timezone("") == ""
     assert validate_timezone("   ") == ""
+    assert validate_timezone("America/New_York") == "America/New_York"
+    assert validate_timezone("UTC") == "UTC"
     with pytest.raises(ValueError, match="IANA"):
-        validate_timezone("America/New_York")
-    with pytest.raises(ValueError, match="IANA"):
-        validate_timezone("UTC")
+        validate_timezone("Not/A_Zone")
 
 
-def test_timezone_mode_always_host_local():
+def test_timezone_mode_matches_saved_zone():
     s = Schedule(id="a", name="n", objective="o", cron="* * * * *")
     assert timezone_mode(s) == "host_local"
-    # Stale non-empty column values are ignored for mode (IANA deferred).
     s.timezone = "UTC"
-    assert timezone_mode(s) == "host_local"
+    assert timezone_mode(s) == "iana"
 
 
 def test_fire_at_timestamp_round_trip():

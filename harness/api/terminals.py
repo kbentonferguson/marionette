@@ -40,11 +40,20 @@ def post_terminal_create(body: dict, svc: TerminalServices) -> tuple[int, dict]:
 
 def post_terminal_write(body: dict, svc: TerminalServices) -> tuple[int, dict]:
     """POST /api/terminal/write."""
-    sess = svc.pty.get(body.get("id", ""))
+    sid = body.get("id", "")
+    submission_id = body.get("submission_id")
+    data = body.get("data", "")
+    receipt = {"id": sid, "submission_id": submission_id, "accepted_bytes": 0}
+    if not isinstance(data, str):
+        return 400, {**receipt, "error": "terminal data must be text"}
+    sess = svc.pty.get(sid)
     if not sess:
-        return 404, {"error": "no such terminal"}
-    sess.write(body.get("data", ""))
-    return 200, {"ok": True}
+        return 404, {**receipt, "error": "no such terminal"}
+    accepted = sess.write(data)
+    receipt["accepted_bytes"] = accepted
+    if accepted != len(data.encode("utf-8", "replace")):
+        return 409, {**receipt, "error": "terminal input not fully accepted; execution unknown"}
+    return 200, {**receipt, "ok": True}
 
 
 def post_terminal_resize(body: dict, svc: TerminalServices) -> tuple[int, dict]:
@@ -66,7 +75,7 @@ def parse_terminal_start_offset(raw: Any) -> int:
     """Parse a reconnect byte offset from query or helper input. Never negative."""
     try:
         return max(0, int(raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -88,6 +97,7 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices, start_offset:
     handler.end_headers()
 
     def send(payload: dict) -> None:
+        payload["id"] = sid
         handler.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
         handler.wfile.flush()
 
@@ -103,24 +113,32 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices, start_offset:
     # disconnected (BrokenPipe / ConnectionReset).
     client_writable = True
     reason = "process_exit"
+    last_observation = time.monotonic()
+    def read_and_send() -> bool:
+        nonlocal offset
+        if callable(getattr(sess, "read_output", None)):
+            data, reported, start, gap = sess.read_output(offset)
+            if gap:
+                send({"kind": "gap", "reason": gap, "requested_offset": offset,
+                      "offset": start, "dropped_bytes": max(0, start - offset)})
+            offset = reported
+        else:
+            # Legacy adapters retain their two-value reader contract.
+            data, reported = sess.read_since(offset)
+            offset = max(offset + len(data), int(reported))
+        if data:
+            send({"kind": "data", "b64": _b64.b64encode(data).decode("ascii"), "offset": offset})
+        return bool(data)
+
     try:
         while sess.alive():
-            data, reported = sess.read_since(offset)
-            if data:
-                # Some PTY implementations report stale offsets; never move
-                # backwards and always account for bytes actually delivered.
-                offset = max(offset + len(data), int(reported))
-                send({"kind": "data", "b64": _b64.b64encode(data).decode("ascii"), "offset": offset})
-            else:
-                offset = max(offset, int(reported))
+            if not read_and_send():
                 time.sleep(0.05)
+            if time.monotonic() - last_observation >= 1.0:
+                send({"kind": "observation", "state": "unknown", "offset": offset})
+                last_observation = time.monotonic()
         # flush any final bytes after exit
-        data, reported = sess.read_since(offset)
-        if data:
-            offset = max(offset + len(data), int(reported))
-            send({"kind": "data", "b64": _b64.b64encode(data).decode("ascii"), "offset": offset})
-        else:
-            offset = max(offset, int(reported))
+        read_and_send()
     except (BrokenPipeError, ConnectionResetError):
         client_writable = False
     except Exception as exc:

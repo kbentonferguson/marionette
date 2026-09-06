@@ -86,8 +86,24 @@ def test_http_interrupt_empty_busy_turn_has_no_phantom_steer_drop():
             _clear_stop_markers(pilot)
 
 
-def test_http_empty_steer_rejected_interrupt_still_clean():
+def test_http_empty_steer_rejected_interrupt_still_clean(tmp_path, monkeypatch):
     """Empty steer is 400; queue stays empty; Stop still has no drop notice."""
+    import harness.server as server
+    from harness.sessions import SessionStore
+    from harness.session_runners import SessionRunnerRegistry
+
+    config = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path))
+    sessions = SessionStore(str(tmp_path / "sessions.json"))
+    sid = sessions.create("Empty steer")['id']
+    pilot = ConversationalSession(config)
+    pilot.harness_session_id = sid
+    pilot.bind_prompt_queue(str(tmp_path), sid)
+    runners = SessionRunnerRegistry()
+    runners.get_or_create(sid, lambda: pilot)
+    monkeypatch.setattr(server, '_cfg', config)
+    monkeypatch.setattr(server, '_sessions', sessions)
+    monkeypatch.setattr(server, '_runners', runners)
+    monkeypatch.setattr(server, '_pilot', pilot)
     with _harness_http_server() as (srv, port):
         pilot = srv._pilot
         _clear_stop_markers(pilot)

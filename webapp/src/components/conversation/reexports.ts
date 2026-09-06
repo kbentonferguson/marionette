@@ -144,7 +144,6 @@ export {
 export {
   collectDisplayArtifacts,
   mergeUniqueArtifacts,
-  emptySessionSwitchState,
   shouldPreserveBusyStatus,
   runnerBusySwitchDecision,
   SESSION_STATE_FAIL_NOTICE,

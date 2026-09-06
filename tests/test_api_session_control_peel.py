@@ -200,6 +200,9 @@ def test_steer_recover_turn_admits_recover_and_requires_expected_turn_id():
         def __init__(self):
             self._session_actions = SessionActionStore()
 
+        def _action_store(self):
+            return self._session_actions
+
         def enqueue_steer(self, text):
             raise AssertionError("RecoverTurn must not enqueue_steer")
 
@@ -229,6 +232,9 @@ def test_steer_turn_input_mode_start_if_idle():
         def __init__(self):
             self._session_actions = SessionActionStore()
             self._busy = False
+
+        def _action_store(self):
+            return self._session_actions
 
         def is_turn_busy(self):
             return self._busy

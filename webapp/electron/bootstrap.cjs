@@ -29,7 +29,55 @@ const VERSIONS = {
 };
 
 const DEFAULT_REPO = "https://github.com/professorpalmer/marionette.git";
-const DEFAULT_BRANCH = "main";
+const crypto = require("node:crypto");
+const RECEIPT = "marionette-bootstrap.json";
+
+function bootstrapTarget(env = process.env) {
+  const override = env.MARIONETTE_REPO_URL || env.MARIONETTE_BRANCH || env.MARIONETTE_REVISION;
+  if (override) {
+    if (env.MARIONETTE_REVISION && !/^[a-f0-9]{40}$/i.test(env.MARIONETTE_REVISION)) {
+      throw new Error("MARIONETTE_REVISION must be a full Git commit SHA.");
+    }
+    return { mode: "development", repo: env.MARIONETTE_REPO_URL || DEFAULT_REPO,
+      revision: env.MARIONETTE_REVISION ? env.MARIONETTE_REVISION.toLowerCase() : null, ref: env.MARIONETTE_BRANCH || "main" };
+  }
+  let metadata;
+  try { metadata = JSON.parse(fs.readFileSync(path.join(__dirname, "bootstrap-revision.json"), "utf8")); }
+  catch { throw new Error("Packaged source revision is missing. Reinstall a complete Marionette installer, or explicitly set MARIONETTE_REVISION for development."); }
+  if (metadata.schema !== 1 || !/^[a-f0-9]{40}$/.test(metadata.revision) || metadata.repo !== DEFAULT_REPO) {
+    throw new Error("Invalid packaged source revision. Reinstall Marionette.");
+  }
+  return { mode: "packaged", repo: metadata.repo, revision: metadata.revision };
+}
+
+function gitValue(dir, args) {
+  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", windowsHide: true });
+  if (result.status !== 0) throw new Error(`Cannot validate checkout at ${dir}: ${result.stderr || "git unavailable"}`);
+  return result.stdout.trim();
+}
+
+function receiptPath(dir) {
+  return path.resolve(dir, gitValue(dir, ["rev-parse", "--git-path", RECEIPT]));
+}
+
+function assertCheckout(dir, target) {
+  if (gitValue(dir, ["remote", "get-url", "origin"]) !== target.repo) {
+    throw new Error(`Checkout origin differs from ${target.repo}. Preserve ${dir} and choose a separate checkout or an explicit MARIONETTE_REPO_URL override.`);
+  }
+  if (gitValue(dir, ["status", "--porcelain", "--untracked-files=all"])) {
+    throw new Error(`Local changes in ${dir}. Commit or move your changes before relaunching; bootstrap will not reset or discard them.`);
+  }
+}
+
+function installIdentity(dir, target) {
+  const inputs = ["webapp/package-lock.json", "webapp/package.json", "pyproject.toml"];
+  const hash = crypto.createHash("sha256");
+  for (const name of inputs) hash.update(name).update(fs.readFileSync(path.join(dir, name)));
+  return { schema: 1, mode: target.mode, repo: target.repo,
+    revision: gitValue(dir, ["rev-parse", "HEAD"]), inputs: hash.digest("hex"),
+    platform: process.platform, arch: process.arch,
+    puppetmaster: process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.23.0" };
+}
 
 function venvPython(dir) {
   return process.platform === "win32"
@@ -37,13 +85,18 @@ function venvPython(dir) {
     : path.join(dir, ".venv", "bin", "python");
 }
 
-function isInstallComplete(dir) {
+function isInstallComplete(dir, target = null) {
   try {
-    return (
-      fs.existsSync(path.join(dir, ".git")) &&
+    target = target || bootstrapTarget();
+    // Branch overrides must resolve the remote again; they never certify a release.
+    if (!target.revision) return false;
+    assertCheckout(dir, target);
+    if (gitValue(dir, ["rev-parse", "HEAD"]) !== target.revision) return false;
+    const receipt = JSON.parse(fs.readFileSync(receiptPath(dir), "utf8"));
+    return JSON.stringify(receipt) === JSON.stringify(installIdentity(dir, target)) &&
       fs.existsSync(venvPython(dir)) &&
-      fs.existsSync(path.join(dir, "webapp", "dist", "index.html"))
-    );
+      fs.existsSync(path.join(dir, "webapp", "node_modules")) &&
+      fs.existsSync(path.join(dir, "webapp", "dist", "index.html"));
   } catch {
     return false;
   }
@@ -283,21 +336,24 @@ async function ensureUv(onProgress) {
   if (!commandExists("uv")) throw new Error("uv install failed -- add ~/.local/bin to PATH and relaunch.");
 }
 
-async function cloneOrUpdate(dest, repoUrl, branch, onProgress) {
+async function cloneOrUpdate(dest, target, onProgress) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(path.join(dest, ".git"))) {
-    await reportProgress(onProgress, `Updating checkout (${branch})...`, 30);
-    await runAsync("git", ["-C", dest, "fetch", "--no-tags", "origin", branch]);
-    await runAsync("git", ["-C", dest, "checkout", branch]);
-    try {
-      await runAsync("git", ["-C", dest, "merge", "--ff-only", `origin/${branch}`]);
-    } catch {
-      await reportProgress(onProgress, "Local changes present; skipped fast-forward.", 32);
-    }
+    assertCheckout(dest, target);
   } else {
-    await reportProgress(onProgress, `Cloning ${repoUrl}...`, 30);
-    await runAsync("git", ["clone", "--branch", branch, repoUrl, dest]);
+    if (fs.existsSync(dest) && fs.readdirSync(dest).length) {
+      throw new Error(`Checkout directory ${dest} is not empty. Move it aside or choose a separate checkout; bootstrap will not discard files.`);
+    }
+    await reportProgress(onProgress, `Preparing checkout from ${target.repo}...`, 30);
+    await runAsync("git", ["init", dest]);
+    await runAsync("git", ["-C", dest, "remote", "add", "origin", target.repo]);
   }
+  await reportProgress(onProgress, `Preparing ${target.mode} source (${target.revision || target.ref})...`, 32);
+  await runAsync("git", ["-C", dest, "fetch", "--no-tags", "origin", target.revision || target.ref]);
+  const revision = gitValue(dest, ["rev-parse", "FETCH_HEAD^{commit}"]);
+  if (target.revision && revision !== target.revision) throw new Error("Fetched source does not match the requested commit.");
+  await runAsync("git", ["-C", dest, "checkout", "--detach", revision]);
+  return { ...target, revision };
 }
 
 async function provisionPython(dest, onProgress) {
@@ -308,45 +364,43 @@ async function provisionPython(dest, onProgress) {
   }
   await reportProgress(onProgress, "Installing Marionette + Puppetmaster...", 55);
   await runAsync("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
-  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.22.48";
+  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.23.0";
   await runAsync("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
 }
 
 async function buildRenderer(dest, onProgress) {
   const webapp = path.join(dest, "webapp");
-  // Resume-friendly: an interrupted first launch often leaves node_modules but no
-  // dist/. Re-running a full npm ci on every retry is what made DMG boots look hung.
-  if (!fs.existsSync(path.join(webapp, "node_modules"))) {
-    await reportProgress(onProgress, "Installing node deps...", 70);
-    await runNpmAsync(["ci"], { cwd: webapp });
-  } else {
-    await reportProgress(onProgress, "Node deps present; building renderer...", 75);
-  }
+  await reportProgress(onProgress, "Installing node deps...", 70);
+  await runNpmAsync(["ci"], { cwd: webapp });
   await reportProgress(onProgress, "Building renderer...", 85);
   await runNpmAsync(["run", "build"], { cwd: webapp });
 }
 
 async function runBootstrap(targetDir, onProgress = () => {}) {
-  const repoUrl = process.env.MARIONETTE_REPO_URL || DEFAULT_REPO;
-  const branch = process.env.MARIONETTE_BRANCH || DEFAULT_BRANCH;
-
+  const target = bootstrapTarget();
   await reportProgress(onProgress, "Checking prerequisites...", 5);
-  // A Finder/Dock-launched app has a minimal PATH; hydrate it with Homebrew and
-  // Node version-manager locations so node/git/uv are discoverable (fixes the
-  // false "Node too old / not found" on machines with Homebrew Node).
   hydratePath();
   await ensurePortableGit(onProgress);
+  if (isInstallComplete(targetDir, target)) return;
+  const resolved = await cloneOrUpdate(targetDir, target, onProgress);
+  const receipt = receiptPath(targetDir);
+  // A failed retry cannot inherit success from an earlier install.
+  fs.rmSync(receipt, { force: true });
+  const identity = installIdentity(targetDir, resolved);
   await ensureUv(onProgress);
   await ensurePortableNode(onProgress);
-
-  await cloneOrUpdate(targetDir, repoUrl, branch, onProgress);
   await provisionPython(targetDir, onProgress);
   await buildRenderer(targetDir, onProgress);
-
-  await reportProgress(onProgress, "Bootstrap complete.", 100);
-  if (!isInstallComplete(targetDir)) {
+  assertCheckout(targetDir, resolved);
+  if (JSON.stringify(identity) !== JSON.stringify(installIdentity(targetDir, resolved)) ||
+      !fs.existsSync(venvPython(targetDir)) ||
+      !fs.existsSync(path.join(targetDir, "webapp", "node_modules")) ||
+      !fs.existsSync(path.join(targetDir, "webapp", "dist", "index.html"))) {
     throw new Error("Bootstrap finished but install validation failed.");
   }
+  fs.writeFileSync(receipt + ".tmp", JSON.stringify(identity));
+  fs.renameSync(receipt + ".tmp", receipt);
+  await reportProgress(onProgress, `Bootstrap complete (${resolved.mode}, ${resolved.revision}).`, 100);
 }
 
 // Windows: portable Node/MinGit live under %LOCALAPPDATA%\marionette\tools but
@@ -370,6 +424,7 @@ function reinjectPortableTools() {
 }
 
 module.exports = {
+  bootstrapTarget,
   isInstallComplete,
   runBootstrap,
   venvPython,

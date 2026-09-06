@@ -91,6 +91,7 @@ function renderDock(slashSearch: string | null) {
       handleQueueDragOver={noop}
       handleQueueDragLeave={noop}
       handleQueueDrop={noop}
+      moveServerQueueItem={noop}
       handleQueueDragEnd={noop}
       handleQueueEdit={noop}
       handleQueueRemove={noop}

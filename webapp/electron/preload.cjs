@@ -12,8 +12,33 @@ contextBridge.exposeInMainWorld(
 );
 
 let streamSeq = 0;
+let imageSeq = 0;
 
 contextBridge.exposeInMainWorld("harnessIPC", {
+  // Keep the envelope intact through contextBridge; renderer constructs Errors.
+  endpointHeaders: true,
+  requestJSON: (method, path, body, correlationId, identityHeaders) => {
+    const options = { responseEnvelope: true, correlationId, identityHeaders, retries: 0 };
+    if (method === "GET") return ipcRenderer.invoke("harness:getJSON", path, options);
+    if (method === "POST") return ipcRenderer.invoke("harness:postJSON", path, body, options);
+    throw new Error("Unsupported JSON request method");
+  },
+  requestImage: (path, identityHeaders, port, onResult) => {
+    const id = `image-${++imageSeq}`;
+    let finished = false;
+    const deliver = result => {
+      if (finished) return;
+      finished = true;
+      onResult(result);
+    };
+    ipcRenderer.invoke("harness:requestImage", id, path, identityHeaders, port)
+      .then(deliver, () => deliver({kind: "image-error", code: "connection"}));
+    return () => {
+      if (finished) return;
+      finished = true;
+      ipcRenderer.send("harness:cancelImage", id);
+    };
+  },
   getJSON: (path) => ipcRenderer.invoke("harness:getJSON", path),
   postJSON: (path, body) => ipcRenderer.invoke("harness:postJSON", path, body),
   pickFolder: () => ipcRenderer.invoke("harness:pickFolder"),
@@ -39,7 +64,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   contextMenuEdit: (command) => ipcRenderer.invoke("context-menu:edit", command),
   contextMenuSpellcheck: (action) => ipcRenderer.invoke("context-menu:spellcheck", action),
   contextMenuNative: () => ipcRenderer.invoke("context-menu:native"),
-  uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
+  uploadFile: (payload, identityHeaders) => ipcRenderer.invoke("harness:uploadFile", payload, identityHeaders),
   // Electron no longer sets File.path; this is the supported drop-path API.
   pathForFile: (file) => {
     try {
@@ -61,7 +86,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   },
 
   // stream(path, onEvent, onDone, onError) -> cancel()
-  stream: (path, onEvent, onDone, onError) => {
+  stream: (path, onEvent, onDone, onError, identityHeaders) => {
     const id = `stream-${++streamSeq}`;
     const onEv = (_e, ev) => onEvent(ev);
     const onDoneCb = () => { cleanup(); onDone && onDone(); };
@@ -74,7 +99,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     ipcRenderer.on(`${id}:event`, onEv);
     ipcRenderer.on(`${id}:done`, onDoneCb);
     ipcRenderer.on(`${id}:error`, onErrCb);
-    ipcRenderer.send("harness:stream", id, path);
+    ipcRenderer.send("harness:stream", id, path, identityHeaders);
     return () => { ipcRenderer.send(`${id}:cancel`); cleanup(); };
   },
 
