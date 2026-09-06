@@ -4,46 +4,18 @@ no keys are needed."""
 import json
 import os
 import sys
-import threading
-import time
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
-from typing import Optional
 
-_JOIN_TIMEOUT = 5.0
-_READY_TIMEOUT = 5.0
+from http_server_support import (
+    TestThreadingHTTPServer as _TestThreadingHTTPServer,
+    harness_http_server,
+    wait_server_ready as _wait_server_ready,
+)
+
 _SERVE_THREAD_NAME = "test-upload-httpd"
 _HTTP_TIMEOUT = 15.0 if sys.platform == "win32" else 10.0
-
-
-class _TestThreadingHTTPServer(ThreadingHTTPServer):
-    """Request-handler threads must not outlive teardown (Windows CI flake)."""
-
-    daemon_threads = True
-
-
-def _wait_server_ready(port: int, token: str) -> None:
-    """Block until the accept loop answers a side-effect-light GET."""
-    deadline = time.monotonic() + _READY_TIMEOUT
-    last_err: Optional[Exception] = None
-    while time.monotonic() < deadline:
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/config",
-                headers={"X-Harness-Token": token},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                if resp.status == 200:
-                    return
-        except Exception as exc:
-            last_err = exc
-            time.sleep(0.05)
-    raise RuntimeError(
-        f"upload test server not ready on 127.0.0.1:{port}: {last_err!r}"
-    )
 
 
 @contextmanager
@@ -55,26 +27,8 @@ def _upload_http_server():
     import harness.server as srv
     importlib.reload(srv)
 
-    httpd = _TestThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
-    port = httpd.server_address[1]
-    thread = threading.Thread(
-        target=httpd.serve_forever,
-        name=_SERVE_THREAD_NAME,
-        daemon=True,
-    )
-    thread.start()
-    try:
-        _wait_server_ready(port, srv._TOKEN)
-        yield srv, port
-    finally:
-        try:
-            httpd.shutdown()
-        finally:
-            try:
-                httpd.server_close()
-            except OSError:
-                pass
-            thread.join(timeout=_JOIN_TIMEOUT)
+    with harness_http_server(srv, thread_name=_SERVE_THREAD_NAME) as running:
+        yield running
 
 
 def _multipart(field, filename, data, ctype="image/png"):
