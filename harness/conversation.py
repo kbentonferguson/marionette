@@ -1084,6 +1084,18 @@ class ConversationalSession(
             return "awaiting_swarm"
         return self._state
 
+    def reload_session_goal(self) -> None:
+        """Bind persistent goal state once per session ownership change."""
+        from .session_goal import SessionGoalStore
+
+        session_id = self.harness_session_id or ""
+        store = getattr(self, "_goal_store", None)
+        if (store is not None and store.session_id == session_id
+                and store.state_dir == self.state_dir):
+            return
+        self._goal_store = SessionGoalStore(self.state_dir, session_id=session_id)
+        self._session_goal = self._goal_store.load()
+
     def session_goal_dict(self) -> dict:
         """Public goal snapshot for /api/session/state (chip-ready JSON)."""
         goal = getattr(self, "_session_goal", None)
@@ -1154,7 +1166,7 @@ class ConversationalSession(
                     return None
         except Exception:
             pass
-        item = self.enqueue_prompt(reminder)
+        item = self.enqueue_prompt(reminder, source="goal_mode")
         goal.record_turn_usage(continuation=True)
         self._persist_session_goal()
         return item if isinstance(item, dict) else {"ok": True}
@@ -1834,7 +1846,8 @@ class ConversationalSession(
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
         system_prompt = self._history[0]
-        cleaned = [m for m in history_list if m.get("role") != "system"]
+        cleaned = [m for m in history_list
+                   if m.get("role") != "system" or m.get("source") == "goal_mode"]
         self._history = [system_prompt] + cleaned
         # Heal a previously-corrupted transcript (dangling or non-adjacent
         # tool_use) on load so we never send an invalid history to the model.
@@ -2946,6 +2959,14 @@ class ConversationalSession(
         """
         self._sanitize_tool_pairs()
         outbound = self._elide_stale_reads(self._history[1:])
+        # Chat transports need a user-shaped trigger after assistant output
+        # (Anthropic otherwise treats it as a prefill). Canonical history and
+        # exports retain system authorship; only this outbound copy is adapted.
+        outbound = [
+            {"role": "user", "content": "[Host control, not user input]\n" + str(m.get("content") or "")}
+            if m.get("role") == "system" and m.get("source") == "goal_mode" else m
+            for m in outbound
+        ]
         return canonicalize_outbound_tool_call_ids(outbound)
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:

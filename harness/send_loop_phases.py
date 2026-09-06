@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterator, Optional
 from pmharness.bridge import execute_intent
 from pmharness.drivers.base import known_assistant_phase
 
+from .goal_mode import reset_turn_goal_state
 from .log_reconstruction import check_outbound_reconstruction
 from .pilot import PilotAction, StreamingSayExtractor
 from .stream_identity import StreamDeltaBatch, normalize_delta_payload
@@ -984,6 +985,11 @@ def dispatch_pilot_provider_call(
     ``thread_start`` is opened on the send thread and closed on the stream
     thread; request-start is marked immediately before the provider call.
     """
+    # Some providers discard system rows in messages. Deliver the active host
+    # control via the existing system parameter while preserving its history role.
+    history = getattr(session, "_history", ()) or ()
+    if history and history[-1].get("source") == "goal_mode":
+        sys_prompt += "\n\n" + history[-1]["content"]
     _clear_provider_dispatch_invoked(session)
     try:
         session._step_tools_schema = None
@@ -2301,6 +2307,7 @@ def drain_idle_turn(
 
     pending_steers = session.drain_steer()
     if pending_steers:
+        reset_turn_goal_state(session)
         format_steer = getattr(
             session, "_format_steer_user_content", None
         )
@@ -2328,6 +2335,7 @@ def drain_idle_turn(
             mailbox_texts = []
     leftover_queued = None
     if mailbox_texts:
+        reset_turn_goal_state(session)
         seen = set(mailbox_texts)
         while True:
             if session._next_queued_needs_driver_swap():
@@ -2382,7 +2390,8 @@ def drain_idle_turn(
     if queued and queued.get("text"):
         q_text = queued.get("text", "")
         q_images = [p for p in (queued.get("images") or []) if p]
-        yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": q_text, "images": list(q_images)})
+        if queued.get("source") != "goal_mode":
+            yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": q_text, "images": list(q_images)})
         # A queued prompt is a genuine fresh user turn, so it carries
         # its image attachments the same way a normal turn does
         # (_send_locked_inner). The step loop already holds a valid
@@ -2446,7 +2455,11 @@ def drain_idle_turn(
                     "error": f"Failed to load attached image(s): {e}",
                 })
                 return ("return", user_message)
-        session._history.append({"role": "user", "content": content})
+        if queued.get("source") == "goal_mode":
+            session._history.append({"role": "system", "content": content, "source": "goal_mode"})
+        else:
+            reset_turn_goal_state(session)
+            session._history.append({"role": "user", "content": content})
         # Refresh the "current user message" reference so downstream
         # per-turn hooks (compaction, ingest, budget) attribute work
         # to the newly-running queued prompt instead of the previous

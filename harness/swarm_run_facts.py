@@ -27,6 +27,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 VERIFIED = "verified"
@@ -133,6 +134,11 @@ class ReadinessFact:
         }
 
 
+class CriterionEvidence(str, Enum):
+    UNKNOWN = "unknown"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class CriterionFact:
     """One explicit acceptance criterion and the evidence that settles it."""
@@ -140,9 +146,11 @@ class CriterionFact:
     text: str
     status: str
     basis: str
+    evidence: CriterionEvidence = CriterionEvidence.UNKNOWN
 
     def as_dict(self) -> dict[str, str]:
-        return {"text": self.text, "status": self.status, "basis": self.basis}
+        return {"text": self.text, "status": self.status, "basis": self.basis,
+                "evidence": self.evidence}
 
 
 @dataclass(frozen=True)
@@ -563,6 +571,8 @@ def evaluate_acceptance_criteria(
     current = str(job_id or "").strip()
     rows = []
     failed_keys: set[str] = set()
+    demonstrated_failures: set[str] = set()
+    reported_passes: set[str] = set()
     for artifact in artifacts or ():
         if not isinstance(artifact, Mapping):
             continue
@@ -575,6 +585,15 @@ def evaluate_acceptance_criteria(
             continue
         verified, failed = _criterion_status_loci(artifact)
         failed_keys |= failed
+        for record in artifact.get("acceptance_criteria") or ():
+            if not isinstance(record, Mapping):
+                continue
+            key = _normalized_text(_criterion_text(record))
+            status = str(record.get("status") or "").strip().lower()
+            if status in _VERIFY_STATUSES:
+                reported_passes.add(key)
+            elif status in {"failed", "fail", "error", "rejected"} and _record_evidence_locus(record):
+                demonstrated_failures.add(key)
         rows.append((artifact, verified))
 
     facts = []
@@ -584,7 +603,12 @@ def evaluate_acceptance_criteria(
             facts.append(CriterionFact(
                 criterion,
                 NOT_VERIFIED,
-                "contradictory current-job pass/fail records for this criterion",
+                ("contradictory current-job pass/fail records for this criterion"
+                 if needle in reported_passes else
+                 "current-job failure record for this criterion"),
+                (CriterionEvidence.FAILED
+                 if needle in demonstrated_failures and needle not in reported_passes
+                 else CriterionEvidence.UNKNOWN),
             ))
             continue
         basis = ""
@@ -811,6 +835,7 @@ __all__ = [
     "CLASSIFICATION_AVAILABLE",
     "CLASSIFICATION_POLICY",
     "CLASSIFICATION_UNAVAILABLE",
+    "CriterionEvidence",
     "CriterionFact",
     "NOT_VERIFIED",
     "ReadinessFact",

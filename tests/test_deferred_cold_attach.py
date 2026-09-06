@@ -136,7 +136,7 @@ def test_warm_attach_does_not_call_factory():
 
         calls = {"n": 0}
 
-        def boom():
+        def boom(*, config=None):
             calls["n"] += 1
             raise AssertionError("factory must not run on warm attach")
 
@@ -215,7 +215,7 @@ def test_cold_deferred_attach_returns_placeholder_then_swaps(tmp_path, monkeypat
         built = threading.Event()
         real = _idle_runner(sid=sid, history=marker)
 
-        def slow_build():
+        def slow_build(*, config=None):
             # Simulate heavy ConversationalSession construction.
             time.sleep(0.05)
             built.set()
@@ -273,7 +273,7 @@ def test_deferred_build_preserves_post_attach_load_history(tmp_path, monkeypatch
         real.export_history = lambda: list(loaded)
         gate = threading.Event()
 
-        def blocked_build():
+        def blocked_build(*, config=None):
             gate.wait(timeout=5.0)
             return real
 
@@ -327,7 +327,7 @@ def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
         gate = threading.Event()
         real_b = _idle_runner(sid=sid_b, history=marker)
 
-        def blocked_build():
+        def blocked_build(*, config=None):
             gate.wait(timeout=5.0)
             return real_b
 
@@ -369,7 +369,7 @@ def test_ensure_active_pilot_ready_blocks_until_swap(tmp_path, monkeypatch):
         real = _idle_runner(sid=sid)
         started = threading.Event()
 
-        def slow_build():
+        def slow_build(*, config=None):
             started.wait(timeout=5.0)
             time.sleep(0.02)
             return real
@@ -444,7 +444,7 @@ def test_perform_pilot_swap_preserves_deferred_transcript(tmp_path, monkeypatch)
         real = _idle_runner(sid=sid, history=marker)
         gate = threading.Event()
 
-        def blocked_build():
+        def blocked_build(*, config=None):
             gate.wait(timeout=5.0)
             return real
 
@@ -495,7 +495,7 @@ def test_failed_deferred_attach_rebuilds_on_reattach(tmp_path, monkeypatch):
         sid = a["id"]
         builds = {"n": 0}
 
-        def flaky_build():
+        def flaky_build(*, config=None):
             builds["n"] += 1
             if builds["n"] == 1:
                 raise RuntimeError("cold build boom")
@@ -595,7 +595,7 @@ def test_mutation_apis_gate_on_deferred_ready(tmp_path, monkeypatch):
         real.harness_session_id = sid
         gate = threading.Event()
 
-        def blocked_build():
+        def blocked_build(*, config=None):
             gate.wait(timeout=5.0)
             return real
 
@@ -664,7 +664,7 @@ def test_mutation_apis_409_when_deferred_build_fails(tmp_path, monkeypatch):
         a = srv._sessions.create(title="FailMut")
         sid = a["id"]
 
-        def boom():
+        def boom(*, config=None):
             raise RuntimeError("build dead")
 
         with patch.object(srv, "_build_conversational_pilot", side_effect=boom):
@@ -754,7 +754,7 @@ def test_deferred_cold_attach_restores_pending_command_approval(tmp_path, monkey
 
         gate = threading.Event()
 
-        def blocked_build():
+        def blocked_build(*, config=None):
             gate.wait(timeout=5.0)
             return ConversationalSession(
                 HarnessConfig(repo=repo, state_dir=str(tmp_path / "st"))

@@ -7,6 +7,7 @@ import { api } from "../../lib/api";
 import { clearSessionTodos } from "../../lib/sessionTodos";
 import { clearActivityFoldPrefs, type Item } from "../TranscriptList";
 import {
+  captureTranscriptRead,
   peekTranscriptCacheEntry,
   resolveSwitchTranscript,
   writeTranscriptCache,
@@ -362,6 +363,56 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // Immediately reflect runner busy state for the session we switched TO
     // (warm cache + Stop chrome) before the background transcript refresh.
     let cancelled = false;
+    // Mid-turn reattach: if the runner is still busy and we have no local
+    // EventSource, prefer a live ring watch (same SSE framing as /api/chat),
+    // falling back to retained-frame pull + light poll if live attach fails.
+    const reattachSid = activeSessionId;
+    let reattachGen = streamGenRef.current;
+    const makeReattach = () => createChatEventsReattach({
+      cancelled: () => cancelled,
+      loadGen,
+      transcriptLoadGenRef,
+      streamGenRef,
+      reattachGen,
+      reattachSid,
+      cachedSessionIdRef,
+      localStreamActiveRef,
+      userStoppedRef,
+      lastAppliedCursorRef,
+      lastAppliedRingCursorRef,
+      ringGenerationRef,
+      detachedBusyRef,
+      runnerBusyPollGenRef,
+      itemsRef,
+      transcriptFpRef,
+      chatEventsPollTimerRef,
+      chatEventsLiveCancelRef,
+      applyStreamEventRef,
+      flushTypewriterRef,
+      maybeRunQueuedResumeRef,
+      maybeDrainQueueRef,
+      clearChatEventsPoll,
+      setItems,
+      setTranscriptStale,
+      setTurnOpen,
+      setStatus,
+      setCompactingStatus,
+      setWaitHint,
+      setBackendPendingSwarms,
+      turnSettledRef,
+      abandonStaleLocalStreamRef,
+    });
+    let { startChatEventsReattach } = makeReattach();
+    ensureChatEventsReattachRef.current = () => {
+      if (cancelled || localStreamActiveRef.current) return;
+      if (reattachGen !== streamGenRef.current) {
+        clearChatEventsPoll();
+        reattachGen = streamGenRef.current;
+        ({ startChatEventsReattach } = makeReattach());
+      }
+      void startChatEventsReattach();
+    };
+    const readStillCurrent = captureTranscriptRead(activeSessionId, itemsRef, streamGenRef);
     const applyRunnerBusy = (
       runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
       sessionState?: string | null,
@@ -421,7 +472,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       let lastErr: unknown = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          return await api.getSessionState();
+          return await api.getSessionState({ sessionId: activeSessionId });
         } catch (err) {
           lastErr = err;
           await new Promise((r) => setTimeout(r, 120 * (attempt + 1)));
@@ -487,12 +538,15 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       return null;
     };
 
-    loadTranscriptWithRetry(activeSessionId, loadGen)
+    let recoveryTimer: number | undefined;
+    let recoveryAttempts = 0;
+    const refreshTranscript = () => loadTranscriptWithRetry(activeSessionId, loadGen)
       .then((loaded) => {
         if (!loaded) return;
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
 
+        if (!readStillCurrent()) return;
         const { res, loadedItems } = loaded;
         // Non-empty warm cache + empty after retries: keep rows (flake honesty).
         // Seeded empty cache (New Session) must accept blank — not the fail banner.
@@ -597,66 +651,30 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           emitArts(artsOrPromise);
         }
 
-        // Mid-turn reattach: if the runner is still busy and we have no local
-        // EventSource, prefer a live ring watch (same SSE framing as /api/chat),
-        // falling back to retained-frame pull + light poll if live attach fails.
-        const reattachSid = activeSessionId;
-        const reattachGen = streamGenRef.current;
-        const { startChatEventsReattach } = createChatEventsReattach({
-          cancelled: () => cancelled,
-          loadGen,
-          transcriptLoadGenRef,
-          streamGenRef,
-          reattachGen,
-          reattachSid,
-          cachedSessionIdRef,
-          localStreamActiveRef,
-          userStoppedRef,
-          lastAppliedCursorRef,
-          lastAppliedRingCursorRef,
-          ringGenerationRef,
-          detachedBusyRef,
-          runnerBusyPollGenRef,
-          itemsRef,
-          transcriptFpRef,
-          chatEventsPollTimerRef,
-          chatEventsLiveCancelRef,
-          applyStreamEventRef,
-          flushTypewriterRef,
-          maybeRunQueuedResumeRef,
-          maybeDrainQueueRef,
-          clearChatEventsPoll,
-          setItems,
-          setTranscriptStale,
-          setTurnOpen,
-          setStatus,
-          setCompactingStatus,
-          setWaitHint,
-          setBackendPendingSwarms,
-          turnSettledRef,
-          abandonStaleLocalStreamRef,
-        });
-        ensureChatEventsReattachRef.current = () => {
-          void startChatEventsReattach();
-        };
-        void startChatEventsReattach();
       })
       .catch(() => {
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
         // Cache hit: keep warm rows. Cache miss: clear relics but mark stale
         // (+ notice) so we never look like a silent first-run empty session.
+        if (!readStillCurrent()) return;
         const failure = transcriptRefreshFailureDecision(hadCache);
-        if (failure.clearItems) {
-          setItems([]);
-          itemsRef.current = [];
-        }
         setTranscriptStale(failure.stale);
         setEditNotice(failure.notice);
+        if (!cancelled && recoveryAttempts < 2) {
+          recoveryAttempts += 1;
+          recoveryTimer = window.setTimeout(() => {
+            if (!cancelled && readStillCurrent()) void refreshTranscript();
+          }, 2000 * recoveryAttempts);
+        }
+      }).finally(() => {
+        if (!cancelled) void startChatEventsReattach();
       });
 
+    void refreshTranscript();
     return () => {
       cancelled = true;
+      window.clearTimeout(recoveryTimer);
       clearChatEventsPoll();
       ensureChatEventsReattachRef.current = () => {};
     };

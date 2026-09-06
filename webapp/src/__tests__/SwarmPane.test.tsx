@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import SwarmPane, { jobDegradedWorkerCount, jobIdentifier, jobSavings, namedSavings, workerSpend, workerOutcome } from "../components/SwarmPane";
 import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
-import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -171,6 +171,67 @@ describe("SwarmPane SWR cache first-open", () => {
     clearSWRCache();
     mockArtifacts.mockResolvedValue([]);
     dispatchProjectSelected(REPO);
+  });
+
+  it("starts only one request on mount and coalesces a slow first poll", async () => {
+    vi.useFakeTimers();
+    mockSwarmLive.mockImplementation(() => new Promise(() => {}));
+    const view = render(<SwarmPane />);
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+      expect(mockSwarmLive).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts a separate read when the active session changes during a poll", async () => {
+    mockSwarmLive.mockImplementation(() => new Promise(() => {}));
+    render(<SwarmPane />);
+    await waitFor(() => expect(mockSwarmLive).toHaveBeenCalledTimes(1));
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-session-changed", {
+        detail: { sessionId: "next-session" },
+      }));
+    });
+    await waitFor(() => expect(mockSwarmLive).toHaveBeenCalledTimes(2));
+  });
+
+  it("does no hidden-pane polling and refreshes when enabled", async () => {
+    vi.useFakeTimers();
+    mockSwarmLive.mockResolvedValue(liveJob());
+    const view = render(<SwarmPane enabled={false} />);
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(mockSwarmLive).not.toHaveBeenCalled();
+      view.rerender(<SwarmPane enabled />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(mockSwarmLive).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("owns initial session cache and rejects a late previous-project reply", async () => {
+    vi.mocked(api.sessions).mockResolvedValueOnce([{ id: "A", active: true, title: "A", created: 0 }]);
+    mockSwarmLive.mockResolvedValue(liveJob({ goal: "Initial A" }));
+    render(<SwarmPane />);
+    await waitFor(() => expect(readSWRCache<SwarmLive>(`swarm:${REPO}:session:A`)?.jobs[0].goal).toBe("Initial A"));
+    let resolveOld!: (value: SwarmLive) => void;
+    mockSwarmLive.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    act(() => window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "old-pending" } })));
+    await waitFor(() => expect(resolveOld).toBeDefined());
+    vi.mocked(api.sessions).mockResolvedValueOnce([{ id: "B", active: true, title: "B", created: 0 }]);
+    mockSwarmLive.mockResolvedValue(liveJob({ goal: "Project B", session_id: "B" }));
+    act(() => dispatchProjectSelected("/new-project"));
+    await waitFor(() => expect(readSWRCache<SwarmLive>("swarm:/new-project:session:B")?.jobs[0].goal).toBe("Project B"));
+    await act(async () => resolveOld(liveJob({ goal: "Late old project" })));
+    expect(screen.queryByText("Late old project")).not.toBeInTheDocument();
+    expect(readSWRCache("swarm:/new-project:session:old-pending")).toBeUndefined();
+    expect(readSWRCache<SwarmLive>("swarm:/new-project:session:B")?.jobs[0].goal).toBe("Project B");
+    vi.mocked(api.sessions).mockResolvedValue([]);
   });
 
   it("renders seeded jobs immediately without Loading swarm jobs...", async () => {

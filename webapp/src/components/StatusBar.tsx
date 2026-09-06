@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Circle,
   GitBranch,
@@ -99,30 +99,46 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const [taskProfile, setTaskProfile] = useState<TaskProfileChip | null>(null);
   const [goalBusy, setGoalBusy] = useState(false);
 
-  const refreshSessionState = () =>
-    api.getSessionState()
-      .then((stateRes) => { if (stateRes) setSessionState(stateRes); })
+  const sessionOwnerRef = useRef({ id: "", generation: 0 });
+  const stateRequestRef = useRef(0);
+  const mutationBusyRef = useRef(false);
+
+  const refreshSessionState = () => {
+    const owner = sessionOwnerRef.current;
+    const request = ++stateRequestRef.current;
+    return api.getSessionState(owner.id ? { sessionId: owner.id } : undefined)
+      .then((stateRes) => {
+        if (!stateRes || owner !== sessionOwnerRef.current || request !== stateRequestRef.current) return;
+        if (!owner.id) owner.id = stateRes.active_view_id || "";
+        setSessionState(stateRes);
+      })
       .catch(() => {});
+  };
 
   const applyGoalMutation = (
-    action: () => Promise<{ ok: boolean; goal: SessionGoal }>,
+    action: (sessionId: string) => Promise<{ ok: boolean; goal: SessionGoal }>,
   ) => {
-    if (goalBusy) return;
+    const owner = sessionOwnerRef.current;
+    if (mutationBusyRef.current || !owner.id) return;
+    mutationBusyRef.current = true;
+    ++stateRequestRef.current;
     setGoalBusy(true);
-    action()
+    action(owner.id)
       .then((res) => {
+        if (owner !== sessionOwnerRef.current) return;
+        ++stateRequestRef.current;
         if (!res?.goal) {
           void refreshSessionState();
           return;
         }
-        setSessionState((prev) =>
-          prev
-            ? { ...prev, goal: res.goal }
-            : { state: "idle", pending_swarms: false, goal: res.goal },
-        );
+        setSessionState((prev) => prev ? { ...prev, goal: res.goal } : prev);
       })
       .catch((err) => console.error("Session GOAL action failed", err))
-      .finally(() => setGoalBusy(false));
+      .finally(() => {
+        if (owner !== sessionOwnerRef.current) return;
+        mutationBusyRef.current = false;
+        setGoalBusy(false);
+      });
   };
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
@@ -212,7 +228,14 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const usage = useProcessUsage({ busy: usageBusy }).session;
 
   useEffect(() => {
-    const onSessionChanged = () => {
+    const onSessionChanged = (event: Event) => {
+      const detail: unknown = event instanceof CustomEvent ? event.detail : null;
+      const id = detail && typeof detail === "object" && "sessionId" in detail
+        && typeof detail.sessionId === "string" ? detail.sessionId : "";
+      sessionOwnerRef.current = { id, generation: sessionOwnerRef.current.generation + 1 };
+      mutationBusyRef.current = false;
+      setGoalBusy(false);
+      setSessionState(null);
       setTaskProfile(null);
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
@@ -320,7 +343,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               title="Pause session GOAL"
               aria-label="Pause session GOAL"
               className="p-0.5 rounded hover:bg-panel hover:text-txt disabled:opacity-50"
-              onClick={() => applyGoalMutation(() => api.pauseSessionGoal())}
+              onClick={() => applyGoalMutation(api.pauseSessionGoal)}
             >
               <Pause size={9} />
             </button>
@@ -332,7 +355,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               title="Resume session GOAL"
               aria-label="Resume session GOAL"
               className="p-0.5 rounded hover:bg-panel hover:text-txt disabled:opacity-50"
-              onClick={() => applyGoalMutation(() => api.resumeSessionGoal())}
+              onClick={() => applyGoalMutation(api.resumeSessionGoal)}
             >
               <Play size={9} />
             </button>
@@ -344,7 +367,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
               title="Complete session GOAL"
               aria-label="Complete session GOAL"
               className="p-0.5 rounded hover:bg-panel hover:text-good disabled:opacity-50"
-              onClick={() => applyGoalMutation(() => api.completeSessionGoal())}
+              onClick={() => applyGoalMutation(api.completeSessionGoal)}
             >
               <Check size={9} />
             </button>
@@ -355,7 +378,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
             title="Clear session GOAL"
             aria-label="Clear session GOAL"
             className="p-0.5 rounded hover:bg-panel hover:text-risk disabled:opacity-50"
-            onClick={() => applyGoalMutation(() => api.clearSessionGoal())}
+            onClick={() => applyGoalMutation(api.clearSessionGoal)}
           >
             <X size={9} />
           </button>

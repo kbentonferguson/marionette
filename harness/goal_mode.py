@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Sequence
 
-from .swarm_run_facts import NOT_VERIFIED, VERIFIED
+from .swarm_run_facts import CriterionEvidence, NOT_VERIFIED, VERIFIED
 
 
 class GoalVerdict(str, Enum):
@@ -47,62 +47,65 @@ def assess_swarm_goal(facts: Any) -> GoalAssessment:
         return GoalAssessment(
             GoalVerdict.COMPLETE, "no acceptance criteria", (),
         )
-    unverified = []
-    for item in criteria:
-        status = str(getattr(item, "status", "") or "").strip().lower()
-        if status == NOT_VERIFIED:
-            text = str(getattr(item, "text", "") or "").strip()
-            unverified.append(text or status)
-    if unverified:
+    unresolved = [item for item in criteria if getattr(item, "status", "") != VERIFIED]
+    if unresolved:
+        actionable = [item for item in unresolved
+                      if getattr(item, "status", "") == NOT_VERIFIED
+                      and getattr(item, "evidence", None) == CriterionEvidence.FAILED]
         return GoalAssessment(
-            GoalVerdict.CONTINUE,
-            "; ".join(unverified),
-            (GOAL_MODE_SOURCE,),
-        )
-    if all(
-        str(getattr(item, "status", "") or "").strip().lower() == VERIFIED
-        for item in criteria
-    ):
-        return GoalAssessment(
-            GoalVerdict.COMPLETE,
-            "acceptance criteria verified",
+            GoalVerdict.CONTINUE if actionable else GoalVerdict.BLOCKED,
+            "; ".join(str(getattr(item, "text", "") or "unverified criterion")
+                      for item in unresolved),
             (GOAL_MODE_SOURCE,),
         )
     return GoalAssessment(
-        GoalVerdict.COMPLETE, "no acceptance criteria", (),
+        GoalVerdict.COMPLETE, "acceptance criteria verified", (GOAL_MODE_SOURCE,),
     )
+
+
+def _latest_job_facts(facts_list: Sequence[Any]) -> list[Any]:
+    rows: list[Any] = []
+    jobs: dict[str, int] = {}
+    for facts in facts_list:
+        job = str(getattr(facts, "job_id", "") or "").strip()
+        if job and job in jobs:
+            rows[jobs[job]] = facts
+        else:
+            if job:
+                jobs[job] = len(rows)
+            rows.append(facts)
+    return rows
 
 
 def assess_turn_swarm_goals(facts_list: Optional[Sequence[Any]] = None) -> GoalAssessment:
-    rows = list(facts_list or ())
-    if not rows:
-        return GoalAssessment(
-            GoalVerdict.COMPLETE, "no acceptance criteria", (),
-        )
-    continue_reasons = []
-    saw_verified_criteria = False
-    for facts in rows:
-        assessment = assess_swarm_goal(facts)
-        if assessment.verdict == GoalVerdict.CONTINUE:
-            if assessment.reason:
-                continue_reasons.append(assessment.reason)
-        elif GOAL_MODE_SOURCE in assessment.sources:
-            saw_verified_criteria = True
-    if continue_reasons:
-        return GoalAssessment(
-            GoalVerdict.CONTINUE,
-            "; ".join(continue_reasons),
-            (GOAL_MODE_SOURCE,),
-        )
-    if saw_verified_criteria:
-        return GoalAssessment(
-            GoalVerdict.COMPLETE,
-            "acceptance criteria verified",
-            (GOAL_MODE_SOURCE,),
-        )
-    return GoalAssessment(
-        GoalVerdict.COMPLETE, "no acceptance criteria", (),
-    )
+    assessments = [assess_swarm_goal(facts) for facts in _latest_job_facts(facts_list or ())]
+    for verdict in (GoalVerdict.CONTINUE, GoalVerdict.BLOCKED):
+        if any(a.verdict == verdict for a in assessments):
+            return GoalAssessment(
+                verdict,
+                "; ".join(a.reason for a in assessments if a.verdict != GoalVerdict.COMPLETE),
+                (GOAL_MODE_SOURCE,),
+            )
+    if any(GOAL_MODE_SOURCE in a.sources for a in assessments):
+        return GoalAssessment(GoalVerdict.COMPLETE, "acceptance criteria verified", (GOAL_MODE_SOURCE,))
+    return GoalAssessment(GoalVerdict.COMPLETE, "no acceptance criteria", ())
+
+
+def _actionable_keys(session: Any) -> set[str]:
+    return {
+        " ".join(str(item.text).split()).casefold()
+        for facts in _latest_job_facts(getattr(session, "_turn_swarm_facts", ()) or ())
+        for item in getattr(facts, "criteria", ())
+        if item.status == NOT_VERIFIED and getattr(item, "evidence", None) == CriterionEvidence.FAILED
+    }
+
+
+def _claim_correction(session: Any) -> set[str]:
+    keys = _actionable_keys(session)
+    seen = set(getattr(session, "_goal_mode_corrected", ()) or ())
+    fresh = keys - seen
+    session._goal_mode_corrected = seen | keys
+    return fresh
 
 
 def assess_session_goal_continuation(
@@ -125,6 +128,8 @@ def assess_session_goal_continuation(
         return GoalAssessment(
             GoalVerdict.BLOCKED, "quality_gate", ("quality_gate",),
         )
+    if swarm_assessment.verdict == GoalVerdict.BLOCKED:
+        return swarm_assessment
     if swarm_assessment.verdict == GoalVerdict.CONTINUE:
         return GoalAssessment(
             GoalVerdict.CONTINUE,
@@ -149,6 +154,7 @@ def reset_turn_goal_state(session: Any) -> int:
     """Clear per-turn Goal Mode state. Returns the continue cap."""
     try:
         session._turn_swarm_facts = []
+        session._goal_mode_corrected = set()
         session._goal_mode_skip_continue = False
     except Exception:
         pass
@@ -161,7 +167,7 @@ def maybe_inject_goal_continue(session: Any, *, iters: int, cap: int) -> bool:
     if not note:
         return False
     try:
-        session._history.append({"role": "user", "content": note})
+        session._history.append({"role": "system", "content": note, "source": "goal_mode"})
     except Exception:
         return False
     return True
@@ -177,7 +183,7 @@ def stash_turn_swarm_facts(
     try:
         prior = list(getattr(session, "_turn_swarm_facts", None) or [])
         prior.append(facts)
-        session._turn_swarm_facts = prior
+        session._turn_swarm_facts = _latest_job_facts(prior)
         # Any continueable swarm in the turn wins over a prior skip-class row.
         if not skip_continue:
             session._goal_mode_skip_continue = False
@@ -193,7 +199,7 @@ def goal_continue_note(
     iters: int,
     cap: int,
 ) -> Optional[str]:
-    """User-role inject when a prose-only step would otherwise finalize."""
+    """Claim one automatic correction for newly demonstrated failed criteria."""
     if iters >= cap:
         return None
     if bool(getattr(session, "_goal_mode_skip_continue", False)):
@@ -203,9 +209,12 @@ def goal_continue_note(
     )
     if assessment.verdict != GoalVerdict.CONTINUE:
         return None
-    reason = assessment.reason or "unverified acceptance criteria"
+    fresh = _claim_correction(session)
+    if not fresh:
+        return None
+    reason = "; ".join(sorted(fresh))
     return (
-        f"{GOAL_CONTINUE_PREFIX} Acceptance criteria are not verified:\n"
+        f"{GOAL_CONTINUE_PREFIX} Current-job checks demonstrate failed criteria:\n"
         f"{reason}\n"
         "Keep working toward those criteria. "
         "Do not re-dispatch an identical swarm."
@@ -236,6 +245,8 @@ def maybe_enqueue_session_goal_continuation(
             assessment.verdict == GoalVerdict.CONTINUE
             and hasattr(session, "enqueue_goal_continuation")
         ):
+            if GOAL_MODE_SOURCE in assessment.sources and not _claim_correction(session):
+                return GoalAssessment(GoalVerdict.BLOCKED, "unchanged failed criteria already nudged", assessment.sources)
             session.enqueue_goal_continuation()
         return assessment
     except Exception:

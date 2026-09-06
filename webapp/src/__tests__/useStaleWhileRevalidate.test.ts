@@ -36,34 +36,65 @@ describe("useStaleWhileRevalidate", () => {
     expect(result.current.isValidating).toBe(false);
   });
 
-  it("ignores stale responses when a newer request was started", async () => {
-    let resolveFirst: (v: string) => void;
-    let resolveSecond: (v: string) => void;
-    const first = new Promise<string>((r) => { resolveFirst = r; });
-    const second = new Promise<string>((r) => { resolveSecond = r; });
-
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce("initial")
-      .mockReturnValueOnce(first)
-      .mockReturnValueOnce(second);
-
-    const { result } = renderHook(() =>
-      useStaleWhileRevalidate("key", fetcher),
-    );
-
+  it("coalesces simultaneous same-key refreshes and keeps current data stable", async () => {
+    let finish: (value: string) => void = () => {};
+    const pending = new Promise<string>((resolve) => { finish = resolve; });
+    const fetcher = vi.fn().mockResolvedValueOnce("initial").mockReturnValueOnce(pending);
+    const { result } = renderHook(() => useStaleWhileRevalidate("key", fetcher));
     await waitFor(() => expect(result.current.data).toBe("initial"));
-
-    await act(async () => {
-      const p1 = result.current.revalidate();
-      const p2 = result.current.revalidate();
-      resolveSecond!("fresh");
-      await p2;
-      resolveFirst!("stale");
-      await p1;
+    let first: Promise<unknown>;
+    let second: Promise<unknown>;
+    act(() => {
+      first = result.current.revalidate();
+      second = result.current.revalidate();
     });
-
+    expect(result.current.data).toBe("initial");
+    expect(result.current.isTransitioning).toBe(false);
+    await act(async () => {
+      finish("fresh");
+      await Promise.all([first, second]);
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(result.current.data).toBe("fresh");
+  });
+
+  it("ignores old-key responses even when the fetcher ignores abort", async () => {
+    let finish: (value: string) => void = () => {};
+    const pending = new Promise<string>((resolve) => { finish = resolve; });
+    const fetcher = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce("new");
+    const { result, rerender } = renderHook(
+      ({ key }) => useStaleWhileRevalidate(key, fetcher),
+      { initialProps: { key: "old" } },
+    );
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    rerender({ key: "new" });
+    await waitFor(() => expect(result.current.data).toBe("new"));
+    await act(async () => { finish("old"); await pending; });
+    expect(result.current.data).toBe("new");
+  });
+
+  it("forces a post-mutation read without accepting an older response", async () => {
+    let finish: (value: string) => void = () => {};
+    const pending = new Promise<string>((resolve) => { finish = resolve; });
+    const fetcher = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce("cancelled");
+    const { result } = renderHook(() => useStaleWhileRevalidate("mutation", fetcher));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.revalidate(true); });
+    await act(async () => { finish("running"); await pending; });
+    expect(result.current.data).toBe("cancelled");
+  });
+
+  it("does not fetch while disabled and refreshes on activation", async () => {
+    const fetcher = vi.fn().mockResolvedValue([]);
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useStaleWhileRevalidate("disabled", fetcher, { enabled }),
+      { initialProps: { enabled: false } },
+    );
+    await act(async () => { await result.current.revalidate(); });
+    expect(fetcher).not.toHaveBeenCalled();
+    rerender({ enabled: true });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    expect(result.current.isTransitioning).toBe(false);
   });
 
   it("rehydrates swarm keys from sessionStorage after cache clear", async () => {

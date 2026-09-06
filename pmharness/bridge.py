@@ -1750,9 +1750,16 @@ def execute_intent(
                     "for intentional driver-eval."
                 )
             # Eval substrate: local deterministic adapter, no API keys.
+            from dataclasses import replace
+            from puppetmaster.workers import specs_for_roles
+
+            specs = [
+                replace(spec, adapter="local", payload={**spec.payload, "auto_route": False})
+                for spec in specs_for_roles(intent.roles)
+            ]
             result = Orchestrator(store).run(
                 intent.goal,
-                roles=intent.roles,
+                specs=specs,
                 worker_mode=worker_mode or "subprocess",
                 label=job_label,
             )

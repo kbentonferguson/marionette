@@ -14,7 +14,6 @@ import EconomicsPane from "./EconomicsPane";
 import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
-import { usePolling } from "../lib/usePolling";
 import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { countRunningTrackerJobs } from "../lib/jobClassification";
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib/jobScope";
@@ -566,17 +565,28 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   );
   const [activitySessionId, setActivitySessionId] = useState("");
   const [scopeEpoch, setScopeEpoch] = useState(0);
+  const activityEpoch = useRef(0);
+  const refreshReviews = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     const onProject = (e: Event) => {
       const path = (e as CustomEvent<string>).detail;
-      if (typeof path === "string") setSwarmRepo(path || undefined);
+      if (typeof path === "string") {
+        activityEpoch.current += 1;
+        setScopeEpoch((n) => n + 1);
+        setSwarmRepo(path || undefined);
+      }
     };
     const onSession = (e: Event) => {
       const id = String((e as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId || "");
+      activityEpoch.current += 1;
+      setScopeEpoch((n) => n + 1);
       setActivitySessionId(id);
     };
-    const onScope = () => setScopeEpoch((n) => n + 1);
+    const onScope = () => {
+      activityEpoch.current += 1;
+      setScopeEpoch((n) => n + 1);
+    };
     window.addEventListener("harness-project-selected", onProject);
     window.addEventListener("harness-session-changed", onSession);
     window.addEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
@@ -587,55 +597,58 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     };
   }, []);
 
-  const fetchReviews = () => {
-    return api.getReviews()
-      .then((data) => {
+  const fetchReviews = () => refreshReviews.current();
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    let active = true;
+    let reviewRequest = 0;
+    let swarmRequest = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const epoch = activityEpoch.current;
+    const current = () => active && epoch === activityEpoch.current;
+    const loadReviews = async () => {
+      const request = ++reviewRequest;
+      try {
+        const data = await api.getReviews();
+        if (!current() || request !== reviewRequest) return;
         if (Array.isArray(data)) {
           setReviews(data);
           setReviewsLoadError(null);
         }
-      })
-      .catch((err) => {
-        console.error("Failed to load reviews:", err);
-        // Keep last-known reviews; surface sticky load failure so the pane
-        // never lies with "No pending edits…" after a failed fetch.
-        setReviewsLoadError("Couldn't load pending reviews.");
-      });
-  };
-
-  const fetchSwarmActivity = () => {
-    return api.swarmLive(swarmRepo)
-      .then((data) => {
-        // Warm SwarmPane's SWR key so first open of the tracker is not a cold
-        // "Loading swarm jobs..." flash — the tab light already polls this payload.
+      } catch {
+        if (current() && request === reviewRequest) {
+          setReviewsLoadError("Couldn't load pending reviews.");
+        }
+      }
+    };
+    const loadSwarm = async () => {
+      const request = ++swarmRequest;
+      try {
+        const data = await api.swarmLive(swarmRepo);
+        if (!current() || request !== swarmRequest) return;
         writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
         const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-        setSwarmRunning(
-          countRunningTrackerJobs(
-            filterJobsByScope(jobs, loadJobScope(), activitySessionId),
-          ),
-        );
-      })
-      .catch(() => {
-        /* keep last known; tab light is best-effort */
-      });
-  };
-
-  usePolling(fetchReviews, 4000);
-  usePolling(fetchSwarmActivity, 4000);
-
-  useEffect(() => {
-    void fetchSwarmActivity();
-  }, [activitySessionId, scopeEpoch, swarmRepo]);
-
-  // Immediate refresh when a swarm parks a DiffReview (pending_review stream/poll).
-  useEffect(() => {
-    const onRefresh = () => {
-      void fetchReviews();
+        setSwarmRunning(countRunningTrackerJobs(
+          filterJobsByScope(jobs, loadJobScope(), activitySessionId),
+        ));
+      } catch { /* Keep the last known activity. */ }
     };
-    window.addEventListener("harness-reviews-refresh", onRefresh);
-    return () => window.removeEventListener("harness-reviews-refresh", onRefresh);
-  }, []);
+    const poll = async () => {
+      if (!current()) return;
+      if (!document.hidden) await Promise.all([loadReviews(), loadSwarm()]);
+      if (current()) timer = setTimeout(poll, 4000);
+    };
+    refreshReviews.current = loadReviews;
+    timer = setTimeout(poll, 0);
+    window.addEventListener("harness-reviews-refresh", loadReviews);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      refreshReviews.current = async () => {};
+      window.removeEventListener("harness-reviews-refresh", loadReviews);
+    };
+  }, [visible, activitySessionId, scopeEpoch, swarmRepo]);
 
   // Hotkey listener
   useEffect(() => {
@@ -876,7 +889,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
         )}
         {!openCards.includes("swarm") && (
           <div data-testid="swarm-pane-slot">
-            <SwarmPane />
+            <SwarmPane enabled={false} />
           </div>
         )}
       </div>

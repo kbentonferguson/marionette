@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
 import { api, type Config, type Job } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
@@ -246,10 +247,14 @@ export default function Conversation({
   onArtifacts: (a: { type: string; headline: string }[]) => void;
   onJobChange: () => void;
 }) {
-  const [items, setItems] = useState<Item[]>([]);
+  const [items, setRenderedItems] = useState<Item[]>([]);
   // Mirror of items for session-switch cache writes without stale closures.
   const itemsRef = useRef<Item[]>([]);
-  useEffect(() => { itemsRef.current = items; }, [items]);
+  const setItems = useCallback((update: SetStateAction<Item[]>) => {
+    const next = typeof update === "function" ? update(itemsRef.current) : update;
+    itemsRef.current = next;
+    setRenderedItems(next);
+  }, []);
   // Tracks which session the visible transcript belongs to (for warm-cache save).
   const cachedSessionIdRef = useRef<string | null>(null);
   // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
@@ -1142,6 +1147,8 @@ export default function Conversation({
   const scrollSettlingRef = useRef(false);
   const [feedSettled, setFeedSettled] = useState(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const transcriptViewportRef = useRef<TranscriptViewportHandle | null>(null);
+  const sessionViewportsRef = useRef(new Map<string, SessionViewport>());
   const scrollFeedToEndRef = useRef<(() => void) | null>(null);
   const publishJumpVisibilityRef = useRef(() => {});
   publishJumpVisibilityRef.current = () => {
@@ -1372,11 +1379,70 @@ export default function Conversation({
     });
   }, [items]);
 
-  // On session switch: stop follow thrash, glue to true bottom until height is
-  // stable for ~5 frames (or ~1s wall-clock), then re-lock stick-to-bottom.
+  // Restore a reading anchor, or retain tail-follow for sessions left at the end.
   useLayoutEffect(() => {
     const el = feedRef.current;
     if (!el || !activeSessionId) return;
+    const saved = sessionViewportsRef.current.get(activeSessionId);
+    let restoring = saved?.kind === "anchor";
+    let restoreFrame = 0;
+    let latest: SessionViewport | undefined = saved ?? { kind: "tail" };
+    const remember = () => {
+      if (restoring || cachedSessionIdRef.current !== activeSessionId) return;
+      latest = transcriptViewportRef.current?.capture(pinnedToBottomRef.current);
+      if (latest) sessionViewportsRef.current.set(activeSessionId, latest);
+    };
+    const cancelRestore = () => {
+      restoring = false;
+      cancelAnimationFrame(restoreFrame);
+      remember();
+    };
+    const rememberAfterScroll = () => queueMicrotask(remember);
+    el.addEventListener("scroll", rememberAfterScroll, { passive: true });
+    el.addEventListener("wheel", cancelRestore, { passive: true });
+    el.addEventListener("touchmove", cancelRestore, { passive: true });
+    el.addEventListener("pointerdown", cancelRestore, { passive: true });
+    el.addEventListener("keydown", cancelRestore);
+    const cleanupViewport = () => {
+      cancelAnimationFrame(restoreFrame);
+      el.removeEventListener("scroll", rememberAfterScroll);
+      el.removeEventListener("wheel", cancelRestore);
+      el.removeEventListener("touchmove", cancelRestore);
+      el.removeEventListener("pointerdown", cancelRestore);
+      el.removeEventListener("keydown", cancelRestore);
+      if (latest) sessionViewportsRef.current.set(activeSessionId, latest);
+    };
+    if (saved?.kind === "anchor") {
+      pinnedToBottomRef.current = false;
+      scrollReleasedByGestureRef.current = true;
+      scrollSettlingRef.current = false;
+      setFeedSettled(true);
+      setShowJumpToBottom(true);
+      let restoredAt: number | null = null;
+      const requestedAt = performance.now();
+      const restore = () => {
+        if (!restoring) return;
+        if (performance.now() - requestedAt > 10000) {
+          restoring = false;
+          return;
+        }
+        // Switch hydrate runs in a passive effect; do not restore over outgoing rows.
+        if (cachedSessionIdRef.current === activeSessionId && itemsRef.current.length > 0) {
+          restoredAt ??= performance.now();
+          programmaticScrollRef.current = true;
+          transcriptViewportRef.current?.restore(saved);
+          prevFeedScrollTopRef.current = el.scrollTop;
+          if (performance.now() - restoredAt > 1000) {
+            restoring = false;
+            remember();
+            return;
+          }
+        }
+        restoreFrame = requestAnimationFrame(restore);
+      };
+      restoreFrame = requestAnimationFrame(restore);
+      return cleanupViewport;
+    }
     pinnedToBottomRef.current = true;
     scrollReleasedByGestureRef.current = false;
     prevFeedScrollTopRef.current = null;
@@ -1437,6 +1503,7 @@ export default function Conversation({
     };
     rafId = requestAnimationFrame(settle);
     return () => {
+      cleanupViewport();
       cancelAnimationFrame(rafId);
       scrollSettlingRef.current = false;
       setFeedSettled(true);
@@ -2889,6 +2956,7 @@ export default function Conversation({
          maybeRunApprovedCommandRetryRef.current();
          maybeRunQueuedResume();
          maybeDrainQueue();
+         ensureChatEventsReattachRef.current();
        },
        (streamErr: any) => {
          if (!streamLive()) return;
@@ -2940,6 +3008,7 @@ export default function Conversation({
          maybeRunApprovedCommandRetryRef.current();
          maybeRunQueuedResume();
          maybeDrainQueue();
+         ensureChatEventsReattachRef.current();
        });
   };
 
@@ -3687,6 +3756,7 @@ export default function Conversation({
           holdSwarmAwait={holdSwarmAwait}
           feedSettled={feedSettled}
           scrollToEndRef={scrollFeedToEndRef}
+          viewportRef={transcriptViewportRef}
           onEditMessage={stableEditMessage}
           onExecuteSend={stableExecuteSend}
           onImageClick={handleTranscriptImageClick}

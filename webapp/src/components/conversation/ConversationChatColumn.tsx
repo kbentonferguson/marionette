@@ -1,3 +1,4 @@
+import type { TranscriptViewportHandle } from "./sessionViewport";
 /**
  * Chat-mode column: scrollable transcript feed + composer dock.
  * Conversation owns all state; this is a presentational peel.
@@ -35,6 +36,7 @@ export default function ConversationChatColumn({
   holdSwarmAwait = false,
   feedSettled = true,
   scrollToEndRef,
+  viewportRef,
   onEditMessage,
   onExecuteSend,
   onImageClick,
@@ -68,6 +70,7 @@ export default function ConversationChatColumn({
   /** Defer DOM row measurement while session-switch settle glue runs. */
   feedSettled?: boolean;
   scrollToEndRef?: MutableRefObject<(() => void) | null>;
+  viewportRef?: MutableRefObject<TranscriptViewportHandle | null>;
   onEditMessage: (idx: number, text: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
@@ -144,6 +147,7 @@ export default function ConversationChatColumn({
             feedSettled={feedSettled}
             scrollContainerRef={feedRef}
             scrollToEndRef={scrollToEndRef}
+            viewportRef={viewportRef}
             onEditMessage={onEditMessage}
             onExecuteSend={onExecuteSend}
             onImageClick={onImageClick}

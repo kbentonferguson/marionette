@@ -1,17 +1,21 @@
 """Harness E2E: the product Session drives real Puppetmaster offline via the
 stub driver. Proves the loop end to end with zero keys before any GUI."""
-import pytest
-pytestmark = pytest.mark.swarm
 import tempfile
+
+import pytest
+
+from test_offline_demo_seam import offline_demo
 
 from harness.config import HarnessConfig
 from harness.session import Session
-from harness.state import DurableState
+
+pytestmark = pytest.mark.usefixtures("offline_demo")
 
 
 def _stub_session():
     cfg = HarnessConfig(driver="stub-oracle-v2", reach="openrouter",
-                        budget=3, state_dir=tempfile.mkdtemp(prefix="harness-t-"))
+                        budget=3, worker_mode="inline",
+                        state_dir=tempfile.mkdtemp(prefix="harness-t-"))
     return Session(cfg)
 
 

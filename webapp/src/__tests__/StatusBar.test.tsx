@@ -441,6 +441,7 @@ describe("StatusBar session GOAL chip", () => {
   it("calls pause / complete / clear via api.*SessionGoal", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
+      active_view_id: "sess-1",
       pending_swarms: false,
       runners: {},
       goal: { text: "Ship StatusBar GOAL chip", status: "active" },
@@ -451,24 +452,24 @@ describe("StatusBar session GOAL chip", () => {
 
     fireEvent.click(screen.getByLabelText("Pause session GOAL"));
     await waitFor(() => {
-      expect(mockPauseSessionGoal).toHaveBeenCalledTimes(1);
+      expect(mockPauseSessionGoal).toHaveBeenCalledWith("sess-1");
     });
     expect(await screen.findByText("paused")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Resume session GOAL"));
     await waitFor(() => {
-      expect(mockResumeSessionGoal).toHaveBeenCalledTimes(1);
+      expect(mockResumeSessionGoal).toHaveBeenCalledWith("sess-1");
     });
 
     fireEvent.click(screen.getByLabelText("Complete session GOAL"));
     await waitFor(() => {
-      expect(mockCompleteSessionGoal).toHaveBeenCalledTimes(1);
+      expect(mockCompleteSessionGoal).toHaveBeenCalledWith("sess-1");
     });
     expect(await screen.findByText("done")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Clear session GOAL"));
     await waitFor(() => {
-      expect(mockClearSessionGoal).toHaveBeenCalledTimes(1);
+      expect(mockClearSessionGoal).toHaveBeenCalledWith("sess-1");
     });
     await waitFor(() => {
       expect(screen.queryByTestId("session-goal-chip")).not.toBeInTheDocument();
@@ -662,4 +663,31 @@ describe("StatusBar compact chrome", () => {
     expect(screen.getByText("deepseek-v4-pro-0813")).toBeInTheDocument();
     expect(screen.queryByText("openrouter:deepseek/deepseek-v4-pro-0813")).toBeNull();
   });
+});
+
+
+it("fences late goal mutations and state reads across session switches", async () => {
+  mockWorkspaces.mockResolvedValue([]);
+  mockGetSessionState.mockResolvedValue({ active_view_id: "A", goal: { text: "Goal A", status: "active" } });
+  let resolvePause!: (value: Awaited<ReturnType<typeof api.pauseSessionGoal>>) => void;
+  mockPauseSessionGoal.mockReturnValue(new Promise((resolve) => { resolvePause = resolve; }));
+  render(<StatusBar {...statusBarProps} />);
+  await screen.findByText("Goal A");
+  fireEvent.click(screen.getByLabelText("Pause session GOAL"));
+  expect(mockPauseSessionGoal).toHaveBeenLastCalledWith("A");
+  let resolveB!: (value: Awaited<ReturnType<typeof api.getSessionState>>) => void;
+  mockGetSessionState.mockReturnValueOnce(new Promise((resolve) => { resolveB = resolve; }));
+  act(() => window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "B" } })));
+  expect(screen.queryByText("Goal A")).not.toBeInTheDocument();
+  mockGetSessionState.mockResolvedValue({ active_view_id: "C", goal: { text: "Goal C", status: "active" } });
+  act(() => window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "C" } })));
+  await screen.findByText("Goal C");
+  await act(async () => {
+    resolvePause({ ok: true, goal: { text: "Late A", status: "paused" } });
+    resolveB({ active_view_id: "B", goal: { text: "Late B", status: "active" } });
+  });
+  expect(screen.getByText("Goal C")).toBeInTheDocument();
+  expect(screen.queryByText("Late A")).not.toBeInTheDocument();
+  expect(screen.queryByText("Late B")).not.toBeInTheDocument();
+  expect(mockGetSessionState).toHaveBeenLastCalledWith({ sessionId: "C" });
 });

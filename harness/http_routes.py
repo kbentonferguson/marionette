@@ -726,7 +726,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             pass_qs=True),
         "/api/session/events": _get_session_events,
         "/api/session/goal": get_json(
-            _sc_api.get_session_goal, services=svc.session_control_services),
+            _sc_api.get_session_goal, services=svc.session_control_services,
+            qs_arg="session_id", empty_as_none=True),
         "/api/session/loop": get_json(
             _sc_api.get_session_loop, services=svc.session_control_services),
         "/api/refine/history": get_json(

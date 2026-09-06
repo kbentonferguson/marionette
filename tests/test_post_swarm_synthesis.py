@@ -18,6 +18,7 @@ from harness.send_loop import (
 from harness.swarm_run_facts import (
     NOT_VERIFIED,
     CriterionFact,
+    CriterionEvidence,
     SwarmRunFacts,
 )
 from pmharness.drivers.base import DriverResponse
@@ -362,7 +363,7 @@ def test_successful_post_swarm_synthesis_emits_one_message_before_done(monkeypat
     assert pilot.calls[1]["kwargs"]["tools"] == [{"name": "run_swarm"}]
 
 
-def _fake_execute_unverified_criteria(
+def _fake_execute_failed_criteria(
     session: ConversationalSession,
     *,
     turn: Any,
@@ -398,6 +399,7 @@ def _fake_execute_unverified_criteria(
                     text="windows path containment",
                     status=NOT_VERIFIED,
                     basis="test",
+                    evidence=CriterionEvidence.FAILED,
                 ),
             ),
         ),
@@ -406,7 +408,7 @@ def _fake_execute_unverified_criteria(
     return (None, [])
 
 
-def test_prose_after_unverified_criteria_continues_once(monkeypatch):
+def test_prose_after_failed_criteria_continues_once(monkeypatch):
     monkeypatch.setenv("HARNESS_GOAL_MODE_CONTINUE_MAX", "1")
     pilot = _SequencePilot([
         _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
@@ -415,7 +417,7 @@ def test_prose_after_unverified_criteria_continues_once(monkeypatch):
     ])
 
     session, events = _run_post_swarm_turn(
-        monkeypatch, pilot, execute_actions=_fake_execute_unverified_criteria,
+        monkeypatch, pilot, execute_actions=_fake_execute_failed_criteria,
     )
 
     notes = [
@@ -436,7 +438,7 @@ def test_prose_after_unverified_criteria_continues_once(monkeypatch):
     assert "Still working." in texts
 
 
-def test_empty_synthesis_unverified_criteria_continues_instead_of_fallback(monkeypatch):
+def test_empty_synthesis_failed_criteria_continues_instead_of_fallback(monkeypatch):
     monkeypatch.setenv("HARNESS_GOAL_MODE_CONTINUE_MAX", "1")
     pilot = _SequencePilot([
         _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),
@@ -446,7 +448,7 @@ def test_empty_synthesis_unverified_criteria_continues_instead_of_fallback(monke
     ])
 
     session, events = _run_post_swarm_turn(
-        monkeypatch, pilot, execute_actions=_fake_execute_unverified_criteria,
+        monkeypatch, pilot, execute_actions=_fake_execute_failed_criteria,
     )
 
     notes = [

@@ -160,7 +160,10 @@ from .api.swarm_cost import _cache_saved_usd_swarm_detail  # noqa: E402
 def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
     try:
-        _pilot.harness_session_id = _sessions.active or ""
+        _pilot.harness_session_id = _runners.active_view_id or _sessions.active or ""
+        reload_goal = getattr(_pilot, "reload_session_goal", None)
+        if callable(reload_goal):
+            reload_goal()
         reload_todos = getattr(_pilot, "reload_session_todos", None)
         if callable(reload_todos):
             reload_todos()
@@ -1079,6 +1082,12 @@ def _resync_driver_after_model_curation() -> dict:
     return {"driver": _cfg.driver, "changed": changed}
 
 
+import tempfile as _tf
+from .session_goal import SessionGoalStore
+
+_sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
+SessionGoalStore.migrate_legacy(_cfg.state_dir, _sessions)
+
 _resolve_available_driver()
 # Tracker Session may share the global view config; each ConversationalSession
 # runner gets its OWN HarnessConfig copy so mutating _cfg.repo (workspace open /
@@ -1092,8 +1101,6 @@ _pilot = ConversationalSession(_dc_replace(_cfg))
 # store, so they stayed empty even after a real swarm ran in the pilot store.
 # Pin the session to the pilot's store so both read exactly where jobs are written.
 _session.state_dir = _pilot.state_dir
-import tempfile as _tf
-_sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
 # Per-session runners: active VIEW is which session the UI attaches to; other
 # sessions may keep executing under the concurrent-session lease. on_drop is
 # wired below once _fold_runner_meters_into_boot_carry is defined.
@@ -1313,7 +1320,7 @@ def _bind_pilot_services(pilot: Any) -> None:
     pilot._on_wiki_ingest = _clear_wiki_graph_cache
 
 
-def _build_conversational_pilot(*, copy_meters_from: Any = None) -> ConversationalSession:
+def _build_conversational_pilot(*, config: Optional[HarnessConfig] = None, copy_meters_from: Any = None) -> ConversationalSession:
     """Construct a ConversationalSession with a frozen per-runner config copy.
 
     New runners start at zero meters -- idle rebuild/swap freezes spend into
@@ -1321,7 +1328,7 @@ def _build_conversational_pilot(*, copy_meters_from: Any = None) -> Conversation
     still opt into legacy meter copy + auto-distill continuity; attach/create
     must omit it.
     """
-    new_pilot = ConversationalSession(_runner_config_snapshot())
+    new_pilot = ConversationalSession(config if config is not None else _runner_config_snapshot())
     _bind_pilot_services(new_pilot)
     if copy_meters_from is not None:
         _copy_pilot_meters(copy_meters_from, new_pilot)
@@ -1861,6 +1868,8 @@ def _session_control_services():
         get_pilot=lambda: _pilot,
         get_runners=lambda: _runners,
         gate_active_pilot_ready=_gate_active_pilot_ready,
+        gate_goal_pilot_ready=lambda: _gate_active_pilot_ready(timeout=0.0),
+        pilot_swap_lock=_pilot_swap_lock,
         stash_put=_stash_put,
         save_active_transcript=_save_active_transcript,
         upload_dir=_UPLOAD_DIR,

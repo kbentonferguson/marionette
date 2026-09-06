@@ -421,7 +421,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const {
     data: jobs = [],
-    isValidating: jobsValidating,
+    isTransitioning: jobsValidating,
     revalidate: revalidateJobs,
   } = useStaleWhileRevalidate<Job[]>(
     jobsCacheKey(selectedProjectPath, sessions.find((session) => session.active)?.id),
@@ -1238,7 +1238,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setExpandedProjects((prev) => ({ ...prev, [currentRepo]: true }));
   }, [currentRepo]);
 
-  useEffect(() => { void revalidateJobs(); }, [jobsRefresh, revalidateJobs]);
+  const previousJobsRefresh = useRef(jobsRefresh);
+  useEffect(() => {
+    if (previousJobsRefresh.current === jobsRefresh) return;
+    previousJobsRefresh.current = jobsRefresh;
+    void revalidateJobs(true);
+  }, [jobsRefresh, revalidateJobs]);
 
   // Poll runner statuses so session rows can show running/idle without opening
   // a conversation. Same endpoint Conversation already uses for resume/swarm.

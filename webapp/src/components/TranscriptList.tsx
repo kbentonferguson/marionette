@@ -1,3 +1,4 @@
+import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
@@ -1060,6 +1061,24 @@ export function activityGroupStableId(items: ActivityItem[], fallbackIndex: numb
   return canon;
 }
 
+/** Viewport identity must survive disk hydration creating new message objects. */
+export function transcriptViewportKeys(items: readonly GroupedItem[]): string[] {
+  const occurrences = new Map<string, number>();
+  return items.map((item, index) => {
+    let key = stableItemKey(item, index);
+    if (item.kind === "msg") {
+      let hash = 2166136261;
+      for (let i = 0; i < item.msg.text.length; i++) {
+        hash = Math.imul(hash ^ item.msg.text.charCodeAt(i), 16777619);
+      }
+      key = `message-${item.msg.role}-${item.msg.text.length}-${hash >>> 0}`;
+    }
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    return `${key}:${occurrence}`;
+  });
+}
+
 export function stableItemKey(it: GroupedItem, i: number): string {
   switch (it.kind) {
     case "msg":
@@ -1138,6 +1157,7 @@ const VirtualTranscriptRow = memo(
     scrollMargin: number;
     item: GroupedItem;
     rowId: string;
+    viewportKey: string;
     feedSettled: boolean;
     measureDom: (element: HTMLElement) => void;
     children: ReactNode;
@@ -1147,6 +1167,7 @@ const VirtualTranscriptRow = memo(
       scrollMargin,
       item,
       rowId,
+      viewportKey,
       feedSettled,
       measureDom,
       children,
@@ -1217,6 +1238,7 @@ const VirtualTranscriptRow = memo(
   return (
     <div
       ref={setRowRef}
+      data-viewport-key={viewportKey}
       data-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
@@ -1376,6 +1398,7 @@ export type TranscriptListProps = {
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   /** Conversation jump-to-latest / stick-to-bottom: virtualizer-aware end scroll. */
   scrollToEndRef?: React.MutableRefObject<(() => void) | null>;
+  viewportRef?: React.MutableRefObject<TranscriptViewportHandle | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
@@ -1405,6 +1428,7 @@ export const TranscriptList = memo(function TranscriptList({
   feedSettled = true,
   scrollContainerRef,
   scrollToEndRef,
+  viewportRef,
   onEditMessage,
   onExecuteSend,
   onImageClick,
@@ -1435,6 +1459,7 @@ export const TranscriptList = memo(function TranscriptList({
 
   const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
+  const viewportKeys = transcriptViewportKeys(grouped);
   const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
   const { head: virtualGrouped, tail: liveTailGrouped, tailStartIndex } =
     partitionTranscriptLiveTail(grouped, {
@@ -1523,6 +1548,38 @@ export const TranscriptList = memo(function TranscriptList({
       }
     };
   }, [scrollToEnd, scrollToEndRef]);
+  useLayoutEffect(() => {
+    if (!viewportRef) return;
+    const rows = () => {
+      const el = scrollContainerRef.current;
+      if (!el) return [];
+      const top = el.getBoundingClientRect().top;
+      return Array.from(el.querySelectorAll<HTMLElement>("[data-viewport-key]")).map((row) => ({
+        key: row.dataset.viewportKey ?? "",
+        start: row.getBoundingClientRect().top - top + el.scrollTop,
+        end: row.getBoundingClientRect().bottom - top + el.scrollTop,
+      }));
+    };
+    viewportRef.current = {
+      capture: (pinned) => captureSessionViewport(pinned, scrollContainerRef.current?.scrollTop ?? 0, rows()),
+      restore: (saved) => {
+        const el = scrollContainerRef.current;
+        if (!el) return;
+        let start: number | null = null;
+        if (saved.kind === "anchor" && saved.key !== null) {
+          const row = rows().find((row) => row.key === saved.key);
+          if (row) start = row.start;
+          else {
+            const index = viewportKeys.findIndex((key) => key === saved.key);
+            if (index >= 0 && index < virtualGrouped.length) start = rowVirtualizer.getOffsetForIndex(index, "start")?.[0] ?? null;
+          }
+        }
+        const offset = sessionViewportOffset(saved, start, el.scrollHeight, el.clientHeight, false);
+        if (offset !== null) el.scrollTop = offset;
+      },
+    };
+    return () => { viewportRef.current = null; };
+  }, [viewportRef, scrollContainerRef, rowVirtualizer, virtualGrouped.length, viewportKeys]);
   void scrollEpoch;
 
   // Find the last assistant message inside the original items array
@@ -2008,6 +2065,7 @@ export const TranscriptList = memo(function TranscriptList({
             <VirtualTranscriptRow
               key={virtualRow.key}
               virtualRow={virtualRow}
+              viewportKey={viewportKeys[virtualRow.index] ?? ""}
               scrollMargin={scrollMargin}
               item={item}
               rowId={rowId}
@@ -2028,7 +2086,7 @@ export const TranscriptList = memo(function TranscriptList({
       {grouped.map((_, i) => {
         const key = stableItemKey(grouped[i]!, i);
         return (
-          <div key={key} className="transcript-virtual-row pb-1 select-none">
+          <div key={key} data-viewport-key={viewportKeys[i]} className="transcript-virtual-row pb-1 select-none">
             {renderGroupedItem(i)}
           </div>
         );
@@ -2044,7 +2102,7 @@ export const TranscriptList = memo(function TranscriptList({
         const idx = tailStartIndex + i;
         const key = stableItemKey(grouped[idx]!, idx);
         return (
-          <div key={key} className="pb-1">
+          <div key={key} data-viewport-key={viewportKeys[idx]} className="pb-1">
             {renderGroupedItem(idx)}
           </div>
         );
