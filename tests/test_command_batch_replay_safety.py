@@ -7,8 +7,10 @@ from test_command_batches import _Session, _wait_batch_terminal
 from harness.command_batches import start_command_batch
 
 
-def effect_command(exit_code=1, pause=False):
+def effect_command(exit_code=1, pause=False, distinct=False):
     code = "from pathlib import Path; p=Path('effect'); p.open('a').write('x'); raise SystemExit(%d)" % exit_code
+    if distinct:
+        code = code.replace("p=Path('effect')", "import os; p=Path('effect-%d' % os.getpid())")
     if pause:
         code = code.replace("raise SystemExit", "import time; time.sleep(2); raise SystemExit")
     return python_shell_command(code)
@@ -52,17 +54,20 @@ def test_nonzero_exit_receipt_and_explicit_new_action(tmp_path):
 
 def test_identical_occurrences_remain_distinct_across_restart(tmp_path):
     sess = _Session(str(tmp_path), str(tmp_path))
-    command = effect_command()
+    command = effect_command(distinct=True)
     first = start_command_batch(sess, [command, command], 'duplicates')
     batch = _wait_batch_terminal(sess, first['batch_id'])
-    assert (tmp_path / 'effect').read_text() == 'xx'
+    effects = {path.name: path.read_text() for path in tmp_path.glob('effect-*')}
+    assert len(effects) == 2
+    assert set(effects.values()) == {'x'}
+    assert all(child['status'] == 'failed' and child['terminal_receipt']['exit_code'] == 1 for child in batch['children'])
     assert len({c['idempotency_key'] for c in batch['children']}) == 2
     restarted = _Session(str(tmp_path), str(tmp_path))
     restarted._load_local_jobs()
     replay = start_command_batch(restarted, [command, command], 'duplicates')
     assert replay['child_job_ids'] == first['child_job_ids']
     assert [c['terminal_receipt'] for c in replay['children']] == [c['terminal_receipt'] for c in batch['children']]
-    assert (tmp_path / 'effect').read_text() == 'xx'
+    assert {path.name: path.read_text() for path in tmp_path.glob('effect-*')} == effects
 
 
 @pytest.mark.parametrize('change', ['command', 'count', 'order', 'cwd'])
@@ -114,13 +119,15 @@ def test_checkpoint_with_lost_receipt_is_unknown_and_never_repeated(tmp_path, re
 
 def test_registered_unlaunched_occurrences_resume_once(tmp_path):
     sess = _Session(str(tmp_path), str(tmp_path))
-    command = effect_command(0)
+    command = effect_command(0, distinct=True)
     with patch('harness.command_batches._start_batch_supervisor'):
         first = start_command_batch(sess, [command, command], 'unstarted')
     replay = start_command_batch(sess, [command, command], 'unstarted')
     assert replay['child_job_ids'] == first['child_job_ids']
     assert _wait_batch_terminal(sess, first['batch_id'])['status'] == 'completed'
-    assert (tmp_path / 'effect').read_text() == 'xx'
+    effects = list(tmp_path.glob('effect-*'))
+    assert len(effects) == 2
+    assert all(path.read_text() == 'x' for path in effects)
 
 
 def test_cancel_after_partial_effect_does_not_restart_siblings(tmp_path):

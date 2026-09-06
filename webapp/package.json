@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "cross-env NODE_ENV=test vitest run",
+    "pretest:electron": "node -e \"require('electron')\"",
     "test:electron": "node --test electron/*.test.cjs",
     "preview": "vite preview",
     "electron:dev": "cross-env NODE_ENV=development concurrently -k \"vite --host 127.0.0.1 --port 5273\" \"wait-on http://127.0.0.1:5273 && cross-env PMHARNESS_DEV_SERVER=http://127.0.0.1:5273 electron .\"",
