@@ -482,8 +482,8 @@ def maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
     import time as _time
     now = _time.monotonic()
     if not force:
-        last = codegraph_stale_check_at.get(repo_path, 0.0)
-        if (now - last) < CODEGRAPH_STALE_DEBOUNCE:
+        last = codegraph_stale_check_at.get(repo_path)
+        if last is not None and (now - last) < CODEGRAPH_STALE_DEBOUNCE:
             return
         # Honor indexer failure backoff so chat-turn refresh cannot defeat the
         # GET /api/codegraph fail-until window and thrash a doomed reindex.

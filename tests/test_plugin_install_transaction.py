@@ -290,3 +290,239 @@ def test_staged_fsync_failure_keeps_old_plugin(plugins_home, tmp_path, monkeypat
     assert snapshot(source) == original_source
     assert registry.verify_integrity_stamp(Path(old.path)) == old.sha256
     assert registry.discover_plugins()[0].enabled
+
+
+@pytest.fixture
+def windows_readonly_delete(monkeypatch):
+    """Emulate only Windows read-only unlink/rmdir denial, not Windows itself."""
+    import os
+    import stat
+    for name in ('unlink', 'rmdir'):
+        original = getattr(os, name)
+
+        def checked(path, *args, _original=original, **kwargs):
+            info = os.stat(path, dir_fd=kwargs.get('dir_fd'), follow_symlinks=False)
+            if not info.st_mode & stat.S_IWUSR:
+                raise PermissionError(13, 'emulated Windows read-only deletion', str(path))
+            return _original(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, checked)
+
+
+@pytest.mark.parametrize('emulated', [False, True])
+def test_repeat_readonly_replacement(plugins_home, tmp_path, request, emulated):
+    import stat
+    source = _valid_package(tmp_path / 'source')
+    payload = source / 'plugin.json'
+    payload.chmod(stat.S_IREAD)
+    before = snapshot(source)
+    mode = payload.stat().st_mode
+    if emulated:
+        request.getfixturevalue('windows_readonly_delete')
+    for _ in range(3):
+        installed = registry.install_from_path(str(source), force=True)
+        target = Path(installed.path) / 'plugin.json'
+        assert snapshot(source) == before
+        assert payload.stat().st_mode == mode
+        assert target.read_bytes() == payload.read_bytes()
+        assert target.stat().st_mode == mode
+        assert registry.verify_integrity_stamp(Path(installed.path)) == installed.sha256
+        assert not list(registry.plugins_dir().glob('.retired-*'))
+
+
+def interrupted_retirement(source, monkeypatch):
+    from harness import plugin_recovery
+    def fail(path):
+        raise OSError('cleanup unavailable')
+    with monkeypatch.context() as patch:
+        patch.setattr(plugin_recovery, '_remove_retired', fail)
+        with pytest.raises(OSError, match='cleanup unavailable'):
+            registry.install_from_path(str(source), force=True)
+    retired, = registry.plugins_dir().glob('.retired-*')
+    return retired
+
+
+def test_retired_readonly_directories_retry_on_startup(plugins_home, tmp_path, monkeypatch,
+                                                     windows_readonly_delete):
+    import stat
+    source, old = prepared(tmp_path)
+    retired = interrupted_retirement(source, monkeypatch)
+    before = snapshot(Path(old.path))
+    for path in [retired, retired / 'old']:
+        path.chmod(stat.S_IREAD | stat.S_IEXEC)
+    for path in (retired / 'old').rglob('*'):
+        path.chmod(stat.S_IREAD | (stat.S_IEXEC if path.is_dir() else 0))
+    records = registry.discover_plugins()
+    assert records[0].version == '2.0.0'
+    assert snapshot(Path(old.path)) == before
+    assert not retired.exists()
+    assert registry.discover_plugins()[0].stamp_ok
+
+
+def test_partial_retirement_failure_is_visible_and_retryable(plugins_home, tmp_path, monkeypatch,
+                                                           windows_readonly_delete):
+    from harness import plugin_recovery
+    source, old = prepared(tmp_path)
+    unlink = Path.unlink
+    removed = []
+    def fail(path, *args, **kwargs):
+        if any(p.name.startswith('.retired-') for p in path.parents) and path.name != plugin_recovery.MARKER:
+            if removed:
+                raise OSError('unrelated deletion failure')
+            removed.append(str(path))
+        return unlink(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'unlink', fail)
+        with pytest.raises(AgentPluginError, match='unrelated deletion failure'):
+            registry.install_from_path(str(source), force=True)
+    retired, = registry.plugins_dir().glob('.retired-*')
+    assert removed
+    assert (retired / plugin_recovery.MARKER).is_file()
+    committed = snapshot(Path(old.path))
+    assert registry.discover_plugins()[0].version == '2.0.0'
+    assert snapshot(Path(old.path)) == committed
+    assert not retired.exists()
+
+
+@pytest.mark.parametrize('kind', ['unexpected', 'nested', 'symlink', 'hardlink', 'reparse'])
+def test_retired_unexpected_entries_fail_closed(plugins_home, tmp_path, monkeypatch, kind):
+    import os
+    from types import SimpleNamespace
+    from harness import plugin_recovery
+    source, old = prepared(tmp_path)
+    retired = interrupted_retirement(source, monkeypatch)
+    outside = tmp_path / 'outside'
+    outside.write_bytes(b'keep external bytes and attributes')
+    outside.chmod(0o444)
+    mode = outside.stat().st_mode
+    path = retired / 'old' / 'foreign'
+    if kind == 'unexpected':
+        path = retired / 'foreign'
+        path.write_bytes(b'keep unexpected')
+    elif kind == 'nested':
+        path.write_bytes(b'keep unexpected')
+    elif kind == 'symlink':
+        path.symlink_to(outside)
+    elif kind == 'hardlink':
+        os.link(outside, path)
+    else:
+        path = retired / 'old'
+    before = snapshot(retired)
+    original_lstat = Path.lstat
+    def reparse(candidate):
+        result = original_lstat(candidate)
+        if candidate == path:
+            return SimpleNamespace(st_mode=result.st_mode, st_nlink=result.st_nlink,
+                                   st_file_attributes=0x400)
+        return result
+    with monkeypatch.context() as patch:
+        if kind == 'reparse':
+            patch.setattr(Path, 'lstat', reparse)
+        for _ in range(2):
+            with pytest.raises(AgentPluginError, match='retirement blocked'):
+                registry.discover_plugins()
+    assert snapshot(retired) == before
+    assert outside.read_bytes() == b'keep external bytes and attributes'
+    assert outside.stat().st_mode == mode
+    assert registry.verify_integrity_stamp(Path(old.path))
+
+
+def test_readonly_rollback_preserves_active_modes(plugins_home, tmp_path, monkeypatch,
+                                                windows_readonly_delete):
+    source, old = prepared(tmp_path)
+    payload = Path(old.path) / 'plugin.json'
+    payload.chmod(0o444)
+    (source / 'plugin.json').chmod(0o444)
+    before, source_before = snapshot(Path(old.path)), snapshot(source)
+    mode = payload.stat().st_mode
+    def fail(*args):
+        raise OSError('state publication failure')
+    with monkeypatch.context() as patch:
+        patch.setattr(registry, '_write_enabled', fail)
+        with pytest.raises(OSError, match='state publication failure'):
+            registry.install_from_path(str(source), force=True)
+    assert snapshot(Path(old.path)) == before
+    assert snapshot(source) == source_before
+    assert payload.stat().st_mode == mode
+    assert registry.discover_plugins()[0].enabled
+    assert not list(registry.plugins_dir().glob('.retired-*'))
+
+
+@pytest.mark.parametrize('damaged', [False, True])
+def test_legacy_retired_requires_intact_evidence(plugins_home, tmp_path, monkeypatch, damaged,
+                                               windows_readonly_delete):
+    source, old = prepared(tmp_path)
+    retired = interrupted_retirement(source, monkeypatch)
+    marker_path = retired / 'transaction.json'
+    marker = json.loads(marker_path.read_text())
+    del marker['retirement']
+    marker_path.write_text(json.dumps(marker))
+    payload = retired / 'old' / 'plugin.json'
+    if damaged:
+        payload.unlink()
+    else:
+        payload.chmod(0o444)
+        marker_path.chmod(0o444)
+        retired.chmod(0o555)
+    before = snapshot(retired)
+    if damaged:
+        with pytest.raises(AgentPluginError, match='retirement blocked'):
+            registry.discover_plugins()
+        assert snapshot(retired) == before
+    else:
+        assert registry.discover_plugins()[0].version == '2.0.0'
+        assert not retired.exists()
+    assert registry.verify_integrity_stamp(Path(old.path))
+
+
+def test_cold_start_retries_retirement(plugins_home, tmp_path, monkeypatch):
+    from tests.test_plugin_crash_recovery import COLD, run
+    source, old = prepared(tmp_path)
+    retired = interrupted_retirement(source, monkeypatch)
+    (retired / 'old' / 'plugin.json').chmod(0o444)
+    result = run(COLD, 'discover', source, old.id)
+    assert result.returncode == 0, result.stderr
+    record, = json.loads(result.stdout)
+    assert record['version'] == '2.0.0' and record['stamp_ok']
+    assert not retired.exists()
+
+
+def test_retirement_preflight_preserves_external_hardlink(plugins_home, tmp_path, monkeypatch):
+    import os
+    from harness import plugin_recovery
+    source, old = prepared(tmp_path)
+    external = tmp_path / 'external'
+    external.write_bytes(b'keep')
+    external.chmod(0o444)
+    mode = external.stat().st_mode
+    commit = plugin_recovery.commit
+    def linked(transaction):
+        commit(transaction)
+        os.link(external, transaction / 'old' / 'external')
+    monkeypatch.setattr(plugin_recovery, 'commit', linked)
+    with pytest.raises(AgentPluginError, match='non-private plain entry'):
+        registry.install_from_path(str(source), force=True)
+    assert not list(registry.plugins_dir().glob('.retired-*'))
+    transaction, = registry.plugins_dir().glob('.install-*')
+    assert (transaction / 'old' / 'external').read_bytes() == b'keep'
+    assert external.stat().st_mode == mode
+    assert registry.verify_integrity_stamp(Path(old.path))
+
+
+def test_retired_empty_directory_retry(plugins_home, tmp_path, monkeypatch):
+    from harness import plugin_recovery
+    source, old = prepared(tmp_path)
+    rmdir = Path.rmdir
+    def fail(path):
+        if path.name.startswith('.retired-'):
+            raise OSError('final rmdir failure')
+        return rmdir(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'rmdir', fail)
+        with pytest.raises(AgentPluginError, match='final rmdir failure'):
+            registry.install_from_path(str(source), force=True)
+    retired, = registry.plugins_dir().glob('.retired-*')
+    assert list(retired.iterdir()) == []
+    plugin_recovery.recover(registry.plugins_dir(), registry.verify_integrity_stamp)
+    assert not retired.exists()
+    assert registry.discover_plugins()[0].version == '2.0.0'

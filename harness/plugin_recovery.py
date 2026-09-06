@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import tempfile
 
@@ -140,13 +139,97 @@ def prepare(transaction, dest, verify):
     sync_directory(root)
 
 
+def _retirement_entries(tree):
+    """Preflight the whole obsolete tree before changing any attributes."""
+    entries = {}
+
+    def visit(path):
+        info = path.lstat()
+        if (getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)):
+            raise AgentPluginError(f'plugin retirement refuses non-private plain entry: {path}')
+        entries[str(path.relative_to(tree))] = [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)]
+        if stat.S_ISDIR(info.st_mode):
+            for child in path.iterdir():
+                visit(child)
+
+    visit(tree)
+    if set(p.name for p in tree.iterdir()) - {MARKER, 'old', 'new'}:
+        raise AgentPluginError(f'plugin retirement refuses unexpected contents: {tree}')
+    return entries
+
+
+def _remove_retired(retired, verify=None):
+    try:
+        entries = _retirement_entries(retired)
+        if len(entries) == 1:
+            # A crash after unlinking the last marker leaves no data to authorize.
+            retired.chmod(stat.S_IMODE(retired.lstat().st_mode) | stat.S_IWUSR)
+            retired.rmdir()
+            sync_directory(retired.parent)
+            return
+        marker = json.loads((retired / MARKER).read_text())
+        if (marker['version'] != 1 or marker['phase'] not in ('pending', 'committed')
+                or marker['root'] != identity(retired.parent)
+                or marker['transaction'] != identity(retired)):
+            raise AgentPluginError('invalid retired journal identity or schema')
+        if 'retirement' not in marker:
+            # Older retirees have no inventory: only intact, verified payloads
+            # can establish one. Incomplete legacy evidence remains blocked.
+            if verify is None:
+                raise AgentPluginError('missing retirement inventory')
+            for name in ('old', 'new'):
+                path = retired / name
+                if path.exists():
+                    expected = marker[name]
+                    if (expected is None or identity(path) != expected['identity']
+                            or verify(path) != expected['digest']):
+                        raise AgentPluginError('legacy retired package does not match journal')
+            marker['retirement'] = {name: info for name, info in entries.items() if name != MARKER}
+            for path in (retired, retired / MARKER):
+                mode = stat.S_IMODE(path.lstat().st_mode)
+                if not mode & stat.S_IWUSR:
+                    path.chmod(mode | stat.S_IWUSR)
+            atomic_bytes(retired / MARKER, json.dumps(marker).encode())
+            entries = _retirement_entries(retired)
+        expected = marker['retirement']
+        if any(expected.get(name) != info for name, info in entries.items() if name != MARKER):
+            raise AgentPluginError('retired contents do not match retirement inventory')
+        # Keep the marker until all payloads are gone so interrupted cleanup is retryable.
+        paths = [retired / name for name in entries if name not in ('.', MARKER)]
+        for path in [retired] + paths + [retired / MARKER]:
+            info = path.lstat()
+            if [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)] != entries[str(path.relative_to(retired))]:
+                raise AgentPluginError(f'plugin retirement entry changed: {path}')
+            if (getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)):
+                raise AgentPluginError(f'plugin retirement entry is no longer private and plain: {path}')
+            if not info.st_mode & stat.S_IWUSR:
+                path.chmod(stat.S_IMODE(info.st_mode) | stat.S_IWUSR)
+        for path in sorted(paths, key=lambda p: len(p.parts), reverse=True):
+            if entries[str(path.relative_to(retired))][2] == stat.S_IFDIR:
+                path.rmdir()
+            else:
+                path.unlink()
+        (retired / MARKER).unlink()
+        retired.rmdir()
+        sync_directory(retired.parent)
+    except Exception as exc:
+        raise AgentPluginError(f'plugin retirement blocked; evidence retained at {retired}: {exc}') from exc
+
+
 def retire(transaction):
     retired = transaction.with_name(transaction.name.replace('.install-', '.retired-', 1))
     if retired.exists() or retired.is_symlink():
         raise AgentPluginError(f'plugin recovery refuses occupied retirement path: {retired}')
+    entries = _retirement_entries(transaction)
+    marker = json.loads((transaction / MARKER).read_text())
+    marker['retirement'] = {name: info for name, info in entries.items() if name != MARKER}
+    atomic_bytes(transaction / MARKER, json.dumps(marker).encode())
     os.replace(transaction, retired)
     sync_directory(transaction.parent)
-    shutil.rmtree(retired)
+    _remove_retired(retired)
 
 
 def commit(transaction):
@@ -225,6 +308,8 @@ def recover_one(transaction, verify):
 def recover(root, verify):
     if not root.exists():
         return
+    for retired in sorted(root.glob('.retired-*')):
+        _remove_retired(retired, verify)
     for transaction in sorted(root.glob('.install-*')):
         if transaction.is_symlink():
             raise AgentPluginError(f'plugin recovery refuses symlink: {transaction}')

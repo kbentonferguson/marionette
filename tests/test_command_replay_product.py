@@ -183,13 +183,13 @@ def test_concurrent_replay_bounds_real_processes(tmp_path):
     for index in range(4):
         code = (
             "from pathlib import Path; import time; "
-            f"p=Path('started-{index}'); p.write_text('started'); "
-            "log=Path('events'); "
-            f"log.open('a').write('start {index}\\n'); "
+            f"p=Path('started-{index}'); "
+            "start=time.time_ns(); "
+            "p.open('x').write(str(start)); "
             "deadline=time.monotonic()+10\n"
             "while not Path('release').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
             "assert Path('release').exists(), 'release deadline expired'\n"
-            f"log.open('a').write('end {index}\\n')"
+            f"Path('ended-{index}').open('x').write(str(time.time_ns()))"
         )
         commands.append(python_shell_command(code))
     first = start_command_batch(session, commands, 'real-bound', max_concurrency=2)
@@ -207,10 +207,17 @@ def test_concurrent_replay_bounds_real_processes(tmp_path):
         (tmp_path / 'release').touch()
         settled = _wait_batch_terminal(session, first['batch_id'])
     assert settled['status'] == 'completed'
+    assert len(list(tmp_path.glob('started-*'))) == 4
+    assert len(list(tmp_path.glob('ended-*'))) == 4
+    events = []
+    for index in range(4):
+        start = int((tmp_path / f'started-{index}').read_text())
+        end = int((tmp_path / f'ended-{index}').read_text())
+        assert start < end
+        events.extend(((start, 1), (end, -1)))
     active = peak = 0
-    for line in (tmp_path / 'events').read_text().splitlines():
-        active += 1 if line.startswith('start') else -1
+    for _, delta in sorted(events):
+        active += delta
         peak = max(peak, active)
     assert peak == 2
     assert active == 0
-    assert len((tmp_path / 'events').read_text().splitlines()) == 8
