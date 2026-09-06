@@ -636,6 +636,26 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
       refreshQueue();
     } else if (ev.kind === "assistant_done") {
+      // Interrupt/error already sealed this turn. A later assistant_done
+      // (often stop_cause=natural) must not flip Done over Stopped/Continue.
+      if (turnSettledRef.current) {
+        flushTypewriter();
+        setCompactingStatus(null);
+        const sealedIds = pendingJobIdsRef.current.filter(
+          (id) => !id.startsWith("local-swarm-"),
+        );
+        setPendingJobIds(sealedIds);
+        setItems((p) =>
+          reconcileOrphanInvestigationCards(
+            finalizeOrphanSwarmPills(
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              sealedIds,
+            ),
+            sealedIds,
+          ),
+        );
+        return;
+      }
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.

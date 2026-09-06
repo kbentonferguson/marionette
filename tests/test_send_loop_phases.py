@@ -28,6 +28,7 @@ from harness.send_loop_phases import (
     dispatch_readonly_action,
     drain_idle_turn,
     drain_stream_queue,
+    StreamIdleStuckError,
     meter_pilot_step,
     promote_trailing_reasoning_to_say,
     read_stdout_thread,
@@ -742,7 +743,19 @@ def test_drain_stream_queue_escalates_stream_idle_notice(monkeypatch):
     q = MagicMock()
     q.get = _mock_stream_queue_get(clock, script)
 
-    events, (_prose, got) = _collect_drain_events(drain_stream_queue(q))
+    events = []
+    gen = drain_stream_queue(q)
+    raised = None
+    for _ in range(32):
+        try:
+            events.append(next(gen))
+        except StreamIdleStuckError as exc:
+            raised = exc
+            break
+        except StopIteration:
+            raise AssertionError("drain finished without aborting the stuck stream")
+    else:
+        raise AssertionError("drain did not abort")
     idle = [
         e.data.get("message")
         for e in events
@@ -753,7 +766,8 @@ def test_drain_stream_queue_escalates_stream_idle_notice(monkeypatch):
         STREAM_IDLE_ESCALATE_MESSAGE,
         STREAM_IDLE_STUCK_MESSAGE,
     ]
-    assert got is resp
+    assert raised is not None
+    assert STREAM_IDLE_STUCK_MESSAGE in str(raised)
 
 
 def test_drain_stream_queue_no_stream_idle_notice_under_threshold(monkeypatch):

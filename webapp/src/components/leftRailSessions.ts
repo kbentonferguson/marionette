@@ -248,6 +248,34 @@ export function patchSessionArchivedInCaches(
   return touched;
 }
 
+/**
+ * Seed a per-root session list. A live refresh that returns [] must not
+ * clobber last-good rows — that is the mid-switch empty "New session" flash.
+ * Delete/archive still go through purge/patch, which write the real remainder.
+ */
+export function preferLastGoodSessionList(
+  root: string,
+  incoming: Session[] | null | undefined,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+): Session[] {
+  const rows = incoming || [];
+  if (rows.length > 0) return rows;
+  const prev = read(`sessions:${root}`);
+  return prev && prev.length > 0 ? prev : rows;
+}
+
+/** Write a fetched session list, keeping last-good rows when the fetch is empty. */
+export function writeSessionListCache(
+  root: string,
+  incoming: Session[] | null | undefined,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+  write: (key: string, data: Session[]) => void = writeSWRCache,
+): Session[] {
+  const rows = preferLastGoodSessionList(root, incoming, read);
+  write(`sessions:${root}`, rows);
+  return rows;
+}
+
 /** Drop a session id from every per-root sessions SWR cache. Returns how many
  *  caches were rewritten. Used on delete so inactive projects do not keep
  *  phantom titles (the "merged dir" ghost). */

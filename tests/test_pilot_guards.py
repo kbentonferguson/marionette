@@ -11,6 +11,7 @@ from harness.pilot_guards import (
     EDIT_FIRST_READ_ALLOWANCE_DEFAULT,
     IterationBudget,
     LOOP_REPEAT_CAP,
+    POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE_DEFAULT,
     POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT,
     SWARM_GATE_FULL_REDIRECT_CAP,
     SWARM_GATE_READ_ALLOWANCE,
@@ -24,6 +25,7 @@ from harness.pilot_guards import (
     check_delegate_gate,
     check_edit_first,
     check_implement_exhausted,
+    check_implement_unverified_retry,
     check_iteration_budget,
     check_loop_guard,
     check_pilot_guards,
@@ -45,7 +47,9 @@ from harness.pilot_guards import (
     is_swarm_gate_blocked_exploration,
     is_tiny_workspace,
     iteration_budget_enabled,
+    implement_acceptance_of,
     job_result_shows_implement_success,
+    job_result_shows_implement_unverified_land,
     loop_guard_enabled,
     mid_turn_restart_blocked,
     new_turn_guard_state,
@@ -1426,6 +1430,7 @@ def test_implement_success_provenance_clamps_post_implement_allowance(monkeypatc
     state = TurnGuardState(iteration_budget=budget)
     assert job_result_shows_implement_success({
         "applied": True,
+        "acceptance": "passed",
         "files": ["app.js"],
         "has_patch_art": True,
         "worker_provenance": {"worktree_diff_empty": False},
@@ -1435,6 +1440,7 @@ def test_implement_success_provenance_clamps_post_implement_allowance(monkeypatc
         state,
         {
             "applied": True,
+            "acceptance": "passed",
             "files": ["app.js"],
             "has_patch_art": True,
             "worker_provenance": {"worktree_diff_empty": False},
@@ -1448,7 +1454,7 @@ def test_implement_success_provenance_clamps_post_implement_allowance(monkeypatc
     # Idempotent — second note must not raise or re-widen.
     note_implement_success_from_job_result(
         state,
-        {"applied": True, "files": ["app.js"], "has_patch_art": True},
+        {"applied": True, "acceptance": "passed", "files": ["app.js"], "has_patch_art": True},
         {"role": "implement"},
     )
     assert budget.cap == 10 + POST_IMPLEMENT_TOOL_ALLOWANCE_DEFAULT
@@ -1497,6 +1503,61 @@ def test_post_implement_budget_exhaustion_uses_calm_message():
     assert verdict.reason == "budget"
     assert "worker patch already landed" in verdict.message
     assert "Report the outcome" in verdict.message
+
+
+def test_applied_without_acceptance_is_unverified_not_success():
+    res = {
+        "applied": True,
+        "files": ["app.js"],
+        "has_patch_art": True,
+        "worker_provenance": {"worktree_diff_empty": False},
+    }
+    assert implement_acceptance_of(res) == "unknown"
+    assert job_result_shows_implement_success(res, {"role": "implement"}) is False
+    assert job_result_shows_implement_unverified_land(res, {"role": "implement"}) is True
+
+
+def test_unverified_land_reserves_diagnosis_and_blocks_paid_retry(monkeypatch):
+    monkeypatch.delenv("HARNESS_POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE", raising=False)
+    budget = IterationBudget(cap=25, used=10)
+    state = TurnGuardState(iteration_budget=budget)
+    note_implement_success_from_job_result(
+        state,
+        {
+            "applied": True,
+            "files": ["app.js"],
+            "has_patch_art": True,
+            "worker_provenance": {"worktree_diff_empty": False},
+        },
+        {"role": "implement"},
+    )
+    assert state.implement_success_seen is False
+    assert state.implement_unverified_landed is True
+    assert budget.remaining == POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE_DEFAULT
+    retry = check_implement_unverified_retry(
+        state, "run_implement", _Act(kind="run_implement", goal="fix tests"),
+    )
+    assert retry.suppress is True
+    assert retry.reason == "implement_unverified"
+    assert "until the user continues" in retry.message
+    wired = check_pilot_guards(
+        state, "run_implement", _Act(kind="run_implement", goal="fix tests"),
+    )
+    assert wired.suppress is True
+    assert wired.reason == "implement_unverified"
+
+
+def test_unverified_diagnosis_budget_does_not_forbid_verification():
+    budget = IterationBudget(cap=10, used=10)
+    state = TurnGuardState(
+        iteration_budget=budget,
+        implement_unverified_landed=True,
+    )
+    verdict = check_iteration_budget(state, "run_command", _Act(command="pytest"))
+    assert verdict.suppress is True
+    assert "diagnosis" in verdict.message
+    assert "do not launch more verification" not in verdict.message.lower()
+    assert "until the user continues" in verdict.message
 
 
 def test_chrome_file_smoke_detection():
@@ -1638,6 +1699,7 @@ def test_successful_implement_stops_redundant_parent_validation(monkeypatch):
         state,
         {
             "applied": True,
+            "acceptance": "passed",
             "files": ["app.js"],
             "has_patch_art": True,
             "worker_provenance": {"worktree_diff_empty": False},

@@ -747,9 +747,16 @@ export function latchWaitingPhaseStartedAt(
   phase: string,
   nowMs: number,
   status?: string | null,
+  busyStartedAt?: number | null,
 ): number | null {
   if (status === "awaiting_swarm") return null;
-  if (phase === "waiting") return prevStartedAt ?? nowMs;
+  if (phase === "waiting") {
+    const raw = prevStartedAt ?? nowMs;
+    // busyNow can freeze at the last idle tick. A leftover stamp from that
+    // era must not become "Waiting on <pilot> · 44s" on the next send.
+    if (busyStartedAt != null && raw < busyStartedAt) return busyStartedAt;
+    return raw;
+  }
   return null;
 }
 

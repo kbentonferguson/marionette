@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -635,6 +635,30 @@ describe("LeftRail session list contracts", () => {
     expect(actives).toEqual(["54c2d5c1ed2a"]);
     expect(homeRows.map((s) => s.id)).toEqual(["54c2d5c1ed2a"]);
     expect(marionetteRows.map((s) => s.id)).toEqual(["3f50c50e8a50", "other"]);
+  });
+
+  it("prefers last-good session rows when a refresh returns empty", () => {
+    const marionette = "/Users/cary/Projects/marionette";
+    writeSWRCache(`sessions:${marionette}`, [
+      {
+        id: "3f50c50e8a50",
+        title: "Astra product audit",
+        created: 2,
+        repo: marionette,
+        workspace_root: marionette,
+        active: true,
+      },
+    ]);
+    expect(preferLastGoodSessionList(marionette, [])).toEqual([
+      expect.objectContaining({ id: "3f50c50e8a50" }),
+    ]);
+    expect(writeSessionListCache(marionette, []).map((s) => s.id)).toEqual(["3f50c50e8a50"]);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.map((s) => s.id)).toEqual([
+      "3f50c50e8a50",
+    ]);
+    expect(preferLastGoodSessionList(marionette, [
+      { id: "fresh", title: "New", created: 3, repo: marionette, workspace_root: marionette },
+    ]).map((s) => s.id)).toEqual(["fresh"]);
   });
 
   it("project session empty state is stale-while-revalidate (not jobs-gated)", () => {
