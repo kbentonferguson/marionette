@@ -66,6 +66,62 @@ import {
   stackRowTemplateN,
 } from "../lib/stackSplit";
 
+function startPointerResize(
+  handle: HTMLSpanElement,
+  pointerId: number,
+  apply: (event: PointerEvent) => void,
+  commit: () => void,
+  end: () => void,
+): () => void {
+  let frame: number | null = null;
+  let pending: PointerEvent | null = null;
+  let finished = false;
+  const flush = () => {
+    frame = null;
+    if (pending) {
+      const latest = pending;
+      pending = null;
+      apply(latest);
+    }
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (frame !== null) cancelAnimationFrame(frame);
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onCancel);
+    handle.removeEventListener("lostpointercapture", onCancel);
+    try {
+      flush();
+      commit();
+    } finally {
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      end();
+    }
+  };
+  const onMove = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId || !handle.hasPointerCapture(pointerId)) return;
+    pending = event;
+    if (frame === null) frame = requestAnimationFrame(flush);
+  };
+  const onUp = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId) return;
+    pending = event;
+    finish();
+  };
+  // Cancel/lost-capture coordinates are not a new geometry sample.
+  const onCancel = (event: PointerEvent) => {
+    if (event.pointerId === pointerId) finish();
+  };
+  handle.setPointerCapture(pointerId);
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onCancel);
+  handle.addEventListener("lostpointercapture", onCancel);
+  return finish;
+}
+
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm" | "economics";
 
 const TAB_CONFIG: Record<Tab, { label: string }> = {
@@ -356,10 +412,16 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     return () => window.removeEventListener("harness-close-right-card", onClose as EventListener);
   }, [closeSettings, openCards, tabOrder]);
 
-  const persistCardLayouts = useCallback((nextLayouts: CardLayouts) => {
+  const finishResizeRef = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => () => {
+    finishResizeRef.current?.();
+    finishResizeRef.current = null;
+  }, [visible, columns]);
+
+  const persistCardLayouts = useCallback((nextLayouts: CardLayouts, durable = true) => {
     cardLayoutsRef.current = nextLayouts;
     setCardLayouts(nextLayouts);
-    localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
+    if (durable) localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
 
   useLayoutEffect(() => {
@@ -396,20 +458,23 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     return () => observer.disconnect();
   }, [visible, openCards.length, persistCardLayouts]);
 
-  const persistStackFractions = useCallback((nextFractions: Record<string, number[]>) => {
+  const persistStackFractions = useCallback((nextFractions: Record<string, number[]>, durable = true) => {
     stackFractionsRef.current = nextFractions;
     setStackFractions(nextFractions);
-    localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(nextFractions));
+    if (durable) localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(nextFractions));
   }, []);
 
-  const setStackFractionsForKey = useCallback((pairKey: string, nextFractions: number[]) => {
+  const setStackFractionsForKey = useCallback((pairKey: string, nextFractions: number[], durable = true) => {
+    const normalized = normalizeFractions(nextFractions, nextFractions.length);
+    const current = stackFractionsRef.current[pairKey] ?? equalFractions(nextFractions.length);
+    if (!durable && normalized.every((value, index) => value === current[index])) return;
     persistStackFractions({
       ...stackFractionsRef.current,
-      [pairKey]: normalizeFractions(nextFractions, nextFractions.length),
-    });
+      [pairKey]: normalized,
+    }, durable);
   }, [persistStackFractions]);
 
-  const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
+  const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number, durable = true) => {
     const groups = columnsRef.current.filter((group) => group.length > 0);
     const groupCount = groups.length;
     if (!showColumnResizeHandle(groupIndex, groupCount)) return;
@@ -418,13 +483,14 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groupCount)),
     ));
     const next = applyPairwiseColumnResize(current, groupIndex, nextSpan);
+    if (!durable && next.every((value, index) => value === current[index])) return;
     const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
     groups.forEach((group, index) => {
       for (const tab of group) {
         nextLayouts[tab] = { columnSpan: next[index], customized: true };
       }
     });
-    persistCardLayouts(nextLayouts);
+    persistCardLayouts(nextLayouts, durable);
   }, [persistCardLayouts]);
 
   const resizeGroupFromPointer = useCallback((
@@ -437,35 +503,23 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     const boardWidth = boardRef.current?.getBoundingClientRect().width || 0;
     if (!boardWidth) return;
     const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
+    finishResizeRef.current?.();
+    const initial = cardLayoutsRef.current;
     const startX = event.clientX;
     const startSpan = placement.columnSpan;
     beginColumnResize();
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
-      setGroupColumnSpan(
-        placement.groupIndex,
-        columnSpanFromPointerDelta({
-          startSpan,
-          startClientX: startX,
-          clientX: moveEvent.clientX,
-          boardWidth,
-        }),
-      );
-    };
-    const onUp = (upEvent: PointerEvent) => {
-      if (handle.hasPointerCapture(upEvent.pointerId)) {
-        handle.releasePointerCapture(upEvent.pointerId);
+    finishResizeRef.current = startPointerResize(handle, event.pointerId, moveEvent => {
+      setGroupColumnSpan(placement.groupIndex, columnSpanFromPointerDelta({
+        startSpan,
+        startClientX: startX,
+        clientX: moveEvent.clientX,
+        boardWidth,
+      }), false);
+    }, () => {
+      if (cardLayoutsRef.current !== initial) {
+        localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(cardLayoutsRef.current));
       }
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      endColumnResize();
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    }, endColumnResize);
   }, [setGroupColumnSpan]);
 
   const resizeStackFromPointer = useCallback((
@@ -481,36 +535,27 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     const stackHeight = stack?.getBoundingClientRect().height || 0;
     if (!stackHeight) return;
     const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
+    finishResizeRef.current?.();
+    const initial = stackFractionsRef.current;
     const startY = event.clientY;
     const startFractions = normalizeFractions(
       stackFractionsRef.current[pairKey] ?? equalFractions(stackLength),
       stackLength,
     );
     beginRowResize();
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
+    finishResizeRef.current = startPointerResize(handle, event.pointerId, moveEvent => {
       setStackFractionsForKey(pairKey, fractionsFromBoundaryDrag({
         fractions: startFractions,
         boundaryIndex,
         startClientY: startY,
         clientY: moveEvent.clientY,
         stackHeight,
-      }));
-    };
-    const onUp = (upEvent: PointerEvent) => {
-      if (handle.hasPointerCapture(upEvent.pointerId)) {
-        handle.releasePointerCapture(upEvent.pointerId);
+      }), false);
+    }, () => {
+      if (stackFractionsRef.current !== initial) {
+        localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(stackFractionsRef.current));
       }
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      endRowResize();
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    }, endRowResize);
   }, [setStackFractionsForKey]);
 
   const handleDragStart = (event: React.DragEvent, tabId: Tab) => {

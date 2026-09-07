@@ -1,9 +1,11 @@
 """Regression coverage for turn admission and abandoned compaction ownership."""
 import copy
+from contextvars import copy_context
 import threading
 
 import pytest
 
+from harness.approval_identity import get_approval_turn_id
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
 from pmharness.drivers.base import DriverResponse
@@ -30,27 +32,38 @@ def test_rejected_send_preserves_stop_and_warnings(tmp_path):
 
 def test_stale_send_cleanup_preserves_new_owner(tmp_path, monkeypatch):
     session = session_at(tmp_path)
+    initial_turn_id = get_approval_turn_id()
 
     def suspended(*args, **kwargs):
         yield ConvEvent("notice", {"message": "suspended"})
 
     monkeypatch.setattr(session, "_send_locked_inner", suspended)
+    # Overlapping HTTP requests execute in separate contexts, not nested turns.
+    old_context, new_context = copy_context(), copy_context()
     old = session.send("old")
-    next(old)
-    monkeypatch.setattr(session, "_turn_deadline_seconds", lambda: 1)
-    session._busy_since -= 2
-    assert session._reap_stuck_turn()
     new = session.send("new")
-    next(new)
-    session._state = "streaming"
-    session._history[0]["content"] = "new owner prefix"
     try:
-        old.close()
+        old_context.run(next, old)
+        old_turn_id = old_context.run(get_approval_turn_id)
+        monkeypatch.setattr(session, "_turn_deadline_seconds", lambda: 1)
+        session._busy_since -= 2
+        assert session._reap_stuck_turn()
+        new_context.run(next, new)
+        new_turn_id = new_context.run(get_approval_turn_id)
+        assert old_turn_id and new_turn_id and old_turn_id != new_turn_id
+        session._state = "streaming"
+        session._history[0]["content"] = "new owner prefix"
+        old_context.run(old.close)
+        assert old_context.run(get_approval_turn_id) == initial_turn_id
+        assert new_context.run(get_approval_turn_id) == new_turn_id
         assert session._state == "streaming"
         assert session._history[0]["content"] == "new owner prefix"
         assert session._busy.locked()
     finally:
-        new.close()
+        old_context.run(old.close)
+        new_context.run(new.close)
+    assert new_context.run(get_approval_turn_id) == initial_turn_id
+    assert get_approval_turn_id() == initial_turn_id
 
 
 def fat_session(tmp_path, monkeypatch):
