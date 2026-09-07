@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
+import { isSettingsOverlayOpen, setSettingsOverlayOpen, subscribeSettingsOverlay } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
@@ -9,6 +10,7 @@ import ShellSurface from "./components/ShellSurface";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
+import PanelChooser from "./components/PanelChooser";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
@@ -82,6 +84,7 @@ export default function App() {
     width, compact, rightDrawer, view, setView, desktopLeftOpen, desktopRightOpen,
     leftOpen, rightOpen, setLeftOpen, setRightOpen,
   } = useResponsiveShell(bool(LS.leftOpen, true), bool(LS.rightOpen, false) && hasStoredRightPaneCards());
+  const settingsOpen = useSyncExternalStore(subscribeSettingsOverlay, isSettingsOverlayOpen, isSettingsOverlayOpen);
   const previousSessionId = useRef<string | null>(null);
   useEffect(() => {
     if (compact && previousSessionId.current && previousSessionId.current !== activeSessionId) setView("chat");
@@ -118,6 +121,11 @@ export default function App() {
 
   const openRightTo = (tab: string) => {
     const target = tab || "state";
+    if (target === "settings") {
+      pendingRightTab.current = null;
+      setSettingsOverlayOpen(true);
+      return;
+    }
     pendingRightTab.current = target;
     if (rightOpen) {
       pendingRightTab.current = null;
@@ -133,7 +141,7 @@ export default function App() {
   const requestRightMinWidth = useCallback((minPx: number) => {
     if (!rightDrawer) setRightW(previous => Math.max(previous, minPx));
   }, [rightDrawer]);
-  // Reserve 480px for content plus the 68px dock, beyond railLayout's 360px center.
+  // Reserve the dock separately from railLayout's adaptive chat/rail budget.
   // Clamp presentation only; resizing the window must not rewrite saved widths.
   const displayed = reclampRailWidths(leftW, rightW, leftOpen && !compact, rightOpen && !rightDrawer, width - SHELL_EXTRA_CENTER_W);
 
@@ -369,7 +377,7 @@ export default function App() {
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          <ShellSurface visible={leftOpen} presentation={compact ? "left" : "inline"} label="Sessions" width={displayed.leftW} onClose={() => setLeftOpen(false)}>
+          <ShellSurface visible={leftOpen} suspended={compact && settingsOpen} presentation={compact ? "left" : "inline"} label="Sessions" width={displayed.leftW} onClose={() => setLeftOpen(false)}>
             <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
           </ShellSurface>
           {!compact && leftOpen && <Resizer
@@ -420,20 +428,25 @@ export default function App() {
               }}
             />
           )}
-          <ShellSurface visible={rightOpen} presentation={rightDrawer ? "right" : "inline"} label="Panels" width={displayed.rightW} onClose={() => setRightOpen(false)}>
-            <ErrorBoundary label="Tool board">
-              <RightPane
-                visible={rightOpen}
-                artifacts={artifacts}
-                onOpenWizard={() => {
-                  setManual(true);
-                  setShowWizard(true);
-                }}
-                initialTab={pendingRightTab.current}
-                onEmpty={closeEmptyRightPane}
-                onRequestMinWidth={requestRightMinWidth}
-              />
-            </ErrorBoundary>
+          <ShellSurface visible={rightOpen} suspended={rightDrawer && settingsOpen} presentation={rightDrawer ? "right" : "inline"} label="Panels" width={displayed.rightW} onClose={() => setRightOpen(false)}>
+            <div className="flex h-full min-h-0 flex-col">
+              {rightDrawer && <PanelChooser drawer onOpenTab={openRightTo} />}
+              <div className="flex-1 min-h-0 min-w-0">
+                <ErrorBoundary label="Tool board">
+                  <RightPane
+                    visible={rightOpen}
+                    artifacts={artifacts}
+                    onOpenWizard={() => {
+                      setManual(true);
+                      setShowWizard(true);
+                    }}
+                    initialTab={pendingRightTab.current}
+                    onEmpty={closeEmptyRightPane}
+                    onRequestMinWidth={requestRightMinWidth}
+                  />
+                </ErrorBoundary>
+              </div>
+            </div>
           </ShellSurface>
         </div>
       </div>

@@ -3,8 +3,9 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 type Presentation = "inline" | "left" | "right" | "modal";
 
 /** Native modal focus containment without reparenting or unmounting live panes. */
-export default function ShellSurface({ visible, presentation, label, width, onClose, returnFocus, children }: {
+export default function ShellSurface({ visible, suspended = false, presentation, label, width, onClose, returnFocus, children }: {
   visible: boolean;
+  suspended?: boolean;
   presentation: Presentation;
   label: string;
   width?: number;
@@ -20,22 +21,24 @@ export default function ShellSurface({ visible, presentation, label, width, onCl
     const dialog = ref.current;
     if (!dialog) return;
     if (dialog.open) dialog.close();
-    if (visible) {
+    if (visible && !suspended) {
       if (presentation === "inline") dialog.open = true;
       else {
         const active = document.activeElement;
-        opener.current = focusTarget.current || (active instanceof HTMLElement ? active : null);
+        if (!opener.current?.isConnected) {
+          opener.current = focusTarget.current || (active instanceof HTMLElement ? active : null);
+        }
         dialog.showModal();
       }
-    } else if (opener.current?.isConnected) {
+    } else if (!visible && opener.current?.isConnected) {
       opener.current.focus();
       opener.current = null;
     }
     return () => { if (dialog.open) dialog.close(); };
-  }, [visible, presentation]);
+  }, [visible, suspended, presentation]);
 
   return <dialog ref={ref} role={presentation === "inline" ? "complementary" : "dialog"} aria-label={label} aria-modal={presentation === "inline" ? undefined : true}
-    data-shell-hidden={!visible} data-presentation={presentation}
+    data-shell-hidden={!visible || suspended} data-presentation={presentation}
     className="shell-surface" style={presentation === "inline" ? { width } : undefined}
     onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onClose(); }}
     onClick={(event) => { if (event.target === event.currentTarget && presentation !== "inline") {

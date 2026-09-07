@@ -12,7 +12,7 @@ afterEach(cleanup);
 
 describe("responsive shell transitions", () => {
   it("starts narrow with chat even when both desktop panels were saved open", () => {
-    resize(697);
+    resize(600);
     const { result } = renderHook(() => useResponsiveShell(true, true));
     expect(result.current).toMatchObject({ compact: true, leftOpen: false, rightOpen: false, view: "chat" });
     act(() => result.current.setLeftOpen(true));
@@ -33,11 +33,27 @@ describe("responsive shell transitions", () => {
     resize(COMPACT_SHELL_WIDTH - 1);
     expect(result.current.view).toBe("chat");
     act(() => result.current.setLeftOpen(true));
-    resize(697);
+    resize(600);
     expect(result.current.view).toBe("left");
     resize(COMPACT_SHELL_WIDTH);
     expect(result.current).toMatchObject({ leftOpen: false, rightOpen: true });
-    resize(697);
+    resize(600);
     expect(result.current).toMatchObject({ view: "chat", leftOpen: false, rightOpen: false });
   });
+});
+
+it("temporarily selects one inline rail without rewriting desktop choices", () => {
+  resize(1019);
+  const { result } = renderHook(() => useResponsiveShell(true, true));
+  resize(800);
+  expect(result.current).toMatchObject({ compact: false, rightDrawer: false, leftOpen: false, rightOpen: true });
+  act(() => result.current.setLeftOpen(v => !v));
+  expect(result.current).toMatchObject({ leftOpen: true, rightOpen: false, desktopLeftOpen: true, desktopRightOpen: true });
+  act(() => result.current.setRightOpen(true));
+  resize(640);
+  expect(result.current).toMatchObject({ compact: false, rightDrawer: false, rightOpen: true });
+  resize(639);
+  expect(result.current).toMatchObject({ compact: true, rightDrawer: true, view: "chat" });
+  resize(1019);
+  expect(result.current).toMatchObject({ leftOpen: true, rightOpen: true });
 });

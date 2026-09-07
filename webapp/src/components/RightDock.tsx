@@ -1,17 +1,13 @@
+import PanelChooser from "./PanelChooser";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Database,
-  FolderTree,
-  GitBranch,
-  GitFork,
   GitPullRequest,
   Globe,
-  History,
   Coins,
   Network,
   PanelRight,
   PanelRightClose,
-  Plus,
   Settings,
   SquareTerminal,
 } from "lucide-react";
@@ -62,28 +58,6 @@ const DOCK_LINKS: { id: string; tab: string; icon: ReactNode; title: string }[] 
   },
 ];
 
-const PANEL_OPTIONS = [
-  { tab: "state", label: "State", icon: <Database size={12} /> },
-  { tab: "swarm", label: "Swarm", icon: <Network size={12} /> },
-  { tab: "economics", label: "Economics", icon: <Coins size={12} /> },
-  { tab: "files", label: "Files", icon: <FolderTree size={12} /> },
-  { tab: "git", label: "Git", icon: <GitBranch size={12} /> },
-  { tab: "worktrees", label: "Worktrees", icon: <GitFork size={12} /> },
-  { tab: "terminal", label: "Terminal", icon: <SquareTerminal size={12} /> },
-  { tab: "review", label: "Review", icon: <GitPullRequest size={12} /> },
-  { tab: "checkpoints", label: "History", icon: <History size={12} /> },
-  { tab: "browser", label: "Browser", icon: <Globe size={12} /> },
-];
-
-function readStoredList(key: string): string[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) || "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 export default function RightDock({
   onOpenTab,
   onExpand,
@@ -102,9 +76,6 @@ export default function RightDock({
   const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
     () => lastSelectedProjectRoot() || undefined,
   );
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [menuVersion, setMenuVersion] = useState(0);
-  const addMenuRef = useRef<HTMLDivElement | null>(null);
   const [activitySessionId, setActivitySessionId] = useState("");
   const [scopeEpoch, setScopeEpoch] = useState(0);
   const activityEpoch = useRef(0);
@@ -127,23 +98,6 @@ export default function RightDock({
       window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
     };
   }, []);
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (addMenuRef.current?.contains(event.target as Node)) return;
-      setAddMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAddMenuOpen(false);
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [addMenuOpen]);
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -225,60 +179,7 @@ export default function RightDock({
 
         <span className="my-0.5 h-px w-4 bg-edge/50" aria-hidden />
 
-        <div ref={addMenuRef} className="relative">
-          <button
-            type="button"
-            onClick={() => { setAddMenuOpen(open => !open); setMenuVersion(version => version + 1); }}
-            aria-expanded={addMenuOpen}
-            aria-haspopup="menu"
-            aria-label="Add panel"
-            title="Add panel"
-            className="flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-          >
-            <Plus size={15} strokeWidth={1.75} />
-          </button>
-          {addMenuOpen && (
-            <div key={menuVersion} role="menu" aria-label="Add panel" className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0">
-              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">Add panel</div>
-              {(() => {
-                const stored = readStoredList("pmharness.tabOrder");
-                const fallback = PANEL_OPTIONS.map(option => option.tab);
-                return stored.length > 0
-                  ? [...stored, ...fallback.filter(tab => !stored.includes(tab))]
-                  : fallback;
-              })().filter(tab => tab !== "settings").map(tab => {
-                const option = PANEL_OPTIONS.find(item => item.tab === tab);
-                if (!option || readStoredList("pmharness.board.openCards").includes(tab)) return null;
-                return (
-                  <button
-                    role="menuitem"
-                    key={tab}
-                    type="button"
-                    aria-label={option.label}
-                    onClick={() => {
-                      onOpenTab(tab);
-                      setAddMenuOpen(false);
-                    }}
-                    className="right-pane-add-item"
-                  >
-                    {option.icon}<span>{option.label}</span>
-                  </button>
-                );
-              })}
-              <button
-                role="menuitem"
-                type="button"
-                onClick={() => {
-                  onOpenTab("settings");
-                  setAddMenuOpen(false);
-                }}
-                className="right-pane-add-item"
-              >
-                <Settings size={12} /><span>Settings</span>
-              </button>
-            </div>
-          )}
-        </div>
+        <PanelChooser onOpenTab={onOpenTab} />
 
         {DOCK_LINKS.map((link) => (
           <button
