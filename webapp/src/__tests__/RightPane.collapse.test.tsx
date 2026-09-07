@@ -881,3 +881,51 @@ describe("RightPane and RightDock polling ownership", () => {
     }
   }
 });
+
+
+it("preserves saved column preferences and mounted cards across board resize", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["state", "economics"]);
+  localStorage.setItem("pmharness.board.columns.v1", '[["state"],["economics"]]');
+  const layouts = '{"state":{"columnSpan":7,"customized":true},"economics":{"columnSpan":5,"customized":true}}';
+  localStorage.setItem("pmharness.board.cardLayouts.v1", layouts);
+  let notifyResize = () => {};
+  const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { notifyResize = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  try {
+    const view = render(<RightPane {...baseProps} />);
+    const card = screen.getByRole("region", { name: "Economics panel" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Economics ownership" }), { target: { value: "conversation" } });
+    card.scrollTop = 37;
+    rectSpy.mockReturnValue(new DOMRect(0, 0, 220, 600));
+    act(() => notifyResize());
+    expect(localStorage.getItem("pmharness.board.cardLayouts.v1")).toBe(layouts);
+    view.rerender(<RightPane {...baseProps} visible={false} />);
+    view.rerender(<RightPane {...baseProps} visible />);
+    expect(screen.getByRole("region", { name: "Economics panel" })).toBe(card);
+    expect(card.scrollTop).toBe(37);
+    expect(screen.getByRole("combobox", { name: "Economics ownership" })).toHaveValue("conversation");
+    rectSpy.mockReturnValue(new DOMRect(0, 0, 700, 600));
+    act(() => notifyResize());
+    expect(localStorage.getItem("pmharness.board.cardLayouts.v1")).toBe(layouts);
+  } finally {
+    rectSpy.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("defers saved card contents until Panels has first been shown", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["state", "economics"]);
+  const view = render(<RightPane {...baseProps} visible={false} />);
+  expect(view.container.querySelector('[aria-label="State panel"]')).toBeNull();
+  view.rerender(<RightPane {...baseProps} visible />);
+  const card = screen.getByRole("region", { name: "State panel" });
+  view.rerender(<RightPane {...baseProps} visible={false} />);
+  view.rerender(<RightPane {...baseProps} visible />);
+  expect(screen.getByRole("region", { name: "State panel" })).toBe(card);
+});

@@ -43,7 +43,7 @@ it("keeps desktop preferences and chat mounted through real window resize events
   const editor = screen.getByRole("textbox", { name: "Chat editor" });
   fireEvent.change(editor, { target: { value: "unsent draft" } });
   screen.getByRole("button", { name: "Panel item" }).focus();
-  resize(697);
+  resize(600);
   expect(screen.getByRole("button", { name: "Chat", exact: true })).toHaveFocus();
   expect(screen.queryByRole("button", { name: "Panel item" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Session item" })).toBeNull();
@@ -82,15 +82,16 @@ it("keeps desktop preferences and chat mounted through real window resize events
   expect(localStorage.getItem("pmharness.rightOpen")).toBe("1");
 });
 
-it("keeps Sessions inline at 900px and uses a bounded right drawer for Panels", async () => {
-  resize(900);
+it.each([800, 900, 1019, 1280])("keeps Panels inline and chat accessible at %ipx", async (width) => {
+  resize(width);
   await act(async () => { render(<App />); });
-  expect(screen.getByRole("complementary", { name: "Sessions" })).toHaveAttribute("data-presentation", "inline");
-  const panels = screen.getByRole("dialog", { name: "Panels" });
-  expect(panels).toHaveAttribute("data-presentation", "right");
-  fireEvent.click(screen.getByRole("button", { name: "Close Panels" }));
-  expect(screen.getByRole("textbox", { name: "Chat editor" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Session item" })).toBeVisible();
+  const panels = screen.getByRole("complementary", { name: "Panels" });
+  expect(panels).toHaveAttribute("data-presentation", "inline");
+  expect(panels).not.toHaveAttribute("aria-modal");
+  const editor = screen.getByRole("textbox", { name: "Chat editor" });
+  expect(editor.closest("[inert]")).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: "Review shortcut" })).toBeVisible();
 });
 
 it("closes phone drawers on native Escape cancellation and backdrop, restoring the trigger", async () => {

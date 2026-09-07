@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -20,6 +20,7 @@ import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope } from "../lib
 import {
   isSettingsOverlayOpen,
   setSettingsOverlayOpen,
+  subscribeSettingsOverlay,
 } from "../lib/settingsOverlay";
 import {
   loadRightPaneTabVisibility,
@@ -48,7 +49,6 @@ import {
   columnSpanFromPointerDelta,
   columnTrackTemplate,
   groupGridColumn,
-  absorbShellResize,
   normalizeGroupWidths,
   showColumnResizeHandle,
 } from "../lib/boardColumnWidths";
@@ -265,10 +265,11 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   stackFractionsRef.current = stackFractions;
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardWidth, setBoardWidth] = useState(0);
-  const prevBoardWidthRef = useRef(0);
+  const [hasBeenVisible, setHasBeenVisible] = useState(visible);
+  useEffect(() => { if (visible) setHasBeenVisible(true); }, [visible]);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(isSettingsOverlayOpen);
+  const settingsOpen = useSyncExternalStore(subscribeSettingsOverlay, isSettingsOverlayOpen, isSettingsOverlayOpen);
   const handledInitialTab = useRef<string | null>(null);
   const [tabOrder, setTabOrder] = useState<Tab[]>(() => {
     const validTabs = CANONICAL_ORDER.filter(tab => tab !== PINNED_LAST);
@@ -309,12 +310,10 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   const openSettings = useCallback(() => {
     setSettingsOverlayOpen(true);
-    setSettingsOpen(true);
   }, []);
 
   const closeSettings = useCallback(() => {
     setSettingsOverlayOpen(false);
-    setSettingsOpen(false);
     if (openCards.length === 0) onEmpty?.();
   }, [onEmpty, openCards.length]);
 
@@ -334,7 +333,11 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   const removeCard = (tabName: Tab) => {
     const nextOpenCards = openCards.filter(card => card !== tabName);
+    const hadFocus = document.getElementById(`right-pane-card-${tabName}`)?.contains(document.activeElement);
     persistBoard(tabOrder, nextOpenCards);
+    if (hadFocus && nextOpenCards.length > 0) {
+      requestAnimationFrame(() => document.getElementById(`right-pane-card-${nextOpenCards[0]}`)?.focus());
+    }
   };
 
   useEffect(() => {
@@ -360,36 +363,19 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   useLayoutEffect(() => {
     const el = boardRef.current;
     if (!el) {
-      prevBoardWidthRef.current = 0;
       setBoardWidth(0);
       return;
     }
     const applyWidth = () => {
       const nextWidth = el.getBoundingClientRect().width;
-      const prevWidth = prevBoardWidthRef.current;
-      prevBoardWidthRef.current = nextWidth;
       setBoardWidth(nextWidth);
-      if (!(prevWidth > 0 && nextWidth > 0) || Math.abs(prevWidth - nextWidth) < 0.5) return;
-      const groups = columnsRef.current.filter(group => group.length > 0);
-      if (groups.length <= 1) return;
-      const current = groups.map(group => Math.max(
-        ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groups.length)),
-      ));
-      const absorbed = absorbShellResize(current, prevWidth, nextWidth);
-      const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
-      groups.forEach((group, index) => {
-        for (const tab of group) {
-          nextLayouts[tab] = { columnSpan: absorbed[index], customized: true };
-        }
-      });
-      persistCardLayouts(nextLayouts);
     };
     applyWidth();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(applyWidth);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [visible, openCards.length, persistCardLayouts]);
+  }, [visible, openCards.length]);
 
   const persistStackFractions = useCallback((nextFractions: Record<string, number[]>) => {
     stackFractionsRef.current = nextFractions;
@@ -698,7 +684,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       case "checkpoints":
         return <CheckpointsPane />;
       case "swarm":
-        return <SwarmPane />;
+        return <SwarmPane enabled={visible} />;
       case "economics":
         return <EconomicsPane />;
       case "review":
@@ -726,8 +712,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
 
   return (
     <>
-      {visible && openCards.length > 0 && (
-        <div ref={boardRef} className="right-pane-board h-full w-full overflow-y-auto">
+      {(visible || hasBeenVisible) && openCards.length > 0 && (
+        <div ref={boardRef} hidden={!visible} className="right-pane-board h-full w-full overflow-y-auto">
             {showNewColumnDrop && (
               <div
                 role="region"
