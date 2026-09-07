@@ -98,6 +98,10 @@ body {
   --shell-panel: #13161a;
   --shell-panel-border: rgba(255, 255, 255, 0.05);
   --shell-panel-radius: 12px;
+  --shell-selection: #292c31;
+  --shell-selection-shadow: 0 1px 3px rgb(0 0 0 / 24%);
+  --shell-rail-title-size: 0.75rem;
+  --shell-rail-detail-size: 0.6875rem;
   /* Floating menus over chat. Same fill as Tailwind `panel`. Glass must
      not mix this token — labels have to stay readable at any tint. */
   --shell-overlay: #181a1d;
@@ -683,15 +687,21 @@ body.is-row-resizing iframe {
   transition-property: background-color, color;
 }
 .session-rail [data-session-row]:hover { background: theme('colors.panel2'); }
-.session-rail [data-session-row][aria-current="true"] { background: theme('colors.panel2'); box-shadow: inset 2px 0 theme('colors.accent'); }
+.session-rail [data-session-row][aria-current="true"] {
+  background: var(--shell-selection);
+  box-shadow: var(--shell-selection-shadow);
+}
+.session-rail [data-session-row][aria-current="true"] .text-accent { color: theme('colors.muted'); }
 .session-rail [data-session-row] > .flex { width: 100%; }
-.session-rail [data-session-row] .text-faint { font-family: inherit; color: theme('colors.muted'); }
+.session-rail [data-session-row] .text-faint { font-family: inherit; font-size: var(--shell-rail-detail-size); color: theme('colors.muted'); }
 .session-context-menu { max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; }
 @media (max-width: 799px) {
   html { font-size: 14px; }
   .session-rail [data-session-row], .session-context-menu button { min-height: var(--shell-hit-size); }
 }
-.session-rail [data-session-row] > .flex .truncate { color: theme('colors.txt'); font-size: 13px; font-weight: 500; }
+.session-rail [data-session-row],
+.session-rail [data-session-row] > .flex .truncate { font-size: var(--shell-rail-title-size); font-weight: 400; }
+.session-rail [data-session-row] > .flex .truncate { color: theme('colors.txt'); }
 .shell-surface[data-presentation="modal"] :is(button, select),
 nav[aria-label="Workspace views"] button { min-height: var(--shell-hit-size); }
 .shell-surface[data-presentation="inline"][aria-label="Sessions"] {
