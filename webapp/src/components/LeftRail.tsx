@@ -1776,9 +1776,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
                             />
                           ) : (
-                            <div className={`group relative flex items-center gap-0.5 min-w-0 min-h-7 rounded-md px-0.5 focus-within:bg-panel2/50 ${
-                              s.active ? "bg-panel2/70" : "hover:bg-panel2/50"
-                            }`}>
+                            <div data-session-container="true" className="group relative flex items-center gap-0.5 min-w-0 min-h-7 rounded-md px-0.5">
                               <div
                                 className="w-3 shrink-0 flex items-center justify-center self-center"
                                 aria-hidden={!(unreadFinishedIds[s.id] && !s.active && runners[s.id] !== "running") && (!runners[s.id] || runners[s.id] === "missing")}
@@ -2117,7 +2115,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <div className="h-7 flex items-center justify-between px-1.5 gap-2 min-w-0">
             <button
               onClick={toggleSessionJobsCollapsed}
-              className="h-6 flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+              className="h-6 flex items-center gap-1 min-w-0 rail-job-detail uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
             >
               {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
               <span className="truncate">Jobs</span>
@@ -2164,7 +2162,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             {visibleJobs.length === 0 ? (
               <div className="px-1 py-1">
                 {jobsValidating ? (
-                  <div className="text-[11px] text-faint italic px-1 py-1 flex items-center gap-1.5">
+                  <div className="rail-job-detail text-faint italic px-1 py-1 flex items-center gap-1.5">
                     <Loader2 size={10} className="animate-spin shrink-0" />
                     Loading jobs...
                   </div>
@@ -2204,7 +2202,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       >
                         <JobStatusIcon status={st} />
                         <span
-                          className={`flex-1 min-w-0 truncate text-[12px] ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
+                          className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
                           title={j.goal}
                         >
                           {j.goal}
@@ -2222,7 +2220,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       </button>
                       {isOpen && (
                         <div className="px-1.5 pb-1.5 pt-1 border-t border-edge/35 space-y-1.5 min-w-0 max-h-48 overflow-y-auto overflow-x-hidden">
-                          <p className={`text-[12px] leading-snug break-words whitespace-normal ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}>
+                          <p className={`rail-job-title leading-snug break-words whitespace-normal ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}>
                             {j.goal}
                           </p>
                           {detail.length > 0 && (
@@ -2242,7 +2240,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           {arts.length > 0 ? (
                             <div className="space-y-0.5">
                               {arts.map((a, i) => (
-                                <div key={a.id || i} className="text-[11px] text-txt/90 flex items-start gap-1.5 leading-snug min-w-0">
+                                <div key={a.id || i} className="rail-job-detail text-txt/90 flex items-start gap-1.5 leading-snug min-w-0">
                                   <span className="text-good mt-[3px] shrink-0">·</span>
                                   <span className="flex-1 min-w-0 break-words whitespace-normal">{a.headline}</span>
                                 </div>
