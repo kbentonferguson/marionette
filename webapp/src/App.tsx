@@ -1,16 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { flushSync } from "react-dom";
-import { isSettingsOverlayOpen, setSettingsOverlayOpen, subscribeSettingsOverlay } from "./lib/settingsOverlay";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
 import { clearDiagnostic, publishDiagnostic } from "./lib/operationalDiagnosticBus";
 import { setCorrelationId } from "./lib/correlationId";
-import ShellSurface from "./components/ShellSurface";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
-import PanelChooser from "./components/PanelChooser";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
@@ -28,7 +25,6 @@ import {
 } from "./components/conversation/composerInput";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
-import { SHELL_EXTRA_CENTER_W, useResponsiveShell } from "./lib/useResponsiveShell";
 import { reclampRailWidths } from "./lib/railLayout";
 import {
   setConfigured,
@@ -79,39 +75,17 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
 
-  const [leftW, setLeftW] = useState(() => num(LS.left, 248));
-  const {
-    width, compact, rightDrawer, view, setView, desktopLeftOpen, desktopRightOpen,
-    leftOpen, rightOpen, setLeftOpen, setRightOpen,
-  } = useResponsiveShell(bool(LS.leftOpen, true), bool(LS.rightOpen, false) && hasStoredRightPaneCards());
-  const settingsOpen = useSyncExternalStore(subscribeSettingsOverlay, isSettingsOverlayOpen, isSettingsOverlayOpen);
-  const previousSessionId = useRef<string | null>(null);
-  useEffect(() => {
-    if (compact && previousSessionId.current && previousSessionId.current !== activeSessionId) setView("chat");
-    previousSessionId.current = activeSessionId;
-  }, [activeSessionId, compact, setView]);
   useEffect(() => {
     setArtifacts([]);
     window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: activeSessionId } }));
   }, [activeSessionId]);
-  const shellRef = useRef<HTMLDivElement>(null);
-  const navigationRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!compact) return;
-    const revealConversation = () => setView("chat");
-    window.addEventListener("harness-open-file", revealConversation);
-    return () => {
-      window.removeEventListener("harness-open-file", revealConversation);
-    };
-  }, [compact, setView]);
-  useLayoutEffect(() => {
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && shellRef.current?.contains(active)
-      && active.closest('[data-shell-hidden="true"]')) {
-      if (compact) navigationRef.current?.focus();
-      else shellRef.current?.focus();
-    }
-  }, [compact, leftOpen, rightOpen]);
+
+  const [leftW, setLeftW] = useState(() => num(LS.left, 248));
+  const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
+  // Default hidden: chat-first layout; RightDock surfaces floating tools.
+  const [rightOpen, setRightOpen] = useState(
+    () => bool(LS.rightOpen, false) && hasStoredRightPaneCards(),
+  );
   const [rightW, setRightW] = useState(() => num(LS.rightW, 520));
   const pendingRightTab = useRef<string | null>(null);
   const leftWRef = useRef(leftW);
@@ -139,11 +113,8 @@ export default function App() {
     setRightOpen(!rightOpen);
   }, [rightOpen, setRightOpen]);
   const requestRightMinWidth = useCallback((minPx: number) => {
-    if (!rightDrawer) setRightW(previous => Math.max(previous, minPx));
-  }, [rightDrawer]);
-  // Reserve the dock separately from railLayout's adaptive chat/rail budget.
-  // Clamp presentation only; resizing the window must not rewrite saved widths.
-  const displayed = reclampRailWidths(leftW, rightW, leftOpen && !compact, rightOpen && !rightDrawer, width - SHELL_EXTRA_CENTER_W);
+    setRightW(previous => Math.max(previous, minPx));
+  }, []);
 
   const [showWizard, setShowWizard] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
@@ -238,8 +209,15 @@ export default function App() {
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
 
-  useEffect(() => { localStorage.setItem(LS.leftOpen, desktopLeftOpen ? "1" : "0"); }, [desktopLeftOpen]);
-  useEffect(() => { localStorage.setItem(LS.rightOpen, desktopRightOpen ? "1" : "0"); }, [desktopRightOpen]);
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const resize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  const displayed = reclampRailWidths(leftW, rightW, leftOpen, rightOpen, windowWidth);
+  useEffect(() => { localStorage.setItem(LS.leftOpen, leftOpen ? "1" : "0"); }, [leftOpen]);
+  useEffect(() => { localStorage.setItem(LS.rightOpen, rightOpen ? "1" : "0"); }, [rightOpen]);
   useEffect(() => { localStorage.setItem(LS.rightW, String(rightW)); }, [rightW]);
 
   // After the floating tools become visible, apply pending focus from the dock / hotkeys.
@@ -260,7 +238,7 @@ export default function App() {
     };
     window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
     return () => window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
-  }, [rightOpen, setRightOpen]);
+  }, [rightOpen]);
 
   // hotkeys (Cursor-style, adapted for the harness). Most map to panels/sessions/nav;
   // IDE-only ones (inline edit, autocomplete) do not apply to an orchestration harness.
@@ -291,7 +269,7 @@ export default function App() {
         case "i":                                                          // focus chat input (Cursor: toggle sidepanel)
         // Cmd/Ctrl+L focuses the composer. TerminalPane capture steals this
         // when the live xterm has a selection (Add to chat).
-        case "l": e.preventDefault(); if (compact) flushSync(() => setView("chat")); window.dispatchEvent(new Event("harness-focus-input")); break;
+        case "l": e.preventDefault(); window.dispatchEvent(new Event("harness-focus-input")); break;
         case "n":                                                          // new session (Cursor: new chat)
         case "r": e.preventDefault(); window.dispatchEvent(new Event("harness-new-session")); break;
         default: break;
@@ -299,7 +277,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleRight, rightOpen, setRightOpen, setLeftOpen, compact, setView]);
+  }, [toggleRight]);
 
   useEffect(() => {
     const ipc = (window as unknown as {
@@ -350,18 +328,9 @@ export default function App() {
           }}
         />
       )}
-      {compact && (
-        <nav aria-label="Workspace views" className="flex shrink-0 gap-2 px-2 py-1">
-          <button ref={navigationRef} type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={view === "chat"} onClick={() => setView("chat")}>Chat</button>
-          <button type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={leftOpen} onClick={() => setLeftOpen(v => !v)}>Sessions</button>
-          <button type="button" className="min-h-11 px-3 focus-visible:outline" aria-pressed={rightOpen} onClick={toggleRight}>Panels</button>
-        </nav>
-      )}
       {/* Left rail and tool cards sit on the conversation surface. */}
       <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
         <div
-          ref={shellRef}
-          tabIndex={-1}
           className={`relative flex-1 min-w-0 h-full flex overflow-hidden border border-[var(--shell-panel-border)] ${
             leftOpen && rightOpen
               ? "rounded-none"
@@ -377,24 +346,27 @@ export default function App() {
               "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
           }}
         >
-          <ShellSurface visible={leftOpen} suspended={compact && settingsOpen} presentation={compact ? "left" : "inline"} label="Sessions" width={displayed.leftW} onClose={() => setLeftOpen(false)}>
+          <div style={{ width: displayed.leftW }} className={`shell-inset-panel shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
             <LeftRail jobsRefresh={jobsRefresh} onSessionChange={handleSessionChange} />
-          </ShellSurface>
-          {!compact && leftOpen && <Resizer
-            side="left"
-            onResize={(dx) => {
-              const next = reclampRailWidths(
-                displayed.leftW + dx,
-                rightWRef.current,
-                true,
-                rightOpen && !rightDrawer,
-                width - SHELL_EXTRA_CENTER_W,
-              );
-              setLeftW(next.leftW);
-            }}
-          />}
-          <div className="relative flex-1 min-w-0 min-h-0 flex" aria-hidden={(compact && view !== "chat") || (rightDrawer && rightOpen) || undefined} inert={(compact && view !== "chat") || (rightDrawer && rightOpen)}>
-            <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+          </div>
+          {leftOpen && (
+              <Resizer
+                side="left"
+                onResize={(dx) => {
+                  const next = reclampRailWidths(
+                    displayed.leftW + dx,
+                    rightWRef.current,
+                    true,
+                    rightOpen,
+                    window.innerWidth,
+                  );
+                  setLeftW(next.leftW);
+                  setRightW(next.rightW);
+                }}
+              />
+          )}
+          <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 min-w-0">
               <ErrorBoundary label="Chat">
                 <Conversation
                   config={config}
@@ -404,16 +376,14 @@ export default function App() {
                 />
               </ErrorBoundary>
             </div>
-            <div className="shell-dock-slot">
-              <RightDock
-                panelsOpen={rightOpen}
-                onOpenTab={openRightTo}
-                onExpand={() => openRightTo(lastRightTab())}
-                onCollapse={() => setRightOpen(false)}
-              />
-            </div>
+            <RightDock
+              panelsOpen={rightOpen}
+              onOpenTab={openRightTo}
+              onExpand={() => openRightTo(lastRightTab())}
+              onCollapse={() => setRightOpen(false)}
+            />
           </div>
-          {rightOpen && !rightDrawer && (
+          {rightOpen && (
             <Resizer
               side="right"
               onResize={(dx) => {
@@ -422,32 +392,31 @@ export default function App() {
                   displayed.rightW + dx,
                   leftOpen,
                   true,
-                  width - SHELL_EXTRA_CENTER_W,
+                  window.innerWidth,
                 );
+                setLeftW(next.leftW);
                 setRightW(next.rightW);
               }}
             />
           )}
-          <ShellSurface visible={rightOpen} suspended={rightDrawer && settingsOpen} presentation={rightDrawer ? "right" : "inline"} label="Panels" width={displayed.rightW} onClose={() => setRightOpen(false)}>
-            <div className="flex h-full min-h-0 flex-col">
-              {rightDrawer && <PanelChooser drawer onOpenTab={openRightTo} />}
-              <div className="flex-1 min-h-0 min-w-0">
-                <ErrorBoundary label="Tool board">
-                  <RightPane
-                    visible={rightOpen}
-                    artifacts={artifacts}
-                    onOpenWizard={() => {
-                      setManual(true);
-                      setShowWizard(true);
-                    }}
-                    initialTab={pendingRightTab.current}
-                    onEmpty={closeEmptyRightPane}
-                    onRequestMinWidth={requestRightMinWidth}
-                  />
-                </ErrorBoundary>
-              </div>
-            </div>
-          </ShellSurface>
+          <div
+            className={`shrink-0 h-full min-w-0 overflow-hidden ${rightOpen ? "" : "hidden"}`}
+            style={{ width: displayed.rightW }}
+          >
+            <ErrorBoundary label="Tool board">
+              <RightPane
+                visible={rightOpen}
+                artifacts={artifacts}
+                onOpenWizard={() => {
+                  setManual(true);
+                  setShowWizard(true);
+                }}
+                initialTab={pendingRightTab.current}
+                onEmpty={closeEmptyRightPane}
+                onRequestMinWidth={requestRightMinWidth}
+              />
+            </ErrorBoundary>
+          </div>
         </div>
       </div>
       <div className="shrink-0 px-px py-px">

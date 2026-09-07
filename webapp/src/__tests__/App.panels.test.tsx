@@ -13,7 +13,6 @@ vi.mock("../components/LeftRail", () => ({ default: ({ onSessionChange }: { onSe
   return <button>Session item</button>;
 } }));
 vi.mock("../components/Conversation", () => ({ default: () => <textarea aria-label="Chat editor" /> }));
-vi.mock("../components/RightDock", () => ({ default: ({ onOpenTab }: { onOpenTab: (tab: string) => void }) => <button onClick={() => onOpenTab("review")}>Review shortcut</button> }));
 vi.mock("../components/StatusBar", () => ({ default: () => null }));
 vi.mock("../components/UpdateBanner", () => ({ default: () => null }));
 vi.mock("../components/ProviderKeyBanner", () => ({ default: () => null }));
@@ -50,62 +49,43 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it.each([400, 639])("manages cards inside the %ipx drawer and retains state through resizing", async width => {
-  resize(1019);
+
+it.each([360, 640, 1024])("keeps desktop panel management and Settings reachable at %ipx", async width => {
+  resize(width);
   await act(async () => { render(<App />); });
   const editor = screen.getByRole("textbox", { name: "Chat editor" });
   fireEvent.change(editor, { target: { value: "unsent desktop draft" } });
   const stateCard = screen.getByRole("region", { name: "State panel" });
-  resize(width);
-  const trigger = screen.getByRole("button", { name: "Panels", exact: true });
-  trigger.focus();
-  fireEvent.click(trigger);
-  const drawer = screen.getByRole("dialog", { name: "Panels" });
-  const inside = within(drawer);
-  expect(editor.closest("[inert]")).not.toBeNull();
-  expect(inside.getByRole("region", { name: "State panel" })).toBe(stateCard);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(editor.closest("[inert]")).toBeNull();
   const add = (name: string) => {
-    fireEvent.click(inside.getByRole("button", { name: "Add panel" }));
-    fireEvent.click(within(inside.getByRole("group", { name: "Add panel" })).getByRole("button", { name, exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
+    fireEvent.click(within(screen.getByRole("menu", { name: "Add panel" })).getByRole("menuitem", { name, exact: true }));
   };
   add("Files");
   add("Economics");
-  expect(inside.getAllByRole("region")).toHaveLength(3);
-  const closeFiles = inside.getByRole("button", { name: "Close Files panel" });
+  expect(screen.getAllByRole("region")).toHaveLength(3);
+  expect(screen.queryByText("Move panel")).toBeNull();
+  expect(screen.queryByText("Shorter")).toBeNull();
+  expect(screen.queryByText("Taller")).toBeNull();
+  const closeFiles = screen.getByRole("button", { name: "Close Files panel" });
   closeFiles.focus();
   fireEvent.click(closeFiles);
   await waitFor(() => expect(stateCard).toHaveFocus());
-  expect(inside.queryByRole("region", { name: "Files panel" })).toBeNull();
-  expect(drawer).toHaveAttribute("open");
-  add("Files");
-  expect(inside.getByRole("region", { name: "Files panel" })).toBeVisible();
-  add("Settings");
-  expect(drawer).not.toHaveAttribute("open");
-  fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-  expect(drawer).toHaveAttribute("open");
+  expect(screen.queryByRole("region", { name: "Files panel" })).toBeNull();
   const storedCards = localStorage.getItem("pmharness.board.openCards");
-  fireEvent(drawer, new Event("cancel", { cancelable: true }));
-  expect(trigger).toHaveFocus();
-  resize(640);
-  expect(screen.getByRole("complementary", { name: "Panels" })).not.toHaveAttribute("aria-modal");
-  resize(800);
-  expect(editor.closest("[inert]")).toBeNull();
+  add("Settings");
+  fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+  expect(screen.getByRole("region", { name: "State panel" })).toBe(stateCard);
+  fireEvent.click(screen.getByRole("button", { name: "Hide panels" }));
+  expect(screen.queryByRole("region", { name: "State panel" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(screen.getByRole("button", { name: "Close settings" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+  expect(screen.queryByRole("region", { name: "State panel" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Show panels" }));
   resize(1280);
   expect(screen.getByRole("textbox")).toBe(editor);
   expect(editor).toHaveValue("unsent desktop draft");
-  expect(screen.getByRole("region", { name: "State panel" })).toBe(stateCard);
   expect(localStorage.getItem("pmharness.board.openCards")).toBe(storedCards);
-  expect(localStorage.getItem("pmharness.leftW")).toBe("248");
-  expect(localStorage.getItem("pmharness.rightW")).toBe("520");
-  expect(localStorage.getItem("pmharness.leftOpen")).toBe("1");
-  expect(localStorage.getItem("pmharness.rightOpen")).toBe("1");
-});
-
-it("exposes Add panel inside an open narrow drawer", async () => {
-  resize(400);
-  await act(async () => { render(<App />); });
-  fireEvent.click(screen.getByRole("button", { name: "Panels", exact: true }));
-  const drawer = screen.getByRole("dialog", { name: "Panels" });
-  fireEvent.click(within(drawer).getByRole("button", { name: "Add panel" }));
-  expect(within(drawer).getByRole("button", { name: "Economics", exact: true })).toBeVisible();
 });

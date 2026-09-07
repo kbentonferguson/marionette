@@ -35,7 +35,7 @@ export function reclampRailWidths(
   const availableWidth = Math.max(0, innerWidth - chrome);
   const preferredLeft = leftOpen ? clamp(leftW, LEFT_MIN_W, LEFT_MAX_W) : 0;
   const preferredRight = rightOpen ? Math.max(RIGHT_MIN_W, rightW) : 0;
-  const requiredRails = (leftOpen ? LEFT_MIN_W : 0) + (rightOpen ? RIGHT_COMPACT_MIN_W : 0);
+  const requiredRails = (leftOpen ? LEFT_MIN_W : 0) + (rightOpen ? RIGHT_MIN_W : 0);
   const centerWidth = Math.min(MIN_CENTER_W, Math.max(0, availableWidth - requiredRails));
   const railBudget = Math.max(0, availableWidth - centerWidth);
 
@@ -62,7 +62,7 @@ export function reclampRailWidths(
     };
   }
 
-  const rightMin = Math.min(RIGHT_COMPACT_MIN_W, railBudget);
+  const rightMin = Math.min(RIGHT_MIN_W, railBudget);
   return {
     leftW,
     rightW: clamp(preferredRight, rightMin, railBudget),
