@@ -1567,7 +1567,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     disabled={!!switchingSessionId || opening}
                     onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
                     className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
-                      switchingSessionId === row.id ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
+                      switchingSessionId === row.id ? "bg-panel2/60" : "hover:bg-panel2/30"
                     }`}
                     title={row.snippet ? `${displaySessionListTitle(row.title)}\n${row.snippet}` : displaySessionListTitle(row.title)}
                   >
@@ -1630,7 +1630,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s, canSettleSessionsForProject(root, workspaceInfo?.repo))}
                       className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
-                        isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
+                        isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
                       title={`${displaySessionListTitle(s.title)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
                     >
