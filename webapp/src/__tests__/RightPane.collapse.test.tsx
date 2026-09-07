@@ -929,3 +929,124 @@ it("defers saved card contents until Panels has first been shown", () => {
   view.rerender(<RightPane {...baseProps} visible />);
   expect(screen.getByRole("region", { name: "State panel" })).toBe(card);
 });
+
+describe("compact drawer sizing", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    seedBoardTabOrder(["economics", "browser"]);
+    localStorage.setItem("pmharness.board.columns.v1", '[["economics"],["browser"]]');
+    localStorage.setItem("pmharness.board.cardLayouts.v1", '{"economics":{"columnSpan":8},"browser":{"columnSpan":4}}');
+    localStorage.setItem("pmharness.board.stackFractions.v2", '{"economics|browser":[0.3,0.7]}');
+  });
+
+  it("provides visible compact height controls even for singleton columns", () => {
+    render(<RightPane {...baseProps} />);
+    expect(screen.getByLabelText("Resize Economics panel height")).toBeTruthy();
+    expect(css).toContain("height: var(--compact-card-height, 50dvh)");
+    expect(css).toMatch(/\.right-pane-compact-controls\s*\{[^}]*display: flex/);
+  });
+
+  it("changes compact height with buttons and keyboard without writing desktop geometry", () => {
+    render(<RightPane {...baseProps} />);
+    const card = screen.getByRole("region", { name: "Economics panel" });
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 360, 400));
+    const saved = ["pmharness.board.columns.v1", "pmharness.board.cardLayouts.v1", "pmharness.board.stackFractions.v2"].map(key => localStorage.getItem(key));
+    fireEvent.click(screen.getByLabelText("Taller Economics panel"));
+    expect(card.style.getPropertyValue("--compact-card-height")).toBe("448px");
+    fireEvent.keyDown(screen.getByLabelText("Resize Economics panel height"), { key: "ArrowDown" });
+    expect(card.style.getPropertyValue("--compact-card-height")).toBe("496px");
+    fireEvent.click(screen.getByLabelText("Shorter Economics panel"));
+    expect(card.style.getPropertyValue("--compact-card-height")).toBe("448px");
+    expect(["pmharness.board.columns.v1", "pmharness.board.cardLayouts.v1", "pmharness.board.stackFractions.v2"].map(key => localStorage.getItem(key))).toEqual(saved);
+  });
+});
+
+it("resizes compact cards by pointer and cleans up a cancelled drag", () => {
+  vi.stubGlobal("PointerEvent", class extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 0; }
+  });
+  localStorage.clear();
+  seedBoardTabOrder(["economics"]);
+  render(<RightPane {...baseProps} />);
+  const card = screen.getByRole("region", { name: "Economics panel" });
+  vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 360, 400));
+  const handle = screen.getByLabelText("Resize Economics panel height");
+  handle.setPointerCapture = vi.fn();
+  handle.hasPointerCapture = vi.fn(() => true);
+  handle.releasePointerCapture = vi.fn();
+  fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientY: 400 });
+  fireEvent.pointerMove(handle, { pointerId: 1, clientY: 520 });
+  expect(card.style.getPropertyValue("--compact-card-height")).toBe("520px");
+  fireEvent.pointerCancel(handle, { pointerId: 1 });
+  expect(document.body.classList.contains("is-row-resizing")).toBe(false);
+  fireEvent.pointerMove(handle, { pointerId: 1, clientY: 600 });
+  expect(card.style.getPropertyValue("--compact-card-height")).toBe("520px");
+  vi.unstubAllGlobals();
+});
+
+it("keeps panel state and focus through measured wide/narrow/wide widths", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["economics", "browser"]);
+  let width = 900;
+  let notify = () => {};
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { notify = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, width, 400));
+  const view = render(<RightPane {...baseProps} />);
+  const input = screen.getByRole("combobox", { name: "Economics ownership" });
+  fireEvent.change(input, { target: { value: "conversation" } });
+  input.focus();
+  const card = screen.getByRole("region", { name: "Economics panel" });
+  for (const next of [480, 360, 640, 900]) {
+    width = next;
+    act(() => notify());
+    expect(screen.getByRole("region", { name: "Economics panel" })).toBe(card);
+    expect(screen.getByRole("combobox", { name: "Economics ownership" })).toBe(input);
+    expect(input).toHaveValue("conversation");
+    expect(document.activeElement).toBe(input);
+  }
+  view.unmount();
+  rect.mockRestore();
+  vi.unstubAllGlobals();
+});
+
+it("moves panels within a stack using a touch/keyboard select without losing body state", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["economics", "browser"]);
+  render(<RightPane {...baseProps} />);
+  const input = screen.getByRole("combobox", { name: "Economics ownership" });
+  fireEvent.change(input, { target: { value: "conversation" } });
+  fireEvent.change(screen.getByLabelText("Move Browser panel"), { target: { value: "economics" } });
+  expectCardGridPlacement("Browser", "1", "1");
+  expectCardGridPlacement("Economics", "1", "2");
+  expect(screen.getByRole("combobox", { name: "Economics ownership" })).toBe(input);
+  expect(input).toHaveValue("conversation");
+});
+
+it("stacks a singleton column before another card without remounting its body", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["economics", "browser"]);
+  localStorage.setItem("pmharness.board.columns.v1", '[["economics"],["browser"]]');
+  render(<RightPane {...baseProps} />);
+  const input = screen.getByRole("combobox", { name: "Economics ownership" });
+  fireEvent.change(input, { target: { value: "conversation" } });
+  fireEvent.change(screen.getByLabelText("Move Economics panel"), { target: { value: "browser" } });
+  expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([["economics", "browser"]]);
+  expect(screen.getByRole("combobox", { name: "Economics ownership" })).toBe(input);
+  expect(input).toHaveValue("conversation");
+});
+
+it("accepts a reorder drop on the portaled panel body", () => {
+  localStorage.clear();
+  seedBoardTabOrder(["economics", "browser"]);
+  render(<RightPane {...baseProps} />);
+  const dataTransfer = { effectAllowed: "", setData: vi.fn(), getData: vi.fn(() => "browser") };
+  fireEvent.dragStart(screen.getByRole("button", { name: "Drag Browser panel" }), { dataTransfer });
+  fireEvent.drop(screen.getByRole("combobox", { name: "Economics ownership" }), { dataTransfer });
+  expectCardGridPlacement("Browser", "1", "1");
+  expectCardGridPlacement("Economics", "1", "2");
+});

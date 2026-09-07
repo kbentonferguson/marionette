@@ -1,4 +1,5 @@
-import { useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -265,6 +266,55 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   stackFractionsRef.current = stackFractions;
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardWidth, setBoardWidth] = useState(0);
+  // Stable portal hosts retain pane state when a card moves between stacks.
+  const [cardHosts] = useState(() => new Map(CANONICAL_ORDER.map(tab => {
+    const host = document.createElement("div");
+    host.className = "h-full";
+    return [tab, host] as const;
+  })));
+  // Compact sizing is presentation-only; desktop widths and stack ratios survive it.
+  const [compactHeights, setCompactHeights] = useState<Partial<Record<Tab, number>>>({});
+  const compactDragCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => compactDragCleanup.current?.(), []);
+
+  const setCompactHeight = (tab: Tab, height: number) => {
+    const card = document.getElementById(`right-pane-card-${tab}`);
+    const minimum = card ? parseFloat(getComputedStyle(card).minHeight) || 256 : 256;
+    setCompactHeights(current => ({ ...current, [tab]: Math.max(minimum, height) }));
+  };
+  const stepCompactHeight = (tab: Tab, delta: number) => {
+    const height = compactHeights[tab] ?? document.getElementById(`right-pane-card-${tab}`)?.getBoundingClientRect().height ?? 256;
+    setCompactHeight(tab, height + delta);
+  };
+  const resizeCompactFromPointer = (event: React.PointerEvent<HTMLSpanElement>, tab: Tab) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    compactDragCleanup.current?.();
+    const handle = event.currentTarget;
+    const startHeight = document.getElementById(`right-pane-card-${tab}`)?.getBoundingClientRect().height ?? 256;
+    const startY = event.clientY;
+    const pointerId = event.pointerId;
+    handle.setPointerCapture(pointerId);
+    beginRowResize();
+    const move = (next: PointerEvent) => {
+      if (next.pointerId === pointerId) setCompactHeight(tab, startHeight + next.clientY - startY);
+    };
+    const finish = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      handle.removeEventListener("lostpointercapture", finish);
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      endRowResize();
+      compactDragCleanup.current = null;
+    };
+    compactDragCleanup.current = finish;
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+    handle.addEventListener("lostpointercapture", finish);
+  };
   const [hasBeenVisible, setHasBeenVisible] = useState(visible);
   useEffect(() => { if (visible) setHasBeenVisible(true); }, [visible]);
   const preferredResizeGroupRef = useRef(-1);
@@ -742,7 +792,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 );
                 return (
             <div
-              key={stackTabs[0]}
+              key={stackPlacement.groupIndex}
               className={`right-pane-card-stack${stackPlacement.groupIndex > 0 ? " right-pane-card-stack-join-end" : ""}`}
               style={{
                 gridColumn: stackPlacement.gridColumn,
@@ -767,6 +817,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               style={{
                 gridColumn: "1",
                 gridRow: placement.gridRow,
+                ...{ "--compact-card-height": compactHeights[tabName] === undefined ? undefined : `${compactHeights[tabName]}px` },
               }}
               onDragOver={event => event.preventDefault()}
               onDrop={event => handleDrop(event, tabName)}
@@ -816,6 +867,27 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               <header
                 className="right-pane-card-header"
               >
+                <select
+                  className="right-pane-compact-move"
+                  aria-label={`Move ${config.label} panel`}
+                  value=""
+                  onChange={event => {
+                    const target = openCards.find(tab => tab === event.target.value);
+                    if (!target) return;
+                    const stripped = columnsRef.current.map(col => col.filter(tab => tab !== tabName)).filter(col => col.length > 0);
+                    const destCol = columnIndexOf(stripped, target);
+                    const destIndex = stripped[destCol].indexOf(target);
+                    const nextCols = moveCardIntoColumn(stripped, tabName, destCol, destIndex);
+                    persistBoard(tabOrder, flattenColumns(nextCols), nextCols);
+                    requestAnimationFrame(() => document.getElementById(`right-pane-card-${tabName}`)
+                      ?.querySelector<HTMLSelectElement>(".right-pane-compact-move")?.focus());
+                  }}
+                >
+                  <option value="">Move panel</option>
+                  {openCards.filter(tab => tab !== tabName).map(tab => (
+                    <option key={tab} value={tab}>Before {TAB_CONFIG[tab].label}</option>
+                  ))}
+                </select>
                 <div className="flex items-center gap-0.5 shrink-0 ml-auto">
                   {tabName === "review" && reviews.length > 0 && <span className="right-pane-badge">{reviews.length}</span>}
                   {tabName === "swarm" && swarmRunning > 0 && <span className="right-pane-live" title={`${swarmRunning} swarm jobs running`} />}
@@ -851,7 +923,32 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                   <button type="button" aria-label={`Close ${config.label} panel`} title={`Close ${config.label}`} onClick={() => removeCard(tabName)} onMouseDown={event => event.stopPropagation()} className="right-pane-icon-btn"><X size={12} /></button>
                 </div>
               </header>
-              <div className="right-pane-card-body">{renderCardBody(tabName)}</div>
+              <div className="right-pane-card-body" ref={element => {
+                const host = cardHosts.get(tabName);
+                if (element && host && host.parentElement !== element) {
+                  const focused = host.contains(document.activeElement) ? document.activeElement : null;
+                  element.appendChild(host);
+                  if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+                }
+              }} />
+              <div className="right-pane-compact-controls">
+                <button type="button" aria-label={`Shorter ${config.label} panel`} onClick={() => stepCompactHeight(tabName, -48)}>Shorter</button>
+                <span
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label={`Resize ${config.label} panel height`}
+                  aria-valuetext={compactHeights[tabName] === undefined ? "Default height" : `${compactHeights[tabName]} pixels`}
+                  tabIndex={0}
+                  title="Drag to resize; use Up/Down arrows"
+                  onPointerDown={event => resizeCompactFromPointer(event, tabName)}
+                  onKeyDown={event => {
+                    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    stepCompactHeight(tabName, event.key === "ArrowDown" ? 48 : -48);
+                  }}
+                >Resize height</span>
+                <button type="button" aria-label={`Taller ${config.label} panel`} onClick={() => stepCompactHeight(tabName, 48)}>Taller</button>
+              </div>
             </section>
                 );
               })}
@@ -861,6 +958,14 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
             </div>
         </div>
       )}
+      {(visible || hasBeenVisible) && openCards.map(tab => {
+        const host = cardHosts.get(tab);
+        return host ? createPortal(
+          <div className="h-full" onDragOver={event => event.preventDefault()} onDrop={event => handleDrop(event, tab)}>
+            <Activity mode={visible ? "visible" : "hidden"}>{renderCardBody(tab)}</Activity>
+          </div>, host, tab,
+        ) : null;
+      })}
       {/* Keep the expensive interactive panes alive when users close their cards. */}
       <div className="hidden" aria-hidden>
         {!openCards.includes("state") && (

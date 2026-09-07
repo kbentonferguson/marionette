@@ -734,11 +734,48 @@ nav[aria-label="Workspace views"] button { min-height: var(--shell-hit-size); }
 .shell-surface[data-presentation="right"] .right-pane-icon-btn,
 .shell-surface[data-presentation="right"] .right-pane-drag-handle { min-width: var(--shell-hit-size); min-height: var(--shell-hit-size); }
 
+.right-pane-compact-controls, .right-pane-compact-move { display: none; }
+
 /* Stack narrow boards without changing saved columns or moving mounted cards. */
 @container (max-width: 480px) {
   .right-pane-board-grid, .right-pane-card-stack { display: flex; flex-direction: column; height: auto; }
   .right-pane-card-stack { flex-shrink: 0; }
   .right-pane-icon-btn, .right-pane-drag-handle { min-width: var(--shell-hit-size); min-height: var(--shell-hit-size); }
-  .right-pane-card { min-height: 16rem; height: 50dvh; flex-shrink: 0; }
+  .right-pane-card { min-height: 16rem; height: var(--compact-card-height, 50dvh); flex-shrink: 0; }
   .right-pane-card-resize-handle, .right-pane-card-row-resize-handle { display: none; }
+}
+
+@container (max-width: 480px) {
+  .right-pane-compact-controls {
+    display: flex;
+    flex-shrink: 0;
+    align-items: stretch;
+    border-top: 1px solid var(--shell-panel-border);
+    font-size: var(--font-size-xs, 12px);
+  }
+  .right-pane-compact-controls button,
+  .right-pane-compact-controls [role="separator"] {
+    min-height: var(--shell-hit-size);
+    min-width: var(--shell-hit-size);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+  }
+  .right-pane-compact-controls [role="separator"] { cursor: row-resize; touch-action: none; }
+  .right-pane-compact-controls :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .right-pane-compact-controls button:hover,
+  .right-pane-compact-controls [role="separator"]:hover { background: var(--shell-panel); }
+}
+
+@container (max-width: 480px) {
+  .right-pane-compact-move {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    min-height: var(--shell-hit-size);
+    background: var(--shell-panel);
+    color: inherit;
+  }
+  .right-pane-compact-move:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 }
