@@ -1,5 +1,4 @@
 import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
-import { createPortal } from "react-dom";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -50,6 +49,7 @@ import {
   columnSpanFromPointerDelta,
   columnTrackTemplate,
   groupGridColumn,
+  absorbShellResize,
   normalizeGroupWidths,
   showColumnResizeHandle,
 } from "../lib/boardColumnWidths";
@@ -65,6 +65,62 @@ import {
   stackPairKey,
   stackRowTemplateN,
 } from "../lib/stackSplit";
+
+function startPointerResize(
+  handle: HTMLSpanElement,
+  pointerId: number,
+  apply: (event: PointerEvent) => void,
+  commit: () => void,
+  end: () => void,
+): () => void {
+  let frame: number | null = null;
+  let pending: PointerEvent | null = null;
+  let finished = false;
+  const flush = () => {
+    frame = null;
+    if (pending) {
+      const latest = pending;
+      pending = null;
+      apply(latest);
+    }
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (frame !== null) cancelAnimationFrame(frame);
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onCancel);
+    handle.removeEventListener("lostpointercapture", onCancel);
+    try {
+      flush();
+      commit();
+    } finally {
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      end();
+    }
+  };
+  const onMove = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId || !handle.hasPointerCapture(pointerId)) return;
+    pending = event;
+    if (frame === null) frame = requestAnimationFrame(flush);
+  };
+  const onUp = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId) return;
+    pending = event;
+    finish();
+  };
+  // Cancel/lost-capture coordinates are not a new geometry sample.
+  const onCancel = (event: PointerEvent) => {
+    if (event.pointerId === pointerId) finish();
+  };
+  handle.setPointerCapture(pointerId);
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onCancel);
+  handle.addEventListener("lostpointercapture", onCancel);
+  return finish;
+}
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm" | "economics";
 
@@ -266,55 +322,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   stackFractionsRef.current = stackFractions;
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardWidth, setBoardWidth] = useState(0);
-  // Stable portal hosts retain pane state when a card moves between stacks.
-  const [cardHosts] = useState(() => new Map(CANONICAL_ORDER.map(tab => {
-    const host = document.createElement("div");
-    host.className = "h-full";
-    return [tab, host] as const;
-  })));
-  // Compact sizing is presentation-only; desktop widths and stack ratios survive it.
-  const [compactHeights, setCompactHeights] = useState<Partial<Record<Tab, number>>>({});
-  const compactDragCleanup = useRef<(() => void) | null>(null);
-  useEffect(() => () => compactDragCleanup.current?.(), []);
-
-  const setCompactHeight = (tab: Tab, height: number) => {
-    const card = document.getElementById(`right-pane-card-${tab}`);
-    const minimum = card ? parseFloat(getComputedStyle(card).minHeight) || 256 : 256;
-    setCompactHeights(current => ({ ...current, [tab]: Math.max(minimum, height) }));
-  };
-  const stepCompactHeight = (tab: Tab, delta: number) => {
-    const height = compactHeights[tab] ?? document.getElementById(`right-pane-card-${tab}`)?.getBoundingClientRect().height ?? 256;
-    setCompactHeight(tab, height + delta);
-  };
-  const resizeCompactFromPointer = (event: React.PointerEvent<HTMLSpanElement>, tab: Tab) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    compactDragCleanup.current?.();
-    const handle = event.currentTarget;
-    const startHeight = document.getElementById(`right-pane-card-${tab}`)?.getBoundingClientRect().height ?? 256;
-    const startY = event.clientY;
-    const pointerId = event.pointerId;
-    handle.setPointerCapture(pointerId);
-    beginRowResize();
-    const move = (next: PointerEvent) => {
-      if (next.pointerId === pointerId) setCompactHeight(tab, startHeight + next.clientY - startY);
-    };
-    const finish = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", finish);
-      handle.removeEventListener("pointercancel", finish);
-      handle.removeEventListener("lostpointercapture", finish);
-      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
-      endRowResize();
-      compactDragCleanup.current = null;
-    };
-    compactDragCleanup.current = finish;
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", finish);
-    handle.addEventListener("pointercancel", finish);
-    handle.addEventListener("lostpointercapture", finish);
-  };
+  const prevBoardWidthRef = useRef(0);
   const [hasBeenVisible, setHasBeenVisible] = useState(visible);
   useEffect(() => { if (visible) setHasBeenVisible(true); }, [visible]);
   const preferredResizeGroupRef = useRef(-1);
@@ -404,43 +412,69 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     return () => window.removeEventListener("harness-close-right-card", onClose as EventListener);
   }, [closeSettings, openCards, tabOrder]);
 
-  const persistCardLayouts = useCallback((nextLayouts: CardLayouts) => {
+  const finishResizeRef = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => () => {
+    finishResizeRef.current?.();
+    finishResizeRef.current = null;
+  }, [visible, columns]);
+
+  const persistCardLayouts = useCallback((nextLayouts: CardLayouts, durable = true) => {
     cardLayoutsRef.current = nextLayouts;
     setCardLayouts(nextLayouts);
-    localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
+    if (durable) localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
   }, []);
 
   useLayoutEffect(() => {
     const el = boardRef.current;
-    if (!el) {
+    if (!el || !visible) {
+      prevBoardWidthRef.current = 0;
       setBoardWidth(0);
       return;
     }
     const applyWidth = () => {
       const nextWidth = el.getBoundingClientRect().width;
+      const prevWidth = prevBoardWidthRef.current;
+      prevBoardWidthRef.current = nextWidth;
       setBoardWidth(nextWidth);
+      if (!(prevWidth > 0 && nextWidth > 0) || Math.abs(prevWidth - nextWidth) < 0.5) return;
+      const groups = columnsRef.current.filter(group => group.length > 0);
+      if (groups.length <= 1) return;
+      const current = groups.map(group => Math.max(
+        ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groups.length)),
+      ));
+      const absorbed = absorbShellResize(current, prevWidth, nextWidth);
+      const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
+      groups.forEach((group, index) => {
+        for (const tab of group) {
+          nextLayouts[tab] = { columnSpan: absorbed[index], customized: true };
+        }
+      });
+      persistCardLayouts(nextLayouts);
     };
     applyWidth();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(applyWidth);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [visible, openCards.length]);
+  }, [visible, openCards.length, persistCardLayouts]);
 
-  const persistStackFractions = useCallback((nextFractions: Record<string, number[]>) => {
+  const persistStackFractions = useCallback((nextFractions: Record<string, number[]>, durable = true) => {
     stackFractionsRef.current = nextFractions;
     setStackFractions(nextFractions);
-    localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(nextFractions));
+    if (durable) localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(nextFractions));
   }, []);
 
-  const setStackFractionsForKey = useCallback((pairKey: string, nextFractions: number[]) => {
+  const setStackFractionsForKey = useCallback((pairKey: string, nextFractions: number[], durable = true) => {
+    const normalized = normalizeFractions(nextFractions, nextFractions.length);
+    const current = stackFractionsRef.current[pairKey] ?? equalFractions(nextFractions.length);
+    if (!durable && normalized.every((value, index) => value === current[index])) return;
     persistStackFractions({
       ...stackFractionsRef.current,
-      [pairKey]: normalizeFractions(nextFractions, nextFractions.length),
-    });
+      [pairKey]: normalized,
+    }, durable);
   }, [persistStackFractions]);
 
-  const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number) => {
+  const setGroupColumnSpan = useCallback((groupIndex: number, nextSpan: number, durable = true) => {
     const groups = columnsRef.current.filter((group) => group.length > 0);
     const groupCount = groups.length;
     if (!showColumnResizeHandle(groupIndex, groupCount)) return;
@@ -449,13 +483,14 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
       ...group.map(tab => cardColumnSpan(tab, cardLayoutsRef.current, groupCount)),
     ));
     const next = applyPairwiseColumnResize(current, groupIndex, nextSpan);
+    if (!durable && next.every((value, index) => value === current[index])) return;
     const nextLayouts: CardLayouts = { ...cardLayoutsRef.current };
     groups.forEach((group, index) => {
       for (const tab of group) {
         nextLayouts[tab] = { columnSpan: next[index], customized: true };
       }
     });
-    persistCardLayouts(nextLayouts);
+    persistCardLayouts(nextLayouts, durable);
   }, [persistCardLayouts]);
 
   const resizeGroupFromPointer = useCallback((
@@ -468,35 +503,23 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     const boardWidth = boardRef.current?.getBoundingClientRect().width || 0;
     if (!boardWidth) return;
     const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
+    finishResizeRef.current?.();
+    const initial = cardLayoutsRef.current;
     const startX = event.clientX;
     const startSpan = placement.columnSpan;
     beginColumnResize();
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
-      setGroupColumnSpan(
-        placement.groupIndex,
-        columnSpanFromPointerDelta({
-          startSpan,
-          startClientX: startX,
-          clientX: moveEvent.clientX,
-          boardWidth,
-        }),
-      );
-    };
-    const onUp = (upEvent: PointerEvent) => {
-      if (handle.hasPointerCapture(upEvent.pointerId)) {
-        handle.releasePointerCapture(upEvent.pointerId);
+    finishResizeRef.current = startPointerResize(handle, event.pointerId, moveEvent => {
+      setGroupColumnSpan(placement.groupIndex, columnSpanFromPointerDelta({
+        startSpan,
+        startClientX: startX,
+        clientX: moveEvent.clientX,
+        boardWidth,
+      }), false);
+    }, () => {
+      if (cardLayoutsRef.current !== initial) {
+        localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(cardLayoutsRef.current));
       }
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      endColumnResize();
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    }, endColumnResize);
   }, [setGroupColumnSpan]);
 
   const resizeStackFromPointer = useCallback((
@@ -512,36 +535,27 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
     const stackHeight = stack?.getBoundingClientRect().height || 0;
     if (!stackHeight) return;
     const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
+    finishResizeRef.current?.();
+    const initial = stackFractionsRef.current;
     const startY = event.clientY;
     const startFractions = normalizeFractions(
       stackFractionsRef.current[pairKey] ?? equalFractions(stackLength),
       stackLength,
     );
     beginRowResize();
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!handle.hasPointerCapture(moveEvent.pointerId)) return;
+    finishResizeRef.current = startPointerResize(handle, event.pointerId, moveEvent => {
       setStackFractionsForKey(pairKey, fractionsFromBoundaryDrag({
         fractions: startFractions,
         boundaryIndex,
         startClientY: startY,
         clientY: moveEvent.clientY,
         stackHeight,
-      }));
-    };
-    const onUp = (upEvent: PointerEvent) => {
-      if (handle.hasPointerCapture(upEvent.pointerId)) {
-        handle.releasePointerCapture(upEvent.pointerId);
+      }), false);
+    }, () => {
+      if (stackFractionsRef.current !== initial) {
+        localStorage.setItem(STACK_FRACTIONS_STORAGE_KEY, JSON.stringify(stackFractionsRef.current));
       }
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      endRowResize();
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    }, endRowResize);
   }, [setStackFractionsForKey]);
 
   const handleDragStart = (event: React.DragEvent, tabId: Tab) => {
@@ -817,7 +831,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               style={{
                 gridColumn: "1",
                 gridRow: placement.gridRow,
-                ...{ "--compact-card-height": compactHeights[tabName] === undefined ? undefined : `${compactHeights[tabName]}px` },
               }}
               onDragOver={event => event.preventDefault()}
               onDrop={event => handleDrop(event, tabName)}
@@ -867,27 +880,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               <header
                 className="right-pane-card-header"
               >
-                <select
-                  className="right-pane-compact-move"
-                  aria-label={`Move ${config.label} panel`}
-                  value=""
-                  onChange={event => {
-                    const target = openCards.find(tab => tab === event.target.value);
-                    if (!target) return;
-                    const stripped = columnsRef.current.map(col => col.filter(tab => tab !== tabName)).filter(col => col.length > 0);
-                    const destCol = columnIndexOf(stripped, target);
-                    const destIndex = stripped[destCol].indexOf(target);
-                    const nextCols = moveCardIntoColumn(stripped, tabName, destCol, destIndex);
-                    persistBoard(tabOrder, flattenColumns(nextCols), nextCols);
-                    requestAnimationFrame(() => document.getElementById(`right-pane-card-${tabName}`)
-                      ?.querySelector<HTMLSelectElement>(".right-pane-compact-move")?.focus());
-                  }}
-                >
-                  <option value="">Move panel</option>
-                  {openCards.filter(tab => tab !== tabName).map(tab => (
-                    <option key={tab} value={tab}>Before {TAB_CONFIG[tab].label}</option>
-                  ))}
-                </select>
                 <div className="flex items-center gap-0.5 shrink-0 ml-auto">
                   {tabName === "review" && reviews.length > 0 && <span className="right-pane-badge">{reviews.length}</span>}
                   {tabName === "swarm" && swarmRunning > 0 && <span className="right-pane-live" title={`${swarmRunning} swarm jobs running`} />}
@@ -923,31 +915,8 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                   <button type="button" aria-label={`Close ${config.label} panel`} title={`Close ${config.label}`} onClick={() => removeCard(tabName)} onMouseDown={event => event.stopPropagation()} className="right-pane-icon-btn"><X size={12} /></button>
                 </div>
               </header>
-              <div className="right-pane-card-body" ref={element => {
-                const host = cardHosts.get(tabName);
-                if (element && host && host.parentElement !== element) {
-                  const focused = host.contains(document.activeElement) ? document.activeElement : null;
-                  element.appendChild(host);
-                  if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
-                }
-              }} />
-              <div className="right-pane-compact-controls">
-                <button type="button" aria-label={`Shorter ${config.label} panel`} onClick={() => stepCompactHeight(tabName, -48)}>Shorter</button>
-                <span
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label={`Resize ${config.label} panel height`}
-                  aria-valuetext={compactHeights[tabName] === undefined ? "Default height" : `${compactHeights[tabName]} pixels`}
-                  tabIndex={0}
-                  title="Drag to resize; use Up/Down arrows"
-                  onPointerDown={event => resizeCompactFromPointer(event, tabName)}
-                  onKeyDown={event => {
-                    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-                    event.preventDefault();
-                    stepCompactHeight(tabName, event.key === "ArrowDown" ? 48 : -48);
-                  }}
-                >Resize height</span>
-                <button type="button" aria-label={`Taller ${config.label} panel`} onClick={() => stepCompactHeight(tabName, 48)}>Taller</button>
+              <div className="right-pane-card-body">
+                <Activity mode={visible ? "visible" : "hidden"}>{renderCardBody(tabName)}</Activity>
               </div>
             </section>
                 );
@@ -958,14 +927,6 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
             </div>
         </div>
       )}
-      {(visible || hasBeenVisible) && openCards.map(tab => {
-        const host = cardHosts.get(tab);
-        return host ? createPortal(
-          <div className="h-full" onDragOver={event => event.preventDefault()} onDrop={event => handleDrop(event, tab)}>
-            <Activity mode={visible ? "visible" : "hidden"}>{renderCardBody(tab)}</Activity>
-          </div>, host, tab,
-        ) : null;
-      })}
       {/* Keep the expensive interactive panes alive when users close their cards. */}
       <div className="hidden" aria-hidden>
         {!openCards.includes("state") && (

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
-import ShellSurface from "./ShellSurface";
+import { createPortal } from "react-dom";
+import { useOverlayFocus } from "../lib/overlayFocus";
 import { api, type Session, type SessionForkPreview } from "../lib/api";
 
 type ForkState =
@@ -10,7 +11,7 @@ type ForkState =
   | { kind: "creating"; preview: SessionForkPreview; eventId: number; requestId: string }
   | { kind: "created"; child: Session };
 
-const buttonClass = "min-h-11 px-2 rounded text-sm text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-accent disabled:opacity-50";
+const buttonClass = "min-h-8 px-2 rounded text-sm text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-accent disabled:opacity-50";
 
 /** Mount keyed by session.id, outside any session-row button. */
 export function SessionFork({ session, sessions, onSelect, onCreated, open, onClose, returnFocus }: {
@@ -22,6 +23,11 @@ export function SessionFork({ session, sessions, onSelect, onCreated, open, onCl
   onSelect: (id: string) => void;
   onCreated: (child: Session) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useOverlayFocus(open === true, dialogRef, { onClose, restoreFocus: false });
+  useEffect(() => {
+    if (open) return () => { returnFocus?.focus(); };
+  }, [open, returnFocus]);
   const [state, setState] = useState<ForkState>({ kind: "closed" });
   const inFlight = useRef(false);
   const mounted = useRef(false);
@@ -100,7 +106,7 @@ export function SessionFork({ session, sessions, onSelect, onCreated, open, onCl
       {state.preview.boundaries.length === 0 ? <p role="status">No saved boundary is available yet.</p> : <>
         <label htmlFor={selectId} className="block text-sm text-txt">Fork after saved message</label>
         <select id={selectId} value={state.eventId} disabled={state.kind === "creating"}
-          className="w-full min-h-11 rounded bg-panel text-txt border border-edge focus-visible:outline focus-visible:outline-accent"
+          className="w-full min-h-8 rounded bg-panel text-txt border border-edge focus-visible:outline focus-visible:outline-accent"
           onChange={(event) => setState({ ...state, kind: "ready", eventId: Number(event.target.value), requestId: crypto.randomUUID() })}>
           {state.preview.boundaries.map((boundary) => <option key={boundary.event_id} value={boundary.event_id}>
             {boundary.event_id}: {boundary.role} - {boundary.label || "Message"}
@@ -120,6 +126,19 @@ export function SessionFork({ session, sessions, onSelect, onCreated, open, onCl
       <button ref={anotherButton} type="button" className={buttonClass} onClick={() => void preview()}>Create another fork</button>
     </>}
   </section>;
-  return open === undefined ? content : <ShellSurface visible={open} presentation="modal"
-    label={`Fork ${session.title}`} returnFocus={returnFocus} onClose={() => onClose?.()}>{content}</ShellSurface>;
+  if (open === undefined) return content;
+  if (!open) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50"
+      onClick={event => { if (event.target === event.currentTarget) onClose?.(); }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={`Fork ${session.title}`}
+        className="w-[480px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-32px)] overflow-y-auto rounded-xl border border-edge bg-panel p-4 text-txt">
+        <header className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold truncate">Fork {session.title}</h2>
+          <button type="button" className={buttonClass} aria-label={`Close Fork ${session.title}`} onClick={onClose}>Close</button>
+        </header>
+        {content}
+      </div>
+    </div>, document.body,
+  );
 }
