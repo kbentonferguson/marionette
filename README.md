@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.23.0` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.424, deliberately pre-1.0. Session selection uses a neutral grey highlight and subtle shadow; sidebar titles and secondary labels are scaled below chat text. Pins puppetmaster-ai==1.23.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows have a 900×600 minimum; smaller layouts use bounded Sessions and Panels drawers. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
+> Status: v0.9.425, deliberately pre-1.0. Session selection uses one compact, full-width grey bar; session and Jobs titles share a smaller scale than chat text. Pins puppetmaster-ai==1.23.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows have a 900×600 minimum; smaller layouts use bounded Sessions and Panels drawers. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
 
 ## Documentation
 
