@@ -1869,6 +1869,7 @@ class ConversationJobsMixin:
                 getattr(self, "_interrupted_swarms", False)
                 or getattr(self, "_stop_holds_idle", False)
                 or self._cancel.is_set()
+                or bool(getattr(getattr(self, "_turn_guard_state", None), "implement_unverified_landed", False))
             )
             # Bound post-swarm keep-alive redispatch for the same normalized
             # failed/degraded objective so provider outages cannot create

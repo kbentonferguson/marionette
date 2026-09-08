@@ -859,7 +859,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("shows native receipt tokens and separately labeled spend savings and forecast", async () => {
+  it("keeps native receipt dump off compact tracker cards", async () => {
     const row = nativeEconomicsRow('local-cost');
     row.economics = { kind: 'estimated', spend_usd: 0.05, estimated: true, cost_provenance: 'static',
       source: 'financial_receipt', estimated_savings_usd: 0.0553, route_forecast_usd: 0.1 };
@@ -867,31 +867,24 @@ describe("SwarmPane mid-run job-row meters", () => {
     const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-cost ·/);
-      fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
-      expect(await screen.findByText('12,000 combined tokens · reported by native job')).toBeVisible();
-      expect(screen.getByText('Estimated spend: $0.05 · static pricing · financial receipt')).toBeVisible();
-      expect(screen.getByText('Estimated savings: $0.0553 · financial receipt estimate; not measured savings.')).toBeVisible();
-      expect(screen.getByText('Route forecast: $0.1000 · financial receipt estimate; not spend.')).toBeVisible();
-      expect(screen.queryByText(/compact|cached|Measured spend:/)).not.toBeInTheDocument();
-      expect(screen.getByText(/This view does not calculate totals/)).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
+      expect(screen.queryByText('12,000 combined tokens · reported by native job')).not.toBeInTheDocument();
+      expect(screen.queryByText(/This view does not calculate totals/)).not.toBeInTheDocument();
       expect(mockSwarmLive).not.toHaveBeenCalled();
     } finally { mounted.unmount(); fixture.dispose(); }
   });
 
-  it("refreshes native receipt savings without changing spend or identity", async () => {
+  it("keeps compact provider cards free of inspect-lane spend dump after a receipt refresh", async () => {
     const row = nativeEconomicsRow('local-update');
     const fixture = await economicsNativeFixture([row]);
     const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-update ·/);
-      fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
-      expect(await screen.findByText(/Estimated savings: \$0.0200/)).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
       await waitFor(() => expect(fixture.store.getSnapshot().working).toBe(false));
       await fixture.update([{ ...row, revision: 2, economics: { ...row.economics, estimated_savings_usd: 0.11 } }]);
-      expect(screen.getByText(/Estimated savings: \$0.1100/)).toBeVisible();
-      expect(screen.queryByText(/Estimated savings: \$0.0200/)).not.toBeInTheDocument();
-      expect(screen.getByText('Estimated spend: $0.05 · static pricing · financial receipt')).toBeVisible();
       expect(fixture.store.getSnapshot().local.observations.find(o => o.row.local_ref.job_id === row.local_ref.job_id)?.row.revision).toBe(2);
+      expect(screen.queryByText(/Estimated savings: \$0.1100/)).not.toBeInTheDocument();
       expect(mockSwarmLive).not.toHaveBeenCalled();
     } finally { mounted.unmount(); fixture.dispose(); }
   });
@@ -1055,7 +1048,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(screen.queryByText(/no matching worker/)).not.toBeInTheDocument();
   });
 
-  it("keeps compact job and worker chrome on expand and hides the operator dump until Inspect", async () => {
+  it("keeps compact job and worker chrome on expand and drops inspect-lane chrome", async () => {
     const metadata = await nativeExpertFixture({ jobId: 'local-compact' });
     outcomeFixture = metadata;
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
@@ -1066,13 +1059,16 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(screen.queryByText(/Lifecycle:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Parent relationship unknown/)).not.toBeInTheDocument();
     expect(screen.queryByText(/combined tokens|Estimated spend|Native provider/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect workers' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect routing' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect output' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect children' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Request native stop' })).not.toBeInTheDocument();
     const worker = await screen.findByRole('button', { name: /implement \(agentic\)/ });
     fireEvent.click(worker);
     expect(screen.getByText('Keyboard disclosure')).toBeVisible();
-    expect(document.querySelector('[data-job-id]')?.textContent).not.toContain('Keyboard disclosure');
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
-    expect(screen.getByRole('dialog', { name: 'Selected job inspection' })).toBeVisible();
-    expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: 'Selected job inspection' })).not.toBeInTheDocument();
   });
 });
 
@@ -1198,6 +1194,7 @@ describe("SwarmPane cancel Kill contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("marionette.jobScope.v1", "repo");
     sessionStorage.clear();
     clearSWRCache();
     mockSwarmCancel.mockReset();
@@ -1209,8 +1206,10 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmPane /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /parallel wave · running/ }));
-    const kill = screen.getByRole('button', { name: 'Request native stop' });
+    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
+    const worker = await screen.findByRole('button', { name: /implement/ });
+    fireEvent.click(worker);
+    const kill = screen.getByRole('button', { name: 'Cancel this job' });
     expect(kill).toBeEnabled();
     fireEvent.click(kill);
     expect(kill).toBeDisabled();
@@ -1229,8 +1228,10 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmPane /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /parallel wave · running/ }));
-    const kill = screen.getByRole('button', { name: 'Request native stop' });
+    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
+    const worker = await screen.findByRole('button', { name: /implement/ });
+    fireEvent.click(worker);
+    const kill = screen.getByRole('button', { name: 'Cancel this job' });
     expect(kill).toBeEnabled();
     fireEvent.click(kill);
     expect(await screen.findByText('not running')).toBeVisible();
@@ -1248,36 +1249,25 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmPane /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /parallel wave · running/ }));
-    const kill = screen.getByRole('button', { name: 'Request native stop' });
+    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
+    const worker = await screen.findByRole('button', { name: /implement/ });
+    fireEvent.click(worker);
+    const kill = screen.getByRole('button', { name: 'Cancel this job' });
     expect(kill).toBeEnabled();
+    const detailsBeforeKill = f.request.mock.calls.filter(([, path]) => path.includes('/metadata/local/detail?')).length;
     fireEvent.click(kill);
     await waitFor(() => expect(kill).toBeEnabled());
     expect(screen.queryByText('Awaiting stop acknowledgement.')).not.toBeInTheDocument();
     expect(screen.getByText('Stop outcome is unconfirmed. Inspect the job before retrying.')).toBeVisible();
-    expect(f.request.mock.calls.filter(([, path]) => path.includes('/metadata/local/detail?'))).toHaveLength(0);
+    expect(f.request.mock.calls.filter(([, path]) => path.includes('/metadata/local/detail?'))).toHaveLength(detailsBeforeKill);
     const selection = { version: 1, source: 'local', repo: f.context().repo,
       session_id: f.context().session_id, local_incarnation: 'native-1', job_ref: { job_id: 'local-kill', state_id: null } };
     expect(mockSwarmCancel.mock.calls).toEqual([[selection]]);
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
-    await screen.findByText(/actions: complete/);
-    const reads = f.request.mock.calls.filter(([, path]) => path.includes('/metadata/local/detail?'));
-    expect(reads).toHaveLength(1);
-    expect(reads[0][0]).toBe('GET');
-    const url = new URL(reads[0][1], 'http://fixture');
-    expect(url.pathname).toBe('/api/jobs/metadata/local/detail');
-    expect(Object.fromEntries(url.searchParams)).toMatchObject({ job_id: 'local-kill', incarnation: 'native-1',
-      session_id: f.context().session_id, repo: f.context().repo, view_generation: f.context().view_generation, lane: 'actions' });
-    expect(url.searchParams.has('cursor')).toBe(false);
-    expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
-    expect(screen.getByText('Stop outcome is unconfirmed. Inspect the job before retrying.')).toBeVisible();
-    expect(mockSwarmCancel.mock.calls).toEqual([[selection]]);
+    expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
     expect(kill).toBeEnabled();
     fireEvent.click(kill);
     await waitFor(() => expect(mockSwarmCancel).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('Stop request accepted; awaiting lifecycle observation. Retry inspection to check again.')).toBeVisible();
     expect(mockSwarmCancel.mock.calls).toEqual([[selection], [selection]]);
-    expect(f.request.mock.calls.filter(([, path]) => path.includes('/metadata/local/detail?'))).toEqual([reads[0], reads[0]]);
     expect(mockSwarmLive).not.toHaveBeenCalled();
   });
 });
@@ -2738,8 +2728,8 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByRole("button", { name: "Audit auth flow · running" })).toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(1)");
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Command · running" })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("At least 2 active jobs");
+    expect(screen.queryByRole("button", { name: "Command · running" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Inspect actions")).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
     expect(mockArtifacts).not.toHaveBeenCalled();
   });
@@ -2752,8 +2742,7 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByRole("button", { name: "run_parallel wave · running" })).toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(3)");
     expect(screen.queryByText("echo batch")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Command batch · running" })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("At least 4 active jobs");
+    expect(screen.queryByRole("button", { name: "Command batch · running" })).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
     expect(mockArtifacts).not.toHaveBeenCalled();
   });
@@ -2763,11 +2752,10 @@ describe("SwarmPane command vs swarm split", () => {
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(0)");
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
-    expect(screen.queryByText("No swarm jobs yet")).not.toBeInTheDocument();
+    expect(screen.getByText("No swarm jobs yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Active \(/ })).not.toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Command · running" })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("At least 1 active jobs");
+    expect(screen.queryByRole("button", { name: "Command · running" })).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
     expect(mockArtifacts).not.toHaveBeenCalled();
   });
@@ -2779,8 +2767,7 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByRole("button", { name: "run_implement fix · running" })).toBeInTheDocument();
     expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2)");
     expect(screen.queryByText("Parallel wave (2 jobs)")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Parallel wave · running" })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("At least 3 active jobs");
+    expect(screen.queryByRole("button", { name: "Parallel wave · running" })).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
     expect(mockArtifacts).not.toHaveBeenCalled();
   });

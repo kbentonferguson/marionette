@@ -68,7 +68,6 @@ from harness.pilot_guards import (
     swarm_gate_enabled,
     take_unverified_land_user_notice,
     UNVERIFIED_LAND_NOTICE_REASON,
-    UNVERIFIED_LAND_USER_MESSAGE,
     tiny_workspace_tool_budget,
     turn_tool_budget_cap,
     translate_puppetmaster_cli_action,
@@ -1508,7 +1507,7 @@ def test_post_implement_budget_exhaustion_uses_calm_message():
     assert "Report the outcome" in verdict.message
 
 
-def test_applied_without_acceptance_is_unverified_not_success():
+def test_applied_without_acceptance_stamp_is_not_unverified_or_success():
     res = {
         "applied": True,
         "files": ["app.js"],
@@ -1516,6 +1515,19 @@ def test_applied_without_acceptance_is_unverified_not_success():
         "worker_provenance": {"worktree_diff_empty": False},
     }
     assert implement_acceptance_of(res) == "unknown"
+    assert job_result_shows_implement_success(res, {"role": "implement"}) is False
+    assert job_result_shows_implement_unverified_land(res, {"role": "implement"}) is False
+
+
+def test_explicit_failed_acceptance_is_unverified_land():
+    res = {
+        "applied": True,
+        "files": ["app.js"],
+        "has_patch_art": True,
+        "acceptance": "failed",
+        "worker_provenance": {"worktree_diff_empty": False},
+    }
+    assert implement_acceptance_of(res) == "failed"
     assert job_result_shows_implement_success(res, {"role": "implement"}) is False
     assert job_result_shows_implement_unverified_land(res, {"role": "implement"}) is True
 
@@ -1530,6 +1542,7 @@ def test_unverified_land_reserves_diagnosis_and_blocks_paid_retry(monkeypatch):
             "applied": True,
             "files": ["app.js"],
             "has_patch_art": True,
+            "acceptance": "failed",
             "worker_provenance": {"worktree_diff_empty": False},
         },
         {"role": "implement"},
@@ -1550,6 +1563,25 @@ def test_unverified_land_reserves_diagnosis_and_blocks_paid_retry(monkeypatch):
     assert wired.reason == "implement_unverified"
 
 
+def test_unknown_acceptance_does_not_block_a_follow_up_implement():
+    state = TurnGuardState()
+    note_implement_success_from_job_result(
+        state,
+        {
+            "applied": True,
+            "files": ["app.js"],
+            "has_patch_art": True,
+            "worker_provenance": {"worktree_diff_empty": False},
+        },
+        {"role": "implement"},
+    )
+    assert state.implement_unverified_landed is False
+    retry = check_implement_unverified_retry(
+        state, "run_implement", _Act(kind="run_implement", goal="fix migration"),
+    )
+    assert retry.suppress is False
+
+
 def test_unverified_diagnosis_budget_does_not_forbid_verification():
     budget = IterationBudget(cap=10, used=10)
     state = TurnGuardState(
@@ -1563,14 +1595,10 @@ def test_unverified_diagnosis_budget_does_not_forbid_verification():
     assert "until the user continues" in verdict.message
 
 
-def test_unverified_land_user_notice_is_once_per_land():
+def test_unverified_land_does_not_paint_i_made_this_worse():
     state = TurnGuardState()
     assert take_unverified_land_user_notice(state) is None
     state.implement_unverified_landed = True
-    first = take_unverified_land_user_notice(state)
-    assert first == UNVERIFIED_LAND_USER_MESSAGE
-    assert "I made this worse" in first
-    assert "I need your decision" in first
     assert take_unverified_land_user_notice(state) is None
     assert UNVERIFIED_LAND_NOTICE_REASON == "implement_unverified"
 

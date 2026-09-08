@@ -36,9 +36,10 @@ Tiny workspaces tighten the tool cap via HARNESS_TINY_WORKSPACE_TOOL_BUDGET
 skip that tiny tighten and instead use an edit-first gate
 (HARNESS_EDIT_FIRST_READ_ALLOWANCE, default 2). After an accepted implement,
 remaining tools clamp to HARNESS_POST_IMPLEMENT_TOOL_ALLOWANCE (default 4).
-A landed patch without acceptance uses
+An applied patch with an explicit failed acceptance uses
 HARNESS_POST_IMPLEMENT_DIAGNOSIS_ALLOWANCE (default 12) and refuses another
-paid swarm until the user continues.
+paid swarm until the user continues. Applied-without-a-stamp is not
+failure and does not paint a user-facing apology.
 """
 
 import json
@@ -687,10 +688,8 @@ class TurnGuardState:
     last_implement_exhausted: bool = False
     # Set when a completed implement/local job returned real success/patch provenance.
     implement_success_seen: bool = False
-    # Patch is in the worktree but acceptance is red or unproven. Not success.
+    # Patch is in the worktree and acceptance is explicitly failed. Not success.
     implement_unverified_landed: bool = False
-    # True after the user-visible unverified-land sentence has been taken.
-    implement_unverified_user_told: bool = False
     # Cached at turn start from the effective repo path (scale-aware budget / chrome guard).
     tiny_workspace: bool = False
     # Nested native implement worker (ProviderWorker expects_diff): edit-first policy.
@@ -1726,7 +1725,11 @@ def job_result_shows_implement_success(
 def job_result_shows_implement_unverified_land(
     res_job: Any, stamped: Any = None,
 ) -> bool:
-    """True when a patch is in the worktree and acceptance is red or unknown."""
+    """True when a patch is in the worktree and acceptance is explicitly failed.
+
+    Applied-without-a-stamp is unknown, not unverified. Parallel waves land
+    useful diffs before any gate is stamped; that must not stop the turn.
+    """
     if not isinstance(res_job, dict):
         return False
     if job_result_shows_implement_success(res_job, stamped):
@@ -1739,7 +1742,9 @@ def job_result_shows_implement_unverified_land(
             return False
         if res_job.get("held_for_review"):
             return False
-        return bool(res_job.get("applied"))
+        if not res_job.get("applied"):
+            return False
+        return implement_acceptance_of(res_job) == "failed"
     except Exception:
         return False
 
@@ -1792,19 +1797,11 @@ _UNVERIFIED_IMPLEMENT_RETRY_MESSAGE = (
 )
 
 UNVERIFIED_LAND_NOTICE_REASON = "implement_unverified"
-UNVERIFIED_LAND_USER_MESSAGE = (
-    "I made this worse; I need your decision. A worker patch landed and "
-    "acceptance is red or unproven. Continue before another paid implement "
-    "or swarm."
-)
 
 
-def take_unverified_land_user_notice(state: TurnGuardState) -> Optional[str]:
-    """Return the user sentence once per unverified land; None after that."""
-    if not state.implement_unverified_landed or state.implement_unverified_user_told:
-        return None
-    state.implement_unverified_user_told = True
-    return UNVERIFIED_LAND_USER_MESSAGE
+def take_unverified_land_user_notice(_state: TurnGuardState) -> Optional[str]:
+    """No user-facing apology. Failed acceptance is not 'worse'."""
+    return None
 
 
 def check_implement_unverified_retry(

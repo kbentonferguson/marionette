@@ -2031,7 +2031,7 @@ describe("streamApply module", () => {
     expect(noticeIsStopHonesty("implement_unverified")).toBe(false);
     expect(noticeIsStopHonesty("wait")).toBe(false);
     expect(noticeIsStopHonesty(undefined)).toBe(false);
-    expect(noticeIsHonestyTranscript("implement_unverified")).toBe(true);
+    expect(noticeIsHonestyTranscript("implement_unverified")).toBe(false);
     expect(noticeIsHonestyTranscript("owned_command_orphan")).toBe(true);
     expect(noticeIsHonestyTranscript("wait")).toBe(false);
     expect(
