@@ -11,6 +11,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from pmharness.stream_snapshot import absorb_stream_snapshot
+
 # Coalesce same-(channel, stream_id) deltas until either threshold trips.
 # 16ms is one paint frame — enough to protect the 512-frame SSE ring from
 # word tokens without stacking a second visible wave on the client's 33ms
