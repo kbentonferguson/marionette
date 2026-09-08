@@ -253,7 +253,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
       }}>Job {job.id}</button>
       {compact && !showDump && <ExpertCost header={costHeader} now={now} compact />}
       {adapter && <p className="text-faint lowercase">{adapter}</p>}
-      {since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
+      {!compact && since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
         <Activity size={9} className="text-accent/60 animate-pulse" />
         {since}
       </div>}

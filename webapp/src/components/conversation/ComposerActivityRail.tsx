@@ -1,4 +1,3 @@
-import MetadataActivity from './MetadataActivity';
 import { useMemo, useSyncExternalStore } from "react";
 import type { Job } from "../../lib/api";
 import {
@@ -6,7 +5,6 @@ import {
   listAgentCommandSessions,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
-import { isJobsListRow } from "../../lib/jobMetadataContext";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
 import { todoHasWork } from "../../lib/composerTodos";
 import { getSessionTodos, getSessionTodosSessionId, subscribeSessionTodos } from "../../lib/sessionTodos";
@@ -24,7 +22,6 @@ export default function ComposerActivityRail({
   sessionId: string;
 }) {
   const bodyJobs = jobs.filter(job => !job.metadata_only);
-  const observedJobs = jobs.filter(job => job.metadata_only && job.session_id === sessionId && isJobsListRow(job));
   const commandIndexVersion = useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,
@@ -46,7 +43,7 @@ export default function ComposerActivityRail({
   );
   const showTodos = todoHasWork(todos) && todoSessionId === sessionId;
   const showTasks = !!pickTaskSourceJob(bodyJobs, sessionId);
-  const hasOverview = showTasks || showTodos || stackRows.length > 0 || observedJobs.length > 0;
+  const hasOverview = showTasks || showTodos || stackRows.length > 0;
 
   return (
     <div
@@ -56,7 +53,6 @@ export default function ComposerActivityRail({
       <div className={hasOverview ? "space-y-0.5 p-0.5" : undefined}>
         <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} />
         <ComposerTasksPanel jobs={bodyJobs} sessionId={sessionId} />
-        <MetadataActivity key={sessionId} jobs={observedJobs} />
         <ComposerStatusStack swarmJobs={bodyJobs} sessionId={sessionId} />
       </div>
     </div>

@@ -75,6 +75,13 @@ body {
   --chrome-focus-color: theme('colors.bg');
 }
 
+:root :where(input, select, textarea, [contenteditable="true"]):focus,
+:root :where(input, select, textarea, [contenteditable="true"]):focus-visible {
+  outline-color: transparent;
+  outline-width: 0;
+  outline-offset: 0;
+}
+
 @media (forced-colors: active) {
   :root :where(button, a[href], summary, [tabindex]:not(input):not(select):not(textarea):not([contenteditable="true"])):focus-visible {
     outline: 2px solid Highlight !important;

@@ -5,7 +5,7 @@ export function inputFailureMessage(error: unknown): string | null {
   if (!body || typeof body !== "object" || !("code" in body) || typeof body.code !== "string") return null;
   switch (body.code) {
     case "input_stopped":
-      return "Stop cancelled this input. Inspect Saved inputs and your draft before sending again.";
+      return "Stop cancelled this input. Review your draft before sending again.";
     case "input_session_changed":
       return "The active session changed. Return to the intended session and review your draft before sending.";
     case "input_stash_expired":
@@ -19,18 +19,18 @@ export function inputFailureMessage(error: unknown): string | null {
     case "input_delivery_uncertain":
     case "input_stop_uncertain":
     case "input_publication_conflict":
-      return "Input delivery could not be confirmed. Inspect Saved inputs and your draft before sending again.";
+      return "Input delivery could not be confirmed. Review your draft before sending again.";
     case "input_held":
     case "input_already_attempted":
     case "input_handoff_conflict":
     case "input_terminal":
-      return "This input is held or has already been attempted. Inspect Saved inputs; copying an original creates a new draft.";
+      return "This input is held or has already been attempted. Review your draft before sending again.";
     case "input_retry_conflict":
     case "input_id_conflict":
-      return "This input identity belongs to a different submission. Inspect Saved inputs before creating a new draft.";
+      return "This input identity belongs to a different submission. Review your draft before sending again.";
     default:
       return body.code.startsWith("input_")
-        ? "The input needs review. Inspect Saved inputs and your draft before sending again."
+        ? "The input needs review. Review your draft before sending again."
         : null;
   }
 }

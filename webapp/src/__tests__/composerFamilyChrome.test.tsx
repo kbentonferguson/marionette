@@ -1,5 +1,5 @@
-import { createRef } from "react";
-import { render } from "@testing-library/react";
+import { createRef, type ComponentProps } from "react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ComposerActivityRail from "../components/conversation/ComposerActivityRail";
 import ComposerDock from "../components/conversation/ComposerDock";
@@ -33,7 +33,7 @@ vi.mock("../lib/agentCommandIndex", () => ({
 
 const noop = () => {};
 
-function renderDock() {
+function renderDock(extras: Partial<ComponentProps<typeof ComposerDock>> = {}) {
   return render(
     <ComposerDock
       config={null}
@@ -119,6 +119,7 @@ function renderDock() {
       handleQueueAdd={noop}
       stop={noop}
       send={noop}
+      {...extras}
     />,
   );
 }
@@ -188,8 +189,8 @@ describe("composer-family chrome", () => {
     expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
   });
 
-  it("does not dump provider workers onto the composer activity rail", () => {
-    const providers = [
+  it("does not dump observed jobs onto the composer activity rail", () => {
+    const observed = [
       {
         id: "local-1",
         goal: "Provider worker · agentic/gpt-5.6-luna",
@@ -200,20 +201,42 @@ describe("composer-family chrome", () => {
         read_status: "unavailable",
       },
       {
-        id: "local-2",
-        goal: "Provider worker · running",
+        id: "pm-1",
+        goal: "PM harness job · running",
         status: "running",
         session_id: "sess-1",
         metadata_only: true,
-        job_kind: "provider",
       },
     ] as Job[];
     const rail = render(
-      <ComposerActivityRail jobs={providers} sessionId="sess-1" />,
+      <ComposerActivityRail jobs={observed} sessionId="sess-1" />,
     );
     expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
     expect(rail.queryByText(/Provider worker/)).toBeNull();
+    expect(rail.queryByText(/PM harness job/)).toBeNull();
     expect(rail.queryByText(/Coverage incomplete/)).toBeNull();
+    expect(rail.queryByText(/observed jobs/)).toBeNull();
+  });
+
+  it("does not mount Saved inputs above the composer", () => {
+    renderDock({
+      receipts: [{
+        id: "receipt",
+        original_text: "can u pick back up?",
+        attachments: [],
+        model: "stamped",
+        payload_digest: "payload",
+        created_at: 1,
+        status: "injected",
+        reason: "recorded",
+        held: false,
+      }],
+      onCopyReceipt: () => {},
+    });
+    expect(screen.queryByText(/Saved inputs/)).toBeNull();
+    expect(screen.queryByText(/Originals remain available/)).toBeNull();
+    expect(screen.queryByText(/Recorded in conversation/)).toBeNull();
+    expect(screen.queryByText(/can u pick back up/)).toBeNull();
   });
 
   it("renders a nested session TODO tree on the activity rail", () => {
