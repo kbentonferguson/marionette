@@ -251,6 +251,13 @@ test('late headers after timeout are destroyed without a second settlement', asy
   assert.equal(res.destroyed, true);
   assert.equal(transport.calls[0].req.destroyed, true);
 });
+test('connection error without destroy still rejects', async () => {
+  const req = new EventEmitter();
+  req.write = () => {};
+  req.end = () => queueMicrotask(() =>
+    req.emit('error', Object.assign(new Error('lost'), {code:'ECONNRESET'})));
+  await assert.rejects(run({request:() => req}, {}), {code:'ECONNRESET'});
+});
 test('synchronous write failure destroys the request and warns about the outcome', async () => {
   const req = new EventEmitter();
   req.destroy = () => {req.destroyed = true;};

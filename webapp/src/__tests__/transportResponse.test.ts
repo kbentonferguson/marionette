@@ -24,7 +24,7 @@ function desktop(status: number, text: string, connectionCode = '') {
     http: { request(options: {path: string; headers: Record<string, string>}, callback: (res: PassThrough) => void) {
       sentHeaders.push(options.headers);
       const req = new EventEmitter();
-      return Object.assign(req, { write() {}, end() {
+      return Object.assign(req, { write() {}, destroy() {}, end() {
         queueMicrotask(() => {
           if (options.path === '/api/endpoint') {
             const res = Object.assign(new PassThrough(), {statusCode:200,headers:{}});

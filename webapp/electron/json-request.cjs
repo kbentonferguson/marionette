@@ -44,8 +44,11 @@ function requestJSONOnce(options, body, {
       slab = undefined;
       if (error) {
         reject(error);
-        res?.destroy();
-        req?.destroy();
+        for (const stream of [res, req]) {
+          if (typeof stream?.destroy === 'function') {
+            try { stream.destroy(); } catch { /* already closed */ }
+          }
+        }
       } else resolve(value);
     };
     const fail = code => finish(failure(code, options.method));
