@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ModelsSettingsPage, { clearCatalogSnapshot } from "../components/ModelsSettingsPage";
+import ModelsSettingsPage, { clearCatalogSnapshot, orderModelsEnabledFirst } from "../components/ModelsSettingsPage";
 import { api, type ModelCatalogEntry } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
@@ -242,5 +242,22 @@ describe("ModelsSettingsPage cached first paint", () => {
     expect(screen.getByText("MiMo-V2.5 Free")).toBeInTheDocument();
     expect(screen.queryByText("Ox Alpha Free")).toBeNull();
     expect(screen.queryByText("Big Pickle")).toBeNull();
+  });
+
+  it("pins enabled models above disabled siblings", async () => {
+    const mixed: ModelCatalogEntry[] = [
+      { spec: "openrouter:off-a", model: "off-a", name: "Off A", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: false },
+      { spec: "openrouter:on-b", model: "on-b", name: "On B", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: true },
+      { spec: "openrouter:off-c", model: "off-c", name: "Off C", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: false },
+      { spec: "openrouter:on-a", model: "on-a", name: "On A", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: true },
+    ];
+    expect(orderModelsEnabledFirst(mixed).map((row) => row.model)).toEqual(["on-a", "on-b", "off-a", "off-c"]);
+    mockModelCatalog.mockResolvedValue({ catalog: mixed, all: mixed, enabled: mixed.filter((row) => row.enabled) });
+    render(<ModelsSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("On A")).toBeInTheDocument();
+    });
+    const labels = screen.getAllByText(/^(On A|On B|Off A|Off C)$/).map((node) => node.textContent);
+    expect(labels).toEqual(["On A", "On B", "Off A", "Off C"]);
   });
 });

@@ -65,7 +65,7 @@ describe("SettingsPane cached first paint", () => {
     render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
 
     expect(screen.queryByText("Loading settings...")).toBeNull();
-    expect(screen.getByText("Driver (Model)")).toBeInTheDocument();
+    expect(screen.getByText("Budget (Steps)")).toBeInTheDocument();
   });
 
   it("shows loading gate only when no snapshot exists", async () => {
@@ -94,7 +94,7 @@ describe("SettingsPane cached first paint", () => {
     });
 
     expect(screen.queryByText("Failed to load settings")).toBeNull();
-    expect(screen.getByText("Driver (Model)")).toBeInTheDocument();
+    expect(screen.getByText("Budget (Steps)")).toBeInTheDocument();
   });
 });
 

@@ -9,6 +9,12 @@ let didForceRefreshThisSession = false;
 
 type ProviderGroup = { provider: string; display: string; items: ModelCatalogEntry[] };
 
+export function orderModelsEnabledFirst(items: ModelCatalogEntry[]): ModelCatalogEntry[] {
+  return [...items].sort((a, b) => Number(b.enabled) - Number(a.enabled)
+    || (a.name || a.model).localeCompare(b.name || b.model)
+    || a.model.localeCompare(b.model));
+}
+
 export function clearCatalogSnapshot() {
   memoryCatalogSnapshot = null;
   didForceRefreshThisSession = false;
@@ -132,7 +138,7 @@ export default function ModelsSettingsPage() {
       }
       g.items.push(c);
     }
-    return out;
+    return out.map((g) => ({ ...g, items: orderModelsEnabledFirst(g.items) }));
   }, [catalog, q]);
 
   const enabledCount = catalog.filter((c) => c.enabled).length;
@@ -140,10 +146,9 @@ export default function ModelsSettingsPage() {
   const defaultCollapsed = useMemo(() => {
     const map: Record<string, boolean> = {};
     for (const g of groups) {
-      // Search: keep matching groups open. Otherwise collapse huge catalogs
-      // (OpenRouter) even when some models are enabled — the header shows
-      // "N on" so curation stays visible without scrolling past hundreds of rows.
-      map[g.provider] = !q && g.items.length > COLLAPSE_THRESHOLD;
+      // Search stays open. Huge catalogs collapse only when nothing in the
+      // group is enabled, so a pinned OpenRouter model stays reachable.
+      map[g.provider] = !q && g.items.length > COLLAPSE_THRESHOLD && g.items.every((item) => !item.enabled);
     }
     return map;
   }, [groups, q]);

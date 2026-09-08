@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.25.0` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.429, deliberately pre-1.0. Restores expert Swarm Tracker facts on Puppetmaster 1.25 bounded metadata. Pins puppetmaster-ai==1.25.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
+> Status: v0.9.430, deliberately pre-1.0. Restores Swarm Tracker card chrome (Session/Repo/All, All statuses) on Puppetmaster 1.25 bounded metadata. Removes Settings Driver (Model). Pins enabled Models to the top of each provider list. Pins puppetmaster-ai==1.25.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
 
 ## Documentation
 

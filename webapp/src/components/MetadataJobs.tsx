@@ -9,40 +9,43 @@ import MetadataExpertPanels from './MetadataExpertPanels';
 import { navigationMatches, peekPendingSwarmNavigation, queuePendingSwarmNavigation, swarmNavigationTarget, takePendingSwarmNavigation } from '../lib/pendingSwarmOpenJob';
 import type { SwarmNavigationTarget } from '../lib/pendingSwarmOpenJob';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Network, RefreshCw } from 'lucide-react';
 import { selectNativeMetadataControl } from '../lib/jobControl';
 import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
+import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
 import { useSharedJobMetadata, metadataActivity, metadataJobs, currentExpert, currentHeader } from '../lib/jobMetadataContext';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
 
-const button = 'min-h-11 px-2 text-sm text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
+const button = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
+const compactSelect = 'w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-[10px] text-muted focus:outline-none focus:border-accent/60';
 export function MetadataStatus() {
   const { store, state } = useSharedJobMetadata();
   const activity = metadataActivity(state);
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 10000); return () => clearInterval(clock); }, []);
   const times = [...Object.values(state.observedAt), ...(state.local.observedAt === null ? [] : [state.local.observedAt]), ...(state.localActive.observedAt === null ? [] : [state.localActive.observedAt])];
-  const running = metadataJobs(state).filter(job => !job.local_ref && job.read_status !== 'unavailable' && job.status === 'running').length;
   const oldest = times.length ? Math.max(0, Math.floor((now - Math.min(...times)) / 1000)) : null;
-  return <div className="px-2 py-1 text-xs text-muted">
-    {running > 0 && <div className="flex items-center gap-2"><span title={`${running} running`} className="h-2 w-2 rounded-full bg-accent animate-pulse" /><span><MetadataActivityIndicator /> {running} running</span><span>observed PM jobs; coverage incomplete</span></div>}
-    <p role="status">{activity.label}{oldest === null ? '' : ` · Oldest observation ${oldest}s ago`}</p>
+  return <div className="px-2 py-1 text-[10px] text-muted">
     {state.error && <p role="alert">Job updates unavailable ({state.error.replaceAll('_', ' ')}). Retained observations may be stale.</p>}
+    <p role="status" className={activity.count > 0 ? "text-[10px] text-accent" : "sr-only"}>{activity.label}{oldest === null ? '' : ` · Oldest observation ${oldest}s ago`}</p>
     <div className="flex flex-wrap gap-1">
       <button className={button} disabled={state.working} onClick={() => { store.restartTraversal(); void store.readView(); }}>Retry updates</button>
       <button className={button} disabled={state.working} onClick={() => void store.advance()}>Next page</button>
       <button className={button} disabled={state.working || state.view.kind !== 'view'} onClick={() => void store.refreshView()}>Refresh sources</button>
     </div>
-    <details><summary className="cursor-pointer focus-visible:outline">Coverage</summary>
+    <details className="mt-0.5"><summary className="cursor-pointer focus-visible:outline text-faint">Coverage</summary>
       <p>Only observed jobs are shown. Older and undiscovered work may be missing. Native spend is shown only when reported with provenance. Observations do not authorize totals.</p>
       {state.displayLimited && <p>Display window limited to 200 observations, with up to 100 native jobs.</p>}
       <p>Native active: {state.localActive.state} · {state.localActive.missing.join(', ').replaceAll('_', ' ')}</p>
       <p>Native history: {state.local.state} · {state.local.missing.join(', ').replaceAll('_', ' ')}</p>
-      {state.streams.map(s => <p key={metadataStreamKey(s.stream)} className="break-all">{s.stream.store.source} / {s.stream.store.state_id}: {s.state} {s.stream.status ?? 'history'}{state.observedAt[metadataStreamKey(s.stream)] ? ` · ${Math.max(0, Math.floor((now - state.observedAt[metadataStreamKey(s.stream)]) / 1000))}s ago` : ' · not observed'}</p>)}
+      <details><summary className="cursor-pointer focus-visible:outline">Sources</summary>
+        {state.streams.map(s => <p key={metadataStreamKey(s.stream)} className="break-all">{s.stream.store.source} / {s.stream.store.state_id}: {s.state} {s.stream.status ?? 'history'}{state.observedAt[metadataStreamKey(s.stream)] ? ` · ${Math.max(0, Math.floor((now - state.observedAt[metadataStreamKey(s.stream)]) / 1000))}s ago` : ' · not observed'}</p>)}
+      </details>
     </details>
   </div>;
 }
@@ -255,6 +258,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [preferences, setPreferences] = useState(() => readPreferences(preferenceKey));
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
+  const [jobScope, setJobScope] = useState<JobScope>(loadJobScope);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
   const jobs = useMemo(() => metadataJobs(state), [state]);
@@ -280,6 +284,11 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [focusRequest, setFocusRequest] = useState<{ key: string; target: SwarmNavigationTarget } | null>(null);
   const context = state.view.kind === 'idle' ? null : { ...state.view.target, contextEpoch: state.contextEpoch };
   useEffect(() => { try { localStorage.setItem(preferenceKey, JSON.stringify(preferences)); } catch { /* Optional UI preference. */ } }, [preferences, preferenceKey]);
+  useEffect(() => {
+    const sync = () => setJobScope(loadJobScope());
+    window.addEventListener(JOB_SCOPE_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, sync);
+  }, []);
   useEffect(() => {
     const live = new Set(jobs.filter(j => j.read_status !== 'unavailable' && (j.local_ref ? nativeActiveStatuses : pmActiveStatuses).some(status => status === j.status)).map(j => j.metadata_key));
     setPreferences(p => p.dismissed.some(key => live.has(key)) ? { ...p, dismissed: p.dismissed.filter(key => !live.has(key)) } : p);
@@ -333,7 +342,11 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     setFocusRequest(null);
   }, [focusRequest, enabled, visible, jobs, state.contextEpoch, state.view]);
   if (!enabled) return <p className="p-2 text-xs text-muted">Job metadata paused for this view.</p>;
-  const hidden = jobs.filter(j => isFinished(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
+  const activeSessionId = state.view.kind === 'view' ? state.view.context.session_id : '';
+  const scoped = filterJobsByScope(jobs, jobScope, activeSessionId, {
+    includeJobIds: pending?.jobId ? [pending.jobId] : undefined,
+  });
+  const hidden = scoped.filter(j => isFinished(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
   const createdAt = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o.row.created_at]));
   for (const job of jobs) {
     const date = currentHeader(state, job.metadata_key ?? '')?.created_at;
@@ -342,11 +355,9 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const quality = (job: Job) => { const expert = currentExpert(state, job.metadata_key ?? ''); return expert ? expertJobQuality(expert) : currentHeader(state, job.metadata_key ?? '')?.quality ?? 'unverified'; };
   const selectedSummary = state.localDetail?.observation?.summary;
   if (selectedSummary && !createdAt.has(localKey(selectedSummary.local_ref))) createdAt.set(localKey(selectedSummary.local_ref), selectedSummary.created_at);
-  const shown = jobs.filter(j => !hidden.includes(j)).filter(j => {
+  const shown = scoped.filter(j => !hidden.includes(j)).filter(j => {
     switch (filter) {
       case 'all': return true;
-      case 'session': return state.view.kind === 'view' && j.session_id === state.view.context.session_id;
-      case 'repo': return !j.cross_project;
       case 'finished': return isFinished(j);
       case 'attention': return j.status === 'interrupted' || (j.local_ref ? nativeAttentionStatuses : ['failed', 'stalled']).includes(j.status);
       case 'active': return isActive(j);
@@ -374,42 +385,79 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const failedRead = state.error || state.view.kind === 'view' && (state.view.view.availability === 'unavailable'
     || state.streams.some(s => s.state === 'unavailable' || s.state === 'cursor_expired')
     || state.local.state === 'unavailable' || state.local.state === 'expired');
-  return <section aria-label="Jobs" className="h-full overflow-auto text-txt">
-    <h2 className="px-2 text-sm font-medium"><span>Swarm Tracker</span> ({trackerCount} observed)</h2>
+  const anyRunning = shown.some(j => isActive(j));
+  const runningCount = shown.filter(j => isActive(j)).length;
+  const completedCount = shown.filter(j => isFinished(j) && !isNativeActivity(j)).length;
+  return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
+    <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
+      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
+        <span className="relative inline-flex">
+          <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
+          {anyRunning ? <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse" title={`${runningCount} running`} aria-hidden /> : null}
+        </span>
+        <span>Swarm Tracker</span>
+        <span className="text-faint/60 normal-case tracking-normal">({trackerCount} observed)</span>
+        <button type="button" className={button} disabled={state.working} aria-label="Refresh job headers" onClick={() => { void store.refreshHeaders(); void store.refreshView(); }}>
+          <RefreshCw size={11} className={state.working ? "animate-spin" : ""} />
+        </button>
+      </h2>
+      <div className="flex items-center gap-2.5 text-[10px]">
+        {anyRunning && <span className="flex items-center gap-1 text-accent"><Loader2 size={10} className="animate-spin semantic-activity-spinner" /> {runningCount} running</span>}
+        {completedCount > 0 && <span className="flex items-center gap-1 text-good/80"><CheckCircle2 size={10} /> {completedCount}</span>}
+      </div>
+    </div>
     {trackerCount === 0 && state.view.kind === 'view' && !state.working && <p className="px-2 text-xs text-muted">No swarm jobs observed in this view.</p>}
     <MetadataStatus />
     <SessionWorkerUsage />
-    <button className={button} disabled={state.working} onClick={() => void store.refreshHeaders()}>Refresh job headers</button>
     {state.headerError && <p role="status" className="px-2 text-xs text-muted">Job headers could not be refreshed. Retry header refresh; list observations remain available.</p>}
-    <div className="grid grid-cols-2 gap-1 px-2 text-sm">
-      <select aria-label="Filter swarms" className="min-h-11 w-full min-w-0 bg-panel text-txt focus-visible:outline focus-visible:outline-accent" value={filter} onChange={e => setFilter(e.target.value)}>
-        <option value="all">All observed</option><option value="session">This session</option><option value="repo">This repo</option>
-        <option value="active">Active</option><option value="attention">Needs attention</option><option value="finished">Finished</option>
-        <option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="complete">Completed lifecycle</option>
+    <div className="shrink-0 grid grid-cols-2 gap-1.5 px-2 py-1.5 border-b border-[var(--shell-panel-border)] bg-panel2/10">
+      <select aria-label="Filter swarms" className={compactSelect} value={filter} onChange={e => setFilter(e.target.value)}>
+        <option value="all">All statuses</option>
+        <option value="active">Active</option>
+        <option value="attention">Needs attention</option>
+        <option value="finished">Finished</option>
+        <option value="failed">Failed</option>
+        <option value="cancelled">Cancelled</option>
+        <option value="complete">Completed lifecycle</option>
         <option value="untrustworthy">Untrustworthy</option>
       </select>
-      <button className={`${button} w-full min-w-0`} aria-label="Sort swarms" onClick={() => setSort(s => s === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? 'Newest' : 'Oldest'} first</button>
+      <button className={`${button} w-full min-w-0 h-6 rounded border border-edge bg-panel2/40`} aria-label="Sort swarms" onClick={() => setSort(s => s === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? 'Newest' : 'Oldest'} first</button>
+      <div className="col-span-2 flex h-6 overflow-hidden rounded border border-edge">
+        {(["session", "repo", "all"] as const).map((scope) => (
+          <button
+            key={scope}
+            type="button"
+            aria-pressed={jobScope === scope}
+            aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
+            onClick={() => { setJobScope(scope); saveJobScope(scope); }}
+            className={`flex-1 text-[10px] ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
+          >
+            {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
+          </button>
+        ))}
+      </div>
     </div>
-    <p className="px-2 text-xs text-muted">Sorting and filters apply only to observed jobs; history coverage is incomplete. Known creation times are ordered within each lifecycle group; undated jobs remain last.</p>
-    <div className="flex flex-wrap items-center gap-1 px-2 text-sm">
+    <p className="px-2 text-[9px] text-faint">Sorting and filters apply only to observed jobs; history coverage is incomplete. Known creation times are ordered within each lifecycle group; undated jobs remain last.</p>
+    <div className="flex flex-wrap items-center gap-1 px-2 text-[10.5px]">
       <button className={button} onClick={() => setPreferences(p => ({ ...p, dismissed: [...new Set([...p.dismissed, ...groups.filter(g => !collapsedGroups.includes(g.key)).flatMap(g => g.rows).filter(j => isFinished(j) && j.read_status !== 'unavailable').flatMap(j => j.metadata_key ? [j.metadata_key] : [])])].slice(-200) }))}>Hide finished</button>
       {hidden.length > 0 && <button className={button} onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>}
       {filter !== 'all' && <button className={button} onClick={() => setFilter('all')}>Clear filter</button>}
     </div>
-    {filter === 'untrustworthy' && <p role="status" className="px-2 text-sm text-muted">Showing recorded degraded quality. Failed lifecycle is separate from failed verification.</p>}
+    {filter === 'untrustworthy' && <p role="status" className="px-2 text-xs text-muted">Showing recorded degraded quality. Failed lifecycle is separate from failed verification.</p>}
     {filter === 'complete' && <p className="px-2 text-xs text-muted">Completed lifecycle does not establish successful verification.</p>}
     {notice && <p role="status" className="px-2 text-sm text-muted">{notice}</p>}
     <MetadataOutcomeCounts jobs={shown} />
+    <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
     {groups.flatMap(group => group.rows.length === 0 ? [] : [
-      <button key={`group:${group.key}`} className={`${button} w-full text-left font-medium`} aria-expanded={!collapsedGroups.includes(group.key)} onClick={() => setCollapsedGroups(current => current.includes(group.key) ? current.filter(key => key !== group.key) : [...current, group.key])}>{group.label} ({group.rows.length} observed)</button>,
+      <button key={`group:${group.key}`} className={`${button} w-full text-left font-medium uppercase tracking-wider text-faint`} aria-expanded={!collapsedGroups.includes(group.key)} onClick={() => setCollapsedGroups(current => current.includes(group.key) ? current.filter(key => key !== group.key) : [...current, group.key])}>{collapsedGroups.includes(group.key) ? <ChevronRight size={11} className="inline" /> : <ChevronDown size={11} className="inline" />} {group.label} ({group.rows.length} observed)</button>,
       ...group.rows.map(job => {
         const key = job.metadata_key ?? '', open = preferences.expanded.includes(key);
         const expert = currentExpert(state, key), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, key));
         const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isActive(job) && !model;
         // Keep one keyed sibling list so group changes preserve inspector state and focus.
-        return <div className="border-b border-edge" key={key} hidden={collapsedGroups.includes(group.key)} data-job-id={job.id} data-job-source={job.source} data-quality={quality(job)}
+        return <div className="border-b border-edge/40" key={key} hidden={collapsedGroups.includes(group.key)} data-job-id={job.id} data-job-source={job.source} data-quality={quality(job)}
           onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
-          <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`${button} flex items-center w-full text-left`} aria-label={`${job.goal} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>{!job.local_ref && job.read_status !== 'unavailable' && job.status === 'running' && <MetadataActivityIndicator />}<span className="truncate">{job.goal}</span>{model && <span title={`Model: ${model}`} className="min-w-0 truncate"> · {model}</span>}{routing && <span className="shrink-0"> · routing…</span>}{currentHeader(state, key)?.completed_workers !== undefined && <span className="shrink-0"> {currentHeader(state, key)?.completed_workers}/{currentHeader(state, key)?.selected_workers}</span>}<span className="shrink-0"> · {quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span></button>
+          <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`${button} flex items-center gap-1 w-full text-left min-h-0 py-1`} aria-label={`${job.goal} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>{open ? <ChevronDown size={11} className="shrink-0 text-faint" /> : <ChevronRight size={11} className="shrink-0 text-faint" />}{!job.local_ref && job.read_status !== 'unavailable' && job.status === 'running' && <MetadataActivityIndicator />}<span className="truncate font-semibold text-[11px] text-txt">{job.goal}</span>{model && <span title={`Model: ${model}`} className="min-w-0 truncate text-faint"> · {model}</span>}{routing && <span className="shrink-0"> · routing…</span>}{currentHeader(state, key)?.completed_workers !== undefined && <span className="shrink-0"> {currentHeader(state, key)?.completed_workers}/{currentHeader(state, key)?.selected_workers}</span>}<span className="shrink-0"> · {quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span></button>
           {job.read_status === 'unavailable' && <p className="px-2 text-xs text-muted">Retained observation is stale; current lifecycle is unconfirmed.</p>}
           {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
           {isFinished(job) && job.read_status !== 'unavailable' && <button className={button} aria-label={`Dismiss from tracker: ${job.goal}`} onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}>Dismiss</button>}
@@ -417,12 +465,23 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
         </div>;
       }),
     ])}
-    {!shown.length && filter !== 'untrustworthy' && <p className="p-2 text-sm text-muted">{failedRead
+    {!shown.length && filter !== 'untrustworthy' && <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2 text-muted">
+      <Network size={20} className="text-faint/50" />
+      <span className="text-[12px] font-medium">{failedRead
       ? 'Job observations are unavailable. Retry updates; an empty view does not establish no work.'
       : state.view.kind !== 'view' || !jobs.length && state.working
         ? <><span>Loading swarm jobs...</span> Waiting for job metadata; no lifecycle result is known yet.</>
         : hidden.length && filter === 'all' ? 'Observed finished jobs are hidden. Show hidden jobs to restore them.'
           : !jobs.length ? 'No jobs observed in this view. Older or undiscovered work may still exist.'
-            : 'No jobs observed in this filter. Coverage may be incomplete.'}</p>}
+            : 'No jobs observed in this filter. Coverage may be incomplete.'}</span>
+      {!failedRead && state.view.kind === 'view' && !jobs.length && !state.working && (
+        <span className="text-[10.5px] text-faint leading-relaxed">
+          Every dispatched worker lands here -- run_implement, run_parallel,
+          and run_swarm alike -- with its phase, router choice, live workers,
+          and streamed findings. Inline tool calls stay in the chat.
+        </span>
+      )}
+    </div>}
+    </div>
   </section>;
 }

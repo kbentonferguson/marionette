@@ -203,6 +203,7 @@ it.each(['legacy reference', 'cross project', 'foreign session', 'mismatched sel
       ...expertDetail(row.selection, f.context()), selection: { ...row.selection, job_ref: { ...row.selection.job_ref, job_id: 'different' } },
     }));
     render(<f.Provider><SwarmPane /></f.Provider>);
+    if (mode === 'foreign session') fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
     const cancel = await inspectControl('Inspect A');
     expect(cancel).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(cancel);

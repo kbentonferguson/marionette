@@ -1881,7 +1881,7 @@ describe("SwarmPane session scope before a project event", () => {
     if (!active) throw Error('Missing backend active session');
     row.selection.session_id = active.id;
     const metadata = await renderScopePrivacy(row);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter swarms' }), { target: { value: 'session' } });
+    fireEvent.click(screen.getByRole('button', { name: 'This session' }));
     expect(await screen.findByRole('button', { name: /Running before project event.*running/ })).toBeVisible();
     expect(metadata.store.getSnapshot().view).toMatchObject({ context: { session_id: active.id } });
     expect(api.sessions).toHaveBeenCalledWith(undefined);
@@ -1992,6 +1992,7 @@ describe("SwarmPane does not paint unowned CLI captions", () => {
     });
     await act(async () => { await metadata.store.readView(); });
     expect(metadata.store.getSnapshot().view).toMatchObject({ view: { sources: [expect.objectContaining({ cross_project: true })] } });
+    fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
     await expandJob(/Foreign swarm/);
     expect(screen.queryByTitle('/Users/x/other-repo')).toBeNull();
     expect(screen.queryByText('visibility only')).toBeNull();
