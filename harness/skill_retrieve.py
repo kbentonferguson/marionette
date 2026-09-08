@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Retrieve skill bodies by token overlap. Frozen prefix stays catalog-only.
 
-Dest conversation used to concatenate every active/plugin skill body into
+Dev conversation used to concatenate every active/plugin skill body into
 history[0]. That is OAE (bodies present whether the turn needs them) and it
 bloats the prompt-cache prefix. This module is the RAE hatch: the prefix
 lists name + description + slug; bodies are selected per query.

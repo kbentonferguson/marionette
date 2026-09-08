@@ -1,4 +1,4 @@
-"""Windows dest-into-main shards must interleave stably."""
+"""Windows dev-into-main shards must interleave stably."""
 from conftest import parse_pytest_shard, select_pytest_shard
 
 

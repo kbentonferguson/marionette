@@ -32,15 +32,15 @@ Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /
   test drives real Puppetmaster and must stay green with zero API keys.
 - Releases only from green CI: never push a release tag until the `tests`
   workflow is green for this git tree (3.9 floor, 3.11, Windows, frontend-build).
-  If dest-into-main `merge^{tree}` equals the dest PR tree that already passed,
+  If dev-into-main `merge^{tree}` equals the dev PR tree that already passed,
   tag immediately -- do not wait for main to run the same suite again. The
   release workflow must not re-run pytest; it only checks that a successful
   `tests` run exists for the tree, then publishes installers. Local tests
   pass on the dev interpreter only; CI is what proves the 3.9 floor.
 - Never commit keys or `results/*.sqlite`.
 - Git flow: day-to-day work is on `dev`. Feature PRs target `dev`. Ship by
-  merging `dev` into `main` (dest contains `main` first), tagging when the
-  dest-into-main PR `tests` matrix is green and `merge^{tree}` matches, then
+  merging `dev` into `main` (dev contains `main` first), tagging when the
+  dev-into-main PR `tests` matrix is green and `merge^{tree}` matches, then
   pushing `vX.Y.Z` on `main`. Never push product work or `pmedit-*` worker
   branches to `main` / origin scratch.
 

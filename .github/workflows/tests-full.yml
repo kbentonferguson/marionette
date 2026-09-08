@@ -1,6 +1,6 @@
 name: tests-full
 
-# Nightly / manual copy of the old five-cell matrix. Dest-into-main does not
+# Nightly / manual copy of the old five-cell matrix. Dev-into-main does not
 # wait on this. Includes macOS, Python 3.11, both Windows Pythons, and
 # @pytest.mark.resource_soak (the million-token compaction walk).
 

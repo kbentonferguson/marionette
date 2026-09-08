@@ -17,20 +17,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _read(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
 def _package_json_version() -> str:
-    data = json.loads((ROOT / "webapp" / "package.json").read_text())
+    data = json.loads(_read("webapp/package.json"))
     return data["version"]
 
 
 def _pyproject_version() -> str:
-    text = (ROOT / "pyproject.toml").read_text()
+    text = _read("pyproject.toml")
     match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
     assert match, "no `version = \"...\"` found in pyproject.toml"
     return match.group(1)
 
 
 def _init_version() -> str:
-    text = (ROOT / "harness" / "__init__.py").read_text()
+    text = _read("harness/__init__.py")
     match = re.search(r'(?m)^__version__\s*=\s*"([^"]+)"', text)
     assert match, "no `__version__ = \"...\"` found in harness/__init__.py"
     return match.group(1)
@@ -59,7 +63,7 @@ def test_pyproject_declares_pinned_puppetmaster_runtime_dependency():
     Desktop/Electron also re-checks the pin, but a fresh isolated Python install
     must not succeed while leaving ``import puppetmaster`` broken.
     """
-    text = (ROOT / "pyproject.toml").read_text()
+    text = _read("pyproject.toml")
     match = re.search(
         r'(?ms)^dependencies\s*=\s*\[(.*?)\]',
         text,
@@ -77,7 +81,7 @@ def test_pyproject_declares_pinned_puppetmaster_runtime_dependency():
 def test_puppetmaster_install_and_packaging_pins_match():
     expected = re.search(
         r'"(puppetmaster-ai==\d+\.\d+\.\d+)"',
-        (ROOT / "pyproject.toml").read_text(),
+        _read("pyproject.toml"),
     ).group(1)
     paths = (
         "scripts/install.sh", "scripts/install.ps1",
@@ -88,6 +92,6 @@ def test_puppetmaster_install_and_packaging_pins_match():
         ".github/workflows/release.yml", "README.md", "CONTRIBUTING.md",
     )
     for path in paths:
-        pins = re.findall(r"puppetmaster-ai==\d+\.\d+\.\d+", (ROOT / path).read_text())
+        pins = re.findall(r"puppetmaster-ai==\d+\.\d+\.\d+", _read(path))
         assert pins, f"{path} has no Puppetmaster pin"
         assert set(pins) == {expected}, f"{path}: {pins} differs from {expected}"

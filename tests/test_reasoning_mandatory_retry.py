@@ -1,4 +1,4 @@
-"""One-shot reasoning-mandatory 400 retry (dest send loop, not Hermes)."""
+"""One-shot reasoning-mandatory 400 retry (dev send loop, not Hermes)."""
 
 from __future__ import annotations
 

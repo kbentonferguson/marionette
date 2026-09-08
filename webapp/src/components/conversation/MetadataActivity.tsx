@@ -2,12 +2,12 @@ import { nativeActiveStatuses } from '../../lib/localJobMetadata';
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Job } from '../../lib/api';
-import { isJobsListRow, useSharedJobMetadata } from '../../lib/jobMetadataContext';
+import { useSharedJobMetadata } from '../../lib/jobMetadataContext';
 import { MetadataInspection } from '../MetadataJobs';
 
 export default function MetadataActivity({ jobs }: { jobs: readonly Job[] }) {
   const { state } = useSharedJobMetadata();
-  return <ActivitySelection key={state.contextEpoch} jobs={jobs.filter(isJobsListRow)} />;
+  return <ActivitySelection key={state.contextEpoch} jobs={jobs} />;
 }
 function ActivitySelection({ jobs }: { jobs: readonly Job[] }) {
   const { store } = useSharedJobMetadata();
