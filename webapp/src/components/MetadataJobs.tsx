@@ -426,6 +426,13 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   };
   const jobList: ReactNode[] = [];
   for (const job of [...activeRows, ...finishedRows]) {
+    if (job === activeRows[0]) {
+      jobList.push(<div key="active-head" className="flex items-center px-1 pt-0.5">
+        <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+          Active <span className="text-faint/60 normal-case tracking-normal">({activeRows.length})</span>
+        </span>
+      </div>);
+    }
     if (job === finishedRows[0]) {
       jobList.push(<div key="finished-head" className="swarm-finished-head flex items-center justify-between px-1 pt-0.5">
         <button type="button" aria-expanded={finishedOpen} onClick={() => setFinishedOpen(open => !open)} className="flex items-center gap-1 min-w-0 text-[10px] uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none">

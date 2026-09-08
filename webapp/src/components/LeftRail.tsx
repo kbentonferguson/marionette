@@ -2091,7 +2091,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
         )}
-        {!sessionJobsCollapsed && (browseMetadataSupported ? <MetadataStatus /> : <p role="status" className="p-2 text-xs text-muted">Job metadata is available for the active workspace only. This project remains selected for browsing.</p>)}
+        {!sessionJobsCollapsed && (browseMetadataSupported ? <MetadataStatus hidden /> : <p role="status" className="p-2 text-xs text-muted">Job metadata is available for the active workspace only. This project remains selected for browsing.</p>)}
         <div
           data-slot="left-rail-jobs-header"
           className={`shrink-0 min-w-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}

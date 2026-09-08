@@ -260,4 +260,24 @@ describe("ModelsSettingsPage cached first paint", () => {
     const labels = screen.getAllByText(/^(On A|On B|Off A|Off C)$/).map((node) => node.textContent);
     expect(labels).toEqual(["On A", "On B", "Off A", "Off C"]);
   });
+
+  it("keeps a closed provider group closed after Settings remounts", async () => {
+    mockModelCatalog.mockResolvedValue({
+      catalog: sampleCatalog,
+      all: sampleCatalog,
+      enabled: sampleCatalog,
+    });
+    const first = render(<ModelsSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Anthropic/ }));
+    expect(screen.queryByText("claude-sonnet")).toBeNull();
+    first.unmount();
+    render(<ModelsSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Anthropic/ })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("claude-sonnet")).toBeNull();
+  });
 });

@@ -1121,8 +1121,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("safety", "device access read only grants enrollment revoke sessions") && <DeviceAccess />}
-
         {gate("safety", "browser chrome cookies real profile login") && settings && (
         <div className="space-y-1.5">
           <button
@@ -1279,6 +1277,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("safety", "device access read only grants enrollment revoke sessions") && (
+          <SettingsCollapse
+            id="device-access"
+            title="Device access"
+            defaultOpen={false}
+            className="space-y-2 border-t border-edge pt-3"
+          >
+            <DeviceAccess />
+          </SettingsCollapse>
+        )}
         {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
         {/* Per-provider key management: connect/disconnect each provider independently */}
         <SettingsCollapse

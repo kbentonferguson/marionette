@@ -54,6 +54,9 @@ describe("LeftRail branch layout", () => {
     expect(upperSections?.className.split(" ")).not.toContain("flex-1");
     expect(jobsPanel).toHaveClass("mt-auto");
     expect(jobScopes).toHaveClass("grid", "grid-cols-3");
+    expect(screen.queryByRole("button", { name: "Retry updates" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh sources" })).toBeNull();
+    expect(screen.queryByText("Coverage")).toBeNull();
   });
 });
 

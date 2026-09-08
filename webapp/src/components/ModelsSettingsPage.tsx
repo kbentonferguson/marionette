@@ -4,6 +4,7 @@ import { api, type ModelCatalogEntry } from "../lib/api";
 
 const COLLAPSE_THRESHOLD = 12;
 const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
+const COLLAPSED_PROVIDERS_KEY = "pmharness.models.collapsedProviders";
 let memoryCatalogSnapshot: ModelCatalogEntry[] | null = null;
 let didForceRefreshThisSession = false;
 
@@ -15,11 +16,35 @@ export function orderModelsEnabledFirst(items: ModelCatalogEntry[]): ModelCatalo
     || a.model.localeCompare(b.model));
 }
 
+function loadCollapsedProviders(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_PROVIDERS_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return Object.fromEntries(
+        Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+      );
+    }
+  } catch {
+    /* stale/corrupt collapse map is disposable */
+  }
+  return {};
+}
+
+function persistCollapsedProviders(map: Record<string, boolean>) {
+  try {
+    localStorage.setItem(COLLAPSED_PROVIDERS_KEY, JSON.stringify(map));
+  } catch {
+    /* storage pressure must not break Settings */
+  }
+}
+
 export function clearCatalogSnapshot() {
   memoryCatalogSnapshot = null;
   didForceRefreshThisSession = false;
   try {
     localStorage.removeItem(CATALOG_SNAPSHOT_KEY);
+    localStorage.removeItem(COLLAPSED_PROVIDERS_KEY);
   } catch {
     /* ignore */
   }
@@ -64,7 +89,7 @@ export default function ModelsSettingsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   // Explicit user toggles win; otherwise large catalogs (OpenRouter) start
   // collapsed so Anthropic/OpenAI/xAI are reachable without endless scroll.
-  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
+  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>(loadCollapsedProviders);
 
   const load = async (opts?: { refresh?: boolean }) => {
     const hadSnapshot = readCatalogSnapshot().length > 0;
@@ -159,10 +184,14 @@ export default function ModelsSettingsPage() {
       : !!defaultCollapsed[provider];
 
   const toggleGroup = (provider: string) => {
-    setCollapsedProviders((prev) => ({
-      ...prev,
-      [provider]: !isCollapsed(provider),
-    }));
+    setCollapsedProviders((prev) => {
+      const next = {
+        ...prev,
+        [provider]: !isCollapsed(provider),
+      };
+      persistCollapsedProviders(next);
+      return next;
+    });
   };
 
   return (

@@ -110,8 +110,7 @@ export default function DeviceAccess() {
     } catch { if (connection.current === client) setCopyStatus('Copy unavailable. Use Show credential and copy it manually.'); }
   }
   const enabled = endpoint?.supported === true;
-  return <section aria-label="Device access" className="space-y-3 border-t border-edge pt-3 text-sm text-muted">
-    <h3 className="font-semibold text-txt">Device access</h3>
+  return <section aria-label="Device access" className="space-y-3 text-sm text-muted">
     <p>Give a device read-only access to explicitly selected information on this endpoint. This does not allow commands, files, or live remote execution.</p>
     {busy && <p role="status">Loading device access…</p>}
     {error && <p role="alert">{error}</p>}

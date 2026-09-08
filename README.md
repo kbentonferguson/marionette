@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.26.0` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.431, deliberately pre-1.0. Restores Swarm Tracker hairline cards (Finished fold, All statuses + Newest/Oldest, Session/Repo/All) on Puppetmaster 1.26 bounded metadata. Coverage and paging stay off the primary surface. Pins puppetmaster-ai==1.26.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
+> Status: v0.9.431, deliberately pre-1.0. Restores Swarm Tracker and left-rail Jobs chrome (Active/Finished, Session/Repo/All) on Puppetmaster 1.26 bounded metadata. Operator Retry/Coverage controls stay off the primary surface. Settings keeps closed API-key and model groups closed. Device access is one Safety collapse at the bottom. Pins puppetmaster-ai==1.26.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
 
 ## Documentation
 
