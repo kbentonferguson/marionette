@@ -10,7 +10,7 @@ import { clearSWRCache, readSWRCache } from "../lib/useStaleWhileRevalidate";
 import { JobMetadataContext, JobMetadataOwner, useSharedJobMetadata } from "../lib/jobMetadataContext";
 import { JobMetadataStore } from "../lib/useJobMetadata";
 import { CombinedMetadataFixture } from "./metadataMigration.fixtures";
-import { context } from "./jobMetadata.fixtures";
+import { context, summary } from "./jobMetadata.fixtures";
 import { resetSettingsOverlay, setSettingsOverlayOpen } from "../lib/settingsOverlay";
 
 vi.mock("../lib/api", () => ({
@@ -129,6 +129,41 @@ describe("RightPane collapse placement", () => {
   it("paints the floating pill with the left-rail panel glass", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
     expect(screen.getByTestId("floating-dock-pill")).toHaveClass("shell-inset-glass");
+  });
+
+  it("omits the idle swarm-tracker holder and only paints a live dot", () => {
+    render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
+    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    expect(within(swarm).queryByLabelText(/Job activity unknown/)).toBeNull();
+    expect(within(swarm).queryByTestId("swarm-tracker-live-dot")).toBeNull();
+  });
+
+  it("paints the swarm-tracker live dot only while jobs are active", () => {
+    const store = new JobMetadataStore();
+    const snapshot = store.getSnapshot();
+    vi.spyOn(store, "getSnapshot").mockReturnValue({
+      ...snapshot,
+      observations: [{ row: summary(), freshness: "observed" }],
+    });
+    render(
+      <JobMetadataContext.Provider value={store}>
+        <RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />
+      </JobMetadataContext.Provider>,
+    );
+    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    const live = within(swarm).getByTestId("swarm-tracker-live-dot");
+    expect(live).toHaveClass("right-pane-live");
+    expect(live).toHaveAttribute("aria-label", "At least 1 active jobs; coverage incomplete");
+    store.dispose();
+    vi.restoreAllMocks();
+  });
+
+  it("omits the idle holder on an open Swarm card header", () => {
+    seedBoardTabOrder(["swarm"]);
+    render(<RightPane {...baseProps} />);
+    const card = screen.getByRole("region", { name: "Swarm panel" });
+    expect(within(card).queryByLabelText(/Job activity unknown/)).toBeNull();
+    expect(within(card).queryByTestId("swarm-tab-live-dot")).toBeNull();
   });
 
   it("keeps the Add panel menu on the opaque overlay token, not glass-mixed --shell-panel", () => {

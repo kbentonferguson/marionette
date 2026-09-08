@@ -4,6 +4,7 @@ from harness.pilot import from_wire
 from harness.send_loop_phases import LOCAL_ACTION_KINDS
 from harness.todo import (
     apply_successful_landing,
+    apply_successful_verification,
     apply_todo_op,
     export_todo_markdown,
     format_todo_tree,
@@ -16,6 +17,7 @@ from harness.todo import (
     phases_to_markdown,
     SessionTodoStore,
     should_fold_todo_landing,
+    should_fold_todo_verification,
     todo_matches_any_description,
 )
 
@@ -339,6 +341,94 @@ def test_successful_landing_completes_matching_wave_item():
     assert hit == fresh[0].tasks[0].content
     assert done[0].tasks[0].status == "completed"
     assert done[0].tasks[1].status != "completed"
+
+
+def _session_8cc8_waves():
+    phases, _, _ = _apply([], op="init", list=[
+        {"phase": "Wave 1 — Station & Stadium Operations", "items": [
+            "Add stadium/station schema (SQLite & Postgres) + migration and station service logic",
+            "Implement station management server actions and UI controls (station list, queue dispatch, match call)",
+            "Validate Wave 1 with typecheck, lint, unit/integration tests, and build",
+        ]},
+        {"phase": "Wave 2 — Live Spectator & Display Surfaces", "items": [
+            "Implement dedicated live spectator TV / Kiosk display and stream overlay routes (/tournaments/[slug]/live and /overlay)",
+            "Validate Wave 2 with typecheck, lint, and build",
+        ]},
+        {"phase": "Wave 3 — Deck Legality & Ruleset Engine", "items": [
+            "Implement versioned ruleset validator for part legality (BX vs CX, banlists, duplicate parts check)",
+            "Validate Wave 3 with domain unit tests, typecheck, lint, and build",
+        ]},
+    ])
+    phases[0].tasks[0].status = "completed"
+    phases[0].tasks[1].status = "completed"
+    phases[0].tasks[2].status = "in_progress"
+    phases[2].tasks[0].status = "completed"
+    return phases
+
+
+def test_should_fold_todo_verification_requires_ok_verify_command():
+    assert should_fold_todo_verification("npm test", 0, "ok")
+    assert should_fold_todo_verification("npm run typecheck && npm run lint", 0, "ok")
+    assert should_fold_todo_verification("npx tsc --noEmit", 0, "success")
+    assert should_fold_todo_verification("node scripts/tests/run.mjs unit", 0, "ok")
+    assert should_fold_todo_verification("git status -s && npm test", 0, "ok")
+    assert not should_fold_todo_verification("npm test", 1, "ok")
+    assert not should_fold_todo_verification("npm test", 0, "error")
+    assert not should_fold_todo_verification("git status", 0, "ok")
+    assert not should_fold_todo_verification("echo test", 0, "ok")
+    assert not should_fold_todo_verification(
+        "git commit -am 'complete wave 2 adjudication'", 0, "ok",
+    )
+
+
+def test_successful_verification_completes_in_progress_validate_only():
+    phases = _session_8cc8_waves()
+    nxt, hit = apply_successful_verification(phases, ["npm test"])
+    assert hit == phases[0].tasks[2].content
+    assert nxt[0].tasks[2].status == "completed"
+    assert nxt[1].tasks[0].status == "in_progress"
+    assert nxt[1].tasks[1].status == "pending"
+    assert nxt[2].tasks[1].status == "pending"
+
+    same, missed = apply_successful_verification(phases, ["git status"])
+    assert missed is None
+    assert same[0].tasks[2].status == "in_progress"
+
+
+def test_mixin_verification_persists_validate_gate(tmp_path):
+    from types import SimpleNamespace
+
+    from harness.pilot import PilotAction
+    from harness.tool_dispatch import ToolDispatchMixin
+
+    host = SimpleNamespace(
+        config=SimpleNamespace(state_dir=str(tmp_path), repo=str(tmp_path)),
+        state_dir=str(tmp_path),
+        harness_session_id="8cc8a1c2281d",
+        _todo_store=None,
+        _todo_phases=None,
+    )
+    host._todo_session_id = ToolDispatchMixin._todo_session_id.__get__(host)
+    host._get_todo_store = ToolDispatchMixin._get_todo_store.__get__(host)
+    host._do_todo = ToolDispatchMixin._do_todo.__get__(host)
+    host.apply_todo_verification = ToolDispatchMixin.apply_todo_verification.__get__(host)
+    ok, status, _val = host._do_todo(PilotAction(kind="todo", arguments={
+        "op": "init",
+        "list": [
+            {"phase": "Wave 1 — Station & Stadium Operations", "items": [
+                "Add stadium/station schema (SQLite & Postgres) + migration and station service logic",
+                "Validate Wave 1 with typecheck, lint, unit/integration tests, and build",
+            ]},
+        ],
+    }))
+    assert ok and status == "success"
+    host._todo_phases[0].tasks[0].status = "completed"
+    host._todo_phases[0].tasks[1].status = "in_progress"
+    snap = host.apply_todo_verification("npm test", 0, "ok")
+    assert snap and snap["op"] == "done"
+    assert snap["phases"][0]["tasks"][1]["status"] == "completed"
+    stored = SessionTodoStore(str(tmp_path)).load("8cc8a1c2281d")
+    assert stored[0].tasks[1].status == "completed"
 
 
 def test_mixin_slash_persists(tmp_path):
