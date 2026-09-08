@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isJobsListRow } from "../lib/jobMetadataContext";
-import { isSwarmTrackerJob, isSwarmTrackerListRow } from "../lib/jobClassification";
+import { isSwarmTrackerJob } from "../lib/jobClassification";
 
 describe("Jobs list and Swarm Tracker row filters", () => {
   it("hides command rows from the Jobs panel", () => {
@@ -16,7 +16,5 @@ describe("Jobs list and Swarm Tracker row filters", () => {
     expect(isSwarmTrackerJob({ job_kind: "parallel_wave", id: "local-wave-1" })).toBe(false);
     expect(isSwarmTrackerJob({ job_kind: "run_swarm", id: "job_abc" })).toBe(true);
     expect(isSwarmTrackerJob({ job_kind: "provider", id: "local-cedfbf8c", adapter: "agentic" })).toBe(true);
-    expect(isSwarmTrackerListRow({ job_kind: "provider", id: "local-cedfbf8c", adapter: "agentic" })).toBe(false);
-    expect(isSwarmTrackerListRow({ job_kind: "run_implement", id: "local-impl-1" })).toBe(true);
   });
 });

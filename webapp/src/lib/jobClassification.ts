@@ -84,12 +84,6 @@ export function isSwarmTrackerJob(job: CommandJobSignals): boolean {
   return true;
 }
 
-/** Accordion rows. Leaf provider workers stay nested under the hire, not listed. */
-export function isSwarmTrackerListRow(job: CommandJobSignals): boolean {
-  if (norm(job.job_kind) === "provider") return false;
-  return isSwarmTrackerJob(job);
-}
-
 /** Alias used by SwarmPane / composer stack. */
 export const isTrackerJob = isSwarmTrackerJob;
 

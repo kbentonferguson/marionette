@@ -134,7 +134,12 @@ export class JobMetadataStore {
     this.rememberSessionPage();
     this.stopTicks();
     const nextTarget = validateMetadataTarget(target);
-    const page = this.restoreSessionPage(nextTarget);
+    const previous = this.state.view;
+    const sameIds = previous.kind !== 'idle'
+      && previous.target.repo === nextTarget.repo
+      && previous.target.session_id === nextTarget.session_id;
+    // Same-target reopen is a blank incarnation. Restore only a different visited session.
+    const page = sameIds ? undefined : this.restoreSessionPage(nextTarget);
     this.publish({
       ...blank(this.state.epoch + 1, { kind: 'target', target: nextTarget, reason: 'not_opened' }),
       contextEpoch: this.state.contextEpoch + 1,
@@ -202,7 +207,12 @@ export class JobMetadataStore {
     const previous = this.state.view;
     const same = previous.kind === 'view' && sameMetadataContext(previous.context, context)
       && previous.view.local?.incarnation === view.local?.incarnation;
-    const keep = !same && (this.state.observations.length || this.state.local.observations.length)
+    const sameSession = previous.kind !== 'idle'
+      && previous.target.repo === target.repo
+      && previous.target.session_id === target.session_id;
+    const sameIncarnation = previous.kind !== 'view'
+      || previous.view.local?.incarnation === view.local?.incarnation;
+    const keep = !same && sameSession && sameIncarnation && (this.state.observations.length || this.state.local.observations.length)
       ? {
         observations: this.state.observations,
         local: this.state.local,

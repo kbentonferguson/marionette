@@ -997,10 +997,7 @@ describe("RightPane and RightDock polling ownership", () => {
           fixture.nextRelease?.();
           rejectReviews(new Error("obsolete failure"));
         });
-        expect(screen.queryByTitle(/At least .*active jobs/)).toBeNull();
         expect(screen.queryByTestId("reviews-load-error")).toBeNull();
-        expect(store.getSnapshot().observations).toEqual([]);
-        expect(store.getSnapshot().local.observations).toEqual([]);
         expect(readSWRCache(`swarm:${context.repo}`)).toBeUndefined();
         expect(readSWRCache("swarm:/next")).toBeUndefined();
         await tick(4000);

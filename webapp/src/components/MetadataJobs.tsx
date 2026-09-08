@@ -17,7 +17,7 @@ import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
 import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
-import { isSwarmTrackerListRow } from '../lib/jobClassification';
+import { isSwarmTrackerJob } from '../lib/jobClassification';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
@@ -140,6 +140,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const initialNativeRead = useRef(false);
   useEffect(() => {
     if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working || state.view.kind !== 'view') return;
+    if (local.incarnation !== state.view.view.local?.incarnation) return;
     initialNativeRead.current = true;
     store.selectLocal(local, 'tasks');
     void store.readLocalDetail();
@@ -335,7 +336,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [finishedOpen, setFinishedOpen] = useState(true);
   const [inspected, setInspected] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
-  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerListRow), [state]);
+  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);

@@ -43,6 +43,14 @@ it('readView after hop-back keeps the restored observation page', async () => {
   expect(store.getSnapshot().view.kind).toBe('view');
   expect(metadataJobs(store.getSnapshot()).map(job => job.id)).toEqual(first.map(o => o.row.selection.job_ref.job_id));
 });
+it('same-target setTarget is a blank incarnation, not a self-restore', async () => {
+  await open();
+  await store.advance();
+  expect(store.getSnapshot().observations.length).toBeGreaterThan(0);
+  store.setTarget(context);
+  expect(store.getSnapshot().observations).toEqual([]);
+  expect(store.getSnapshot().startupStopped).toBe(false);
+});
 it('hop-back ownerTick opens the view without restarting startup pages', async () => {
   await open();
   await store.advance();
