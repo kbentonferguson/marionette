@@ -81,9 +81,10 @@ it('drops dismissal on observed live reappearance so later completion stays visi
 it('hides finished only within the shown session filter', async () => {
   pm.push({ ...summary(2), lifecycle: 'failed', ownership: { ...summary(2).ownership, session_id: 'other' } });
   await start(); mount();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'session' } });
+  fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
+  fireEvent.click(screen.getByRole('button', { name: 'This session' }));
   fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } });
+  fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
   expect(row('job_2').getByRole('button', { name: /failed/ })).toBeVisible();
   expect(preference().dismissed).toEqual([metadataSelectionKey(selection())]);
 });
@@ -179,7 +180,7 @@ it('renders accounting ownership separately from exclusion without asserting tot
   expect(screen.queryByText(/Not included in totals/)).toBeNull();
 });
 
-it.each(['repo', 'attention', 'active'])('keeps Hide finished within the %s filter', async filter => {
+it.each(['attention', 'active'])('keeps Hide finished within the %s filter', async filter => {
   pm = [{ ...summary(), lifecycle: 'failed' }, { ...summary(2), lifecycle: 'complete', selection: { ...selection(2), source: 'cli', job_ref: { job_id: 'job_2', state_id: 'store-B' } } }];
   await start();
   pinned = [pm[1]]; store.setPendingSelections(pinned.map(r => r.selection), []); await store.refreshPins();
@@ -189,6 +190,17 @@ it.each(['repo', 'attention', 'active'])('keeps Hide finished within the %s filt
   fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } });
   expect(row('job_2', 'cli').getByRole('button', { name: /^PM CLI job/ })).toBeVisible();
   expect(preference().dismissed).toHaveLength(filter === 'active' ? 0 : 1);
+});
+it('keeps Hide finished within the repo filter', async () => {
+  pm = [{ ...summary(), lifecycle: 'failed' }, { ...summary(2), lifecycle: 'complete', selection: { ...selection(2), source: 'cli', job_ref: { job_id: 'job_2', state_id: 'store-B' } } }];
+  await start();
+  pinned = [pm[1]]; store.setPendingSelections(pinned.map(r => r.selection), []); await store.refreshPins();
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: 'This repo' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));
+  fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
+  expect(row('job_2', 'cli').getByRole('button', { name: /^PM CLI job/ })).toBeVisible();
+  expect(preference().dismissed).toHaveLength(1);
 });
 it.each(['session', 'repo'])('isolates persisted preferences after a %s switch and restores the original scope', async scope => {
   native = [{ ...nativeSummary(1), lifecycle: 'completed' }];

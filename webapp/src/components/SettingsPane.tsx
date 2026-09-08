@@ -1043,30 +1043,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("general", "transparent background glass vibrancy acrylic mica frost window") && (
           <WindowGlassSettings />
         )}
-        {gate("general", "driver model select") && settings && (<>
-        {/* Driver Select */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Driver (Model)
-          </label>
-          <select
-            value={settings.driver}
-            onChange={(e) => update({ driver: e.target.value })}
-            disabled={saving}
-            className="w-full bg-panel2 border border-edge rounded px-2.5 py-1.5 text-txt focus:outline-none focus:border-accent disabled:opacity-50"
-          >
-            {settings.models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-          <p className="text-[10px] text-muted">
-            The pilot model driver. Changes take effect live on the chat session.
-          </p>
-        </div>
-
-        </>)}
         {gate("general", "budget steps per run") && settings && (<>
         {/* Budget Stepper / Number */}
         <div className="space-y-1.5">
@@ -1622,10 +1598,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 </span>
               </div>
               <p className="text-[10px] text-muted mt-1 leading-normal">
-                Optional. Burns Cursor plan credits via the local Agent CLI when the
-                `agent` binary is on PATH. Sign in here, or set CURSOR_API_KEY — the
-                Agent CLI accepts either. Not required if you already have a Full stack
-                chat key (OpenRouter, Anthropic, …).
+                Optional Cursor plan via Agent CLI or CURSOR_API_KEY. Skip if a Full stack chat key is already set.
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
                 <button
