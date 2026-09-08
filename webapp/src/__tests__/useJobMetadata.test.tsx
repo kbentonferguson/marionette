@@ -90,14 +90,20 @@ it('scheduler skips overlap, and expired streams never hot-spin', async () => {
   await vi.advanceTimersByTimeAsync(100000);
   expect(request.mock.calls.length - before).toBeGreaterThanOrEqual(6);
   expect(request.mock.calls.length - before).toBeLessThanOrEqual(35);
-  expect(store.getSnapshot().streams.map(s => s.state)).toEqual(Array(7).fill('cursor_expired'));
+  const idleStates = store.getSnapshot().streams.map(s => s.state);
+  expect(idleStates.filter(state => state === 'cursor_expired')).toHaveLength(6);
+  expect(idleStates.filter(state => state === 'ready')).toHaveLength(1);
   const afterBackoff = request.mock.calls.length;
   for (let i = 0; i < 20; i++) await store.advance();
-  expect(request).toHaveBeenCalledTimes(afterBackoff);
+  expect(request.mock.calls.length).toBeGreaterThan(afterBackoff);
+  const afterHistory = request.mock.calls.length;
+  for (let i = 0; i < 20; i++) await store.advance();
+  expect(request).toHaveBeenCalledTimes(afterHistory);
   store.restartTraversal();
   request.mockResolvedValue(response(list()));
   await vi.advanceTimersByTimeAsync(1000);
-  expect(request).toHaveBeenCalledTimes(afterBackoff + 1);
+  expect(request.mock.calls.length).toBeGreaterThan(afterHistory);
+  expect(request.mock.calls.length).toBeLessThanOrEqual(afterHistory + 2);
 });
 it('serialized refresh uses returned generation and never sends old-generation follow-up', async () => {
   await open();

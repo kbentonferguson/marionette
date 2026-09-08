@@ -214,11 +214,13 @@ export class JobMetadataStore {
         refresh: error === 'refresh_in_progress' ? 'idle' : 'ambiguous' } });
     });
   }
-  /** One bounded page per turn; native active expiry restarts at its next reserved slot. */
-  advance(initial = false): Promise<MetadataActionResult> {
+  /** One bounded page per turn; native active expiry restarts at its next reserved slot.
+   * liveOnly is the idle owner cadence: refresh known live work, do not page more history. */
+  advance(initial = false, opts?: { liveOnly?: boolean }): Promise<MetadataActionResult> {
     const view = this.state.view;
     if (view.kind !== 'view' || view.refresh !== 'idle' || view.view.refreshing) return Promise.resolve('skipped');
     if (this.inFlight) return Promise.resolve('skipped');
+    const liveOnly = Boolean(opts?.liveOnly);
     const turn = this.state.advanceNumber;
     const nativeEligible = view.view.local?.available && !['expired', 'unavailable'].includes(this.state.local.state);
     const activeAvailable = view.view.local?.available && view.view.local.lanes?.includes('active');
@@ -229,7 +231,7 @@ export class JobMetadataStore {
     if (!initial && turn % 16 === 10 && this.headerBatch().length) return this.refreshHeaders(true);
     if (!initial && turn % 16 === 6 && this.state.pins.length) return this.refreshPins(true);
     if (!initial && slot === 7 && this.state.followedLocal.length) return this.advanceFollowedLocal();
-    if (!initial && slot === 2 && nativeEligible) return this.advanceLocal('history');
+    if (!initial && !liveOnly && slot === 2 && nativeEligible) return this.advanceLocal('history');
     const count = this.state.streams.length;
     const primary = new Set(view.view.sources.filter(source => !source.cross_project).map(source => source.state_id));
     const eligibleIndex = (lane: 'active' | 'history' | 'sibling'): number | null => {
@@ -242,12 +244,21 @@ export class JobMetadataStore {
       }
       return null;
     };
-    const preferred = slot === 1 || slot === 5 ? 'active' : slot === 3 || slot === 7 ? 'sibling' : 'history';
-    const initialIndex = this.state.streams.findIndex(s => primary.has(s.stream.store.state_id) && s.stream.status !== null && !s.initialized);
+    const preferred = liveOnly || slot === 1 || slot === 5 ? 'active' : slot === 3 || slot === 7 ? 'sibling' : 'history';
+    const initialActive = this.state.streams.findIndex(s => primary.has(s.stream.store.state_id) && s.stream.status !== null && !s.initialized);
+    const initialHistory = this.state.streams.findIndex(s => primary.has(s.stream.store.state_id) && s.stream.status === null && !s.initialized);
+    const initialIndex = initialActive >= 0 ? initialActive : initialHistory;
     const index = initial ? (initialIndex < 0 ? null : initialIndex)
-      : eligibleIndex(preferred) ?? eligibleIndex('active') ?? eligibleIndex('history') ?? eligibleIndex('sibling');
+      : liveOnly
+        ? eligibleIndex('active')
+        : eligibleIndex(preferred) ?? eligibleIndex('active') ?? eligibleIndex('history') ?? eligibleIndex('sibling');
     if (index === null && initial) return Promise.resolve('skipped');
-    if (index === null) return activeAvailable ? this.advanceLocal('active') : nativeEligible ? this.advanceLocal('history') : Promise.resolve('skipped');
+    if (index === null) {
+      if (activeAvailable) return this.advanceLocal('active');
+      if (!liveOnly && nativeEligible) return this.advanceLocal('history');
+      if (liveOnly) this.publish({ ...this.state, advanceNumber: this.state.advanceNumber + 1 });
+      return Promise.resolve('skipped');
+    }
     const selectedStream = this.state.streams[index];
     const stream = selectedStream.state === 'cursor_expired' ? initialMetadataStream(selectedStream.stream) : selectedStream;
     const foreground = primary.has(stream.stream.store.state_id);
@@ -339,17 +350,18 @@ export class JobMetadataStore {
     if (view.view.refreshing || view.refresh !== 'idle') return false;
     if (view.view.missing.includes('sources_not_refreshed') && this.sourceCapture?.key !== this.captureKey(view.view)) return true;
     const primary = new Set(view.view.sources.filter(s => !s.cross_project).map(s => s.state_id));
-    return this.state.streams.some(s => primary.has(s.stream.store.state_id) && s.stream.status !== null && !s.initialized);
+    return this.state.streams.some(s => primary.has(s.stream.store.state_id) && !s.initialized);
   }
-  /** Owner-only startup: one page per known active stream, never continuation pages.
-   * Two primary sources x six statuses + native active + view/capture <= 15 turns.
+  /** Owner-only startup: one page per known primary stream, never continuation pages.
+   * Two primary sources x six statuses + two histories + native active + view/capture <= 18 turns.
    * Admissions are serial; skipped/failed work never queues a continuation.
    */
   async ownerTick(): Promise<void> {
     const generation = this.scheduleGeneration, epoch = this.state.epoch;
-    for (let remaining = 15; remaining > 0; remaining--) {
+    for (let remaining = 18; remaining > 0; remaining--) {
       if (this.disposed || document.hidden || generation !== this.scheduleGeneration || epoch !== this.state.epoch) return;
-      const result = await this.tick(this.hasInitialWork());
+      const startup = this.hasInitialWork();
+      const result = await this.tick(startup, { liveOnly: !startup });
       if (generation !== this.scheduleGeneration || epoch !== this.state.epoch || this.disposed) return;
       if (result === 'failed' || this.state.streams.some(s => s.initialized && (s.state === 'cursor_expired' || s.state === 'unavailable'))
         || (this.state.localActive.initialized && ['expired', 'unavailable'].includes(this.state.localActive.state))) {
@@ -359,7 +371,7 @@ export class JobMetadataStore {
       if (result !== 'applied' || !this.hasInitialWork()) return;
     }
   }
-  tick(initial = false): Promise<MetadataActionResult> {
+  tick(initial = false, opts?: { liveOnly?: boolean }): Promise<MetadataActionResult> {
     if (document.hidden) return Promise.resolve('skipped');
     const view = this.state.view;
     if (view.kind === 'target') return this.readView(true);
@@ -369,12 +381,12 @@ export class JobMetadataStore {
       // Reconcile on the existing cadence while reserving native observation turns.
       const turn = this.reconciliationTurn++;
       if (view.view.local?.available && turn % 2 === 1)
-        return this.advanceLocal(turn % 4 === 1 && view.view.local.lanes?.includes('active') ? 'active' : 'history');
+        return this.advanceLocal(turn % 4 === 1 && view.view.local.lanes?.includes('active') ? 'active' : (opts?.liveOnly ? 'active' : 'history'));
       return this.readView(true);
     }
     if (view.view.missing.includes('sources_not_refreshed') && this.sourceCapture?.key !== this.captureKey(view.view))
       return this.refreshView();
-    return this.advance(initial);
+    return this.advance(initial, opts);
   }
   private advanceLocal(lane: LocalLane = 'history'): Promise<MetadataActionResult> {
     const v = this.state.view;

@@ -98,12 +98,11 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const [notice, setNotice] = useState('');
   const [stopping, setStopping] = useState(false);
   const [stopAcknowledged, setStopAcknowledged] = useState(false);
-  const [dialogClosed, setDialogClosed] = useState(false);
   const inspectionOpen = !compact || revealed || !!navigation?.artifactId;
-  const showDump = inspectionOpen && !dialogClosed;
+  const showDump = inspectionOpen;
   const [now, setNow] = useState(Date.now);
-  const revealInspection = () => { onReveal?.(); setDialogClosed(false); };
-  useEffect(() => { if (navigation?.artifactId) { onReveal?.(); setDialogClosed(false); } }, [navigation, onReveal]);
+  const revealInspection = () => { onReveal?.(); };
+  useEffect(() => { if (navigation?.artifactId) onReveal?.(); }, [navigation, onReveal]);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -254,7 +253,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
       }}>Job {job.id}</button>
       {compact && !showDump && <ExpertCost header={costHeader} now={now} compact />}
       {adapter && <p className="text-faint lowercase">{adapter}</p>}
-      {!compact && since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
+      {since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
         <Activity size={9} className="text-accent/60 animate-pulse" />
         {since}
       </div>}
@@ -290,14 +289,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
     {native?.error && <p role="alert">{native.summaryFreshness === 'observed' ? 'Selected lane is stale or unavailable. Retry inspection.' : 'Selected read unavailable. Retry inspection.'}</p>}
-    {compact && dump && <div role="dialog" aria-label="Selected job inspection" className="fixed inset-4 z-[80] m-auto flex h-3/4 max-h-full w-auto max-w-3xl flex-col overflow-hidden rounded-2xl border border-edge bg-panel text-txt shadow-lg">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-edge px-4 py-2">
-        <h2 className="text-sm font-semibold">Job inspection</h2>
-        <button type="button" className="min-h-11 shrink-0 px-2 text-xs text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent" onClick={() => setDialogClosed(true)}>Close job inspection</button>
-      </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain break-words p-4 text-xs text-muted">{dump}</div>
-    </div>}
-    {!compact && dump}
+    {dump}
   </div>;
 }
 type JobPreferences = { expanded: string[]; dismissed: string[] };
@@ -458,7 +450,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     if (left !== null && right === null) return -1;
     return (a.metadata_key ?? '').localeCompare(b.metadata_key ?? '');
   });
-  const trackerCount = jobs.filter(job => !isNativeActivity(job)).length;
+  const trackerCount = scoped.filter(job => !isNativeActivity(job)).length;
   const activeRows = shown.filter(j => !isFinished(j));
   const finishedRows = shown.filter(j => isFinished(j));
   const failedCount = finishedRows.filter(j => failedOutcomeStatuses.has(j.status)).length;

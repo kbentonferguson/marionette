@@ -17,7 +17,10 @@ it('preserves keyboard focus and contains click and both key phases for disclosu
   expect(worker).toHaveAttribute('aria-expanded', 'true');
   const details = document.getElementById(worker.getAttribute('aria-controls') ?? '');
   expect(details).toHaveTextContent('Keyboard disclosure');
+  expect(details).not.toBeNull();
+  expect(details!.closest('[role="dialog"]')).toBeNull();
   expect(worker.contains(details)).toBe(false);
+  expect(worker.parentElement?.contains(details)).toBe(true);
   fireEvent.keyDown(worker, { key: ' ', repeat: true });
   expect(worker).toHaveAttribute('aria-expanded', 'true');
   fireEvent.keyDown(worker, { key: ' ' });
