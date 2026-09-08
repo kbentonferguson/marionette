@@ -276,12 +276,17 @@ def test_wheel_terminal_report_selects_one_usage_record_per_task(tmp_path):
     from puppetmaster.cost import build_current_registry_cost_report, PRICING_SOURCE_TERMINAL
     from puppetmaster.models import JobStatus
     store, job, task, _, _ = setup_job(tmp_path)
+    store.save_artifact(Artifact(job_id=job.id, task_id=task.id, type=ArtifactType.VERIFICATION,
+        created_by='orchestrator', payload={'check': 'execution_billing', 'result': 'pinned', 'billing': 'api'},
+        confidence=1, evidence=['fixture']))
     for result, cost in [('failed', 7), ('success', 3)]:
         store.save_artifact(Artifact(job_id=job.id, task_id=task.id, type=ArtifactType.VERIFICATION,
             created_by='worker', payload={'check': 'execution', 'result': result, 'tokens_in': 10, 'tokens_out': 2,
                 'tokens_estimated': False, 'real_cost_usd': cost}, confidence=1, evidence=['fixture']))
     receipt = build_current_registry_cost_report(job.id, store.list_artifacts(job.id), registry=[])
     assert receipt['actual_cost']['total_marginal_cost_usd'] == 3
+    assert receipt['actual_cost']['priced_tasks'] == 1
+    assert receipt['actual_cost']['unpriced_tasks'] == 0
     receipt['pricing_source'] = PRICING_SOURCE_TERMINAL
     data = project_job_evidence(store, replace(job, status=JobStatus.COMPLETE, cost_receipt=receipt), [task])
     assert data['cost']['selected_usd'] == 3
@@ -356,12 +361,12 @@ def test_consumption_bases_tokens_and_single_ledger_reads(tmp_path, backend, mon
 
 
 @pytest.mark.parametrize('backend', ['file', 'sqlite'])
-def test_public_observation_validation_and_overflow(tmp_path, backend):
+def test_public_observation_validation_and_overflow(tmp_path, backend, monkeypatch):
     store = create_store(backend, tmp_path / backend)
     job = store.create_job('private')
     task = Task(job_id=job.id, role='test', instruction='private')
     store.save_task(task)
-    for invalid in (float('nan'), float('inf'), -1, True, '3'):
+    for invalid in (float('nan'), float('inf'), 1e308, -1, True, '3'):
         with pytest.raises(ValueError):
             UsageObservation(job.id, 'attempt', 'event', 'provider', 'today',
                 cost_state='measured', cost_usd=invalid, cost_basis='api')
@@ -372,7 +377,14 @@ def test_public_observation_validation_and_overflow(tmp_path, backend):
         name = str(index)
         store.record_attempt(ExecutionAttempt(job.id, task.id, name, name, 'today', 'local'))
         store.record_usage_observation(UsageObservation(job.id, name, 'event', 'provider', 'today',
-            cost_state='measured', cost_usd=1e308, cost_basis='api'))
+            cost_state='measured', cost_usd=1, cost_basis='api'))
+    from puppetmaster.consumption import build_attempt_consumption_report
+    report = build_attempt_consumption_report(store, job.id)
+    # Exercise the consumer's nonfinite guard at the report boundary; public
+    # observations reject out-of-range values before persistence.
+    overflow = replace(report.totals.api_cost_usd, total=float('inf'), known_subtotal=float('inf'))
+    report = replace(report, totals=replace(report.totals, api_cost_usd=overflow))
+    monkeypatch.setattr('harness.job_evidence.build_attempt_consumption_report', lambda *_: report)
     data = project_job_evidence(store, job, [task])
     metric = data['cost']['recorded_attempts']['api_cost_usd']
     assert metric['total'] is None and metric['known_subtotal'] is None
