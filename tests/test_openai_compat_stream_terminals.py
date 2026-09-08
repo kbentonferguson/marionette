@@ -78,7 +78,7 @@ def test_duplicate_content_snapshot_does_not_double_text(monkeypatch):
     seen = []
     lines = [
         _data({"choices": [{"delta": {"content": phrase}}]}),
-        _data({"choices": [{"delta": {"content": phrase}, "finish_reason": "stop"}]}),
+        _data({"choices": [{"delta": {"content": f"\n\n{phrase}"}, "finish_reason": "stop"}]}),
         b"data: [DONE]\n",
     ]
     resp = _run_stream(monkeypatch, _driver(), lines, on_delta=seen.append)

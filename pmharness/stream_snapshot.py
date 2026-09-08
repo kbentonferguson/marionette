@@ -17,16 +17,29 @@ def absorb_stream_snapshot(accumulated, incoming, min_chunk=STREAM_SNAPSHOT_MIN_
     if not inc:
         return ""
     if not acc:
+        # Check if incoming itself is a self-duplicated string like "A\n\nA"
+        parts = [p.strip() for p in inc.split("\n\n") if p.strip()]
+        if len(parts) == 2 and parts[0] == parts[1]:
+            return parts[0]
         return inc
     if inc == acc:
         return ""
-    if acc.startswith(inc):
+    acc_s = acc.strip()
+    inc_s = inc.strip()
+    if not inc_s or acc_s == inc_s:
+        return ""
+    if acc.startswith(inc) or (acc_s and acc_s.startswith(inc_s)):
         return ""
     if inc.startswith(acc):
         rest = inc[len(acc):]
-        if rest.strip() == acc.strip():
+        if rest.strip() == acc_s or not rest.strip():
             return ""
         return rest
-    if len(inc) >= min_chunk and acc.endswith(inc):
+    if inc_s.startswith(acc_s):
+        rest = inc_s[len(acc_s):].strip()
+        if not rest or rest == acc_s:
+            return ""
+        return " " + rest if not rest.startswith(("\n", " ")) else rest
+    if len(inc_s) >= min_chunk and acc_s.endswith(inc_s):
         return ""
     return inc

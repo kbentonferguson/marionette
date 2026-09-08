@@ -34,15 +34,29 @@ export function absorbOpenPilotDelta(existing: string, incoming: string): string
   const inc = incoming || "";
   if (!inc) return acc;
   if (isTrivialAssistantCrumb(inc)) return acc;
-  if (!acc || isTrivialAssistantCrumb(acc)) return sanitizeThinkingStatusGlue(inc);
-  if (inc === acc) return acc;
-  if (acc.startsWith(inc)) return acc;
-  if (inc.startsWith(acc)) {
-    const rest = inc.slice(acc.length);
-    if (rest.trim() === acc.trim()) return acc;
+  if (!acc || isTrivialAssistantCrumb(acc)) {
+    const incParts = inc.split("\n\n").map((p) => p.trim()).filter(Boolean);
+    if (incParts.length === 2 && incParts[0] === incParts[1]) {
+      return sanitizeThinkingStatusGlue(incParts[0]);
+    }
     return sanitizeThinkingStatusGlue(inc);
   }
-  if (inc.trim().length >= PROSE_COVER_MIN_CHUNK && acc.endsWith(inc)) return acc;
+  const accTrim = acc.trim();
+  const incTrim = inc.trim();
+  if (!incTrim) return acc;
+  if (accTrim === incTrim) return acc;
+  if (acc.startsWith(inc) || (accTrim && accTrim.startsWith(incTrim))) return acc;
+  if (inc.startsWith(acc)) {
+    const rest = inc.slice(acc.length);
+    if (rest.trim() === accTrim || !rest.trim()) return acc;
+    return sanitizeThinkingStatusGlue(inc);
+  }
+  if (incTrim.startsWith(accTrim)) {
+    const rest = incTrim.slice(accTrim.length).trim();
+    if (!rest || rest === accTrim) return acc;
+    return sanitizeThinkingStatusGlue(acc + (inc.startsWith(acc) ? inc.slice(acc.length) : (rest.startsWith("\n") ? rest : ` ${rest}`)));
+  }
+  if (incTrim.length >= PROSE_COVER_MIN_CHUNK && accTrim.endsWith(incTrim)) return acc;
   return sanitizeThinkingStatusGlue(acc + inc);
 }
 

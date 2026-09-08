@@ -97,6 +97,21 @@ export function stripUserVisibleText(text: string): string {
   return out;
 }
 
+export function deduplicateParagraphs(text: string): string {
+  if (!text) return "";
+  const paras = text.split("\n\n");
+  if (paras.length <= 1) return text;
+  const deduped: string[] = [];
+  for (const p of paras) {
+    const pTrim = p.trim();
+    if (deduped.length > 0 && pTrim && pTrim === deduped[deduped.length - 1].trim()) {
+      continue;
+    }
+    deduped.push(p);
+  }
+  return deduped.join("\n\n");
+}
+
 export function getSimilarity(s1: string, s2: string): number {
   const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -169,7 +184,7 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
         continue;
       }
 
-      const newText = item.msg.text || "";
+      const newText = deduplicateParagraphs(item.msg.text || "");
       let dupIdx = -1;
       for (let i = turnAssistantIdx.length - 1; i >= 0; i--) {
         const prev = result[turnAssistantIdx[i]];
@@ -183,13 +198,26 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
 
       if (dupIdx >= 0) {
         const prev = result[dupIdx] as { kind: "msg"; msg: Msg };
-        if (newText.length > (prev.msg.text || "").length) {
-          result[dupIdx] = item;
+        const prevText = deduplicateParagraphs(prev.msg.text || "");
+        if (newText.length > prevText.length || prevText.trim() === `${newText.trim()}\n\n${newText.trim()}`) {
+          result[dupIdx] = {
+            ...item,
+            msg: {
+              ...item.msg,
+              text: newText,
+            },
+          };
         }
         continue;
       }
 
-      result.push(item);
+      result.push({
+        ...item,
+        msg: {
+          ...item.msg,
+          text: newText,
+        },
+      });
       turnAssistantIdx.push(result.length - 1);
       continue;
     }

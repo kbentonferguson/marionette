@@ -1285,11 +1285,15 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, phrase);
     expect(assistantTexts(items)).toEqual([phrase]);
+    items = appendStreamingTextToItems(items, `\n\n${phrase}`);
+    expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, `${phrase}\n\n${phrase}`);
     expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, "Received");
     expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, `${phrase} Next.`);
+    expect(assistantTexts(items)).toEqual([`${phrase} Next.`]);
+    items = appendStreamingTextToItems(items, `\n\n${phrase} Next.`);
     expect(assistantTexts(items)).toEqual([`${phrase} Next.`]);
   });
 });

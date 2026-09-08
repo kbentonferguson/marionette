@@ -171,8 +171,19 @@ def clean_say(text: str) -> str:
     # 5. Trim leading/trailing whitespace and collapse 3+ blank lines to 1
     # Note: 3+ blank lines means 4+ consecutive newlines, we collapse to 2 newlines (1 blank line)
     result = re.sub(r'\n{3,}', '\n\n', result)
+
+    # 6. Deduplicate exact consecutive paragraphs from completions / snapshot replays
+    paragraphs = result.split("\n\n")
+    if len(paragraphs) > 1:
+        deduped = []
+        for p in paragraphs:
+            p_str = p.strip()
+            if deduped and p_str and p_str == deduped[-1].strip():
+                continue
+            deduped.append(p)
+        result = "\n\n".join(deduped)
     
-    # 6. Fallback if empty or near-empty — prefer a real first sentence, else
+    # 7. Fallback if empty or near-empty — prefer a real first sentence, else
     # leave empty. Never substitute "Working..." (fold chrome must stay
     # Investigating… / Thinking… / Ran, not the spoken-prose placeholder).
     if is_working_ellipsis_fallback(result):
