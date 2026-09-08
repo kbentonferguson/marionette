@@ -72,3 +72,22 @@ def test_pyproject_declares_pinned_puppetmaster_runtime_dependency():
         "(standalone install ownership)"
     )
     assert pin.group(1), "empty Puppetmaster pin"
+
+
+def test_puppetmaster_install_and_packaging_pins_match():
+    expected = re.search(
+        r'"(puppetmaster-ai==\d+\.\d+\.\d+)"',
+        (ROOT / "pyproject.toml").read_text(),
+    ).group(1)
+    paths = (
+        "scripts/install.sh", "scripts/install.ps1",
+        "scripts/doctor.sh", "scripts/doctor.ps1",
+        "webapp/electron/bootstrap.cjs", "webapp/electron/update-pm.cjs",
+        "harness/diag_bundle.py",
+        ".github/workflows/tests.yml", ".github/workflows/tests-full.yml",
+        ".github/workflows/release.yml", "README.md", "CONTRIBUTING.md",
+    )
+    for path in paths:
+        pins = re.findall(r"puppetmaster-ai==\d+\.\d+\.\d+", (ROOT / path).read_text())
+        assert pins, f"{path} has no Puppetmaster pin"
+        assert set(pins) == {expected}, f"{path}: {pins} differs from {expected}"
