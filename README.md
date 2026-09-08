@@ -7,10 +7,10 @@ and both the chat **pilot** and agentic **workers** (swarm / implement) run on
 that credential. No Cursor, Claude, or Codex CLI install is required.
 
 Puppetmaster is the bundled kernel — not a second product to set up.
-stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.25.0` is the one
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.26.0` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.431, deliberately pre-1.0. Restores Swarm Tracker hairline cards (Finished fold, All statuses + Newest/Oldest, Session/Repo/All) on Puppetmaster 1.25 bounded metadata. Coverage and paging stay off the primary surface. Pins puppetmaster-ai==1.25.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
+> Status: v0.9.431, deliberately pre-1.0. Restores Swarm Tracker hairline cards (Finished fold, All statuses + Newest/Oldest, Session/Repo/All) on Puppetmaster 1.26 bounded metadata. Coverage and paging stay off the primary surface. Pins puppetmaster-ai==1.26.0. Installed releases use a dedicated, revision-pinned runtime checkout so local work in an older checkout cannot block startup. Desktop windows keep inline panels; compact navigation and bounded drawers start below 640 CSS pixels. The Panels drawer includes its own Add panel chooser and accessible card controls. Fork is available from each session’s context menu. Empty legacy prompt queues no longer show a recovery warning.
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.25.0`; the installer and self-update use the same version. |
+| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.26.0`; the installer and self-update use the same version. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Durable memory graph** | Local durable facts/preferences (`MemoryStore`) plus optional relations via `MemoryGraph` (`GET /api/memory/graph`, shape `{nodes,edges}` like the wiki graph; sqlite + append-only jsonl). |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
