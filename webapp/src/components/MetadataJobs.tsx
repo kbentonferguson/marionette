@@ -215,7 +215,8 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     request: () => void nativeStop(),
   } : undefined;
   const costHeader = (expert && expert.kind !== 'unavailable' ? expert.live_economics ?? expert.header : null)
-    ?? (job.metadata_key ? currentHeader(state, job.metadata_key) : null);
+    ?? (job.metadata_key ? currentHeader(state, job.metadata_key) : null)
+    ?? null;
   const dump = showDump ? <>
       <p className="break-all">{job.source} / {local ? `native ${local.incarnation}` : job.job_ref?.state_id} / {job.id}</p>
       {nativeSummary && <p>Native {nativeSummary.kind.replaceAll('_', ' ')} · Actions {nativeSummary.action_count ?? 'unknown'} · Children {nativeSummary.child_count ?? 'unknown'}{nativeSummary.parent_ref ? ` · Parent ${nativeSummary.parent_ref.job_id} / ${nativeSummary.parent_ref.incarnation}` : ' · Parent relationship unknown'}. Receipt presence: {Object.entries(nativeSummary.receipts).filter(([, present]) => present).map(([name]) => name).join(', ') || 'none observed'}.</p>}
