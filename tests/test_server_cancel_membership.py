@@ -82,6 +82,7 @@ class _FakeSession:
 
 class _FakePilot:
     def __init__(self, local_ids=None, *, session_id="", local_jobs=None, registered=None):
+        self._local_metadata = SimpleNamespace(incarnation="local-fixture-incarnation")
         self.harness_session_id = session_id
         self._session_job_ids = list(registered or [])
         self.cancelled_local: list[str] = []
@@ -98,8 +99,8 @@ class _FakePilot:
     def live_local_jobs(self):
         return [dict(job) for job in self._local_jobs.values()]
 
-    def cancel_local_job(self, job_id: str) -> bool:
-        if job_id in self._local_jobs:
+    def cancel_local_job(self, job_id: str, *, incarnation: str) -> bool:
+        if incarnation == self._local_metadata.incarnation and job_id in self._local_jobs:
             self.cancelled_local.append(job_id)
             return True
         return False
@@ -245,6 +246,7 @@ def test_local_pilot_cancel_short_circuits_before_stores(monkeypatch):
     )
     code, body = post_swarm_cancel({"selection": {"version": 1, "source": "local",
         "repo": "/repo", "session_id": "sess-x",
+        "local_incarnation": pilot._local_metadata.incarnation,
         "job_ref": {"job_id": "local-1", "state_id": None}}}, svc)
     assert code == 200
     assert body["ok"] is True
@@ -342,7 +344,7 @@ def test_foreign_local_session_does_not_trip_or_cancel(monkeypatch):
     harness = _FakeStore([])
     monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda _repo="": None)
     pilot = _FakePilot(
-        local_jobs=[{"id": "local-other", "session_id": "sess-other"}],
+        local_jobs=[{"id": "local-other", "session_id": "sess-other", "cwd": "/repo"}],
         session_id="sess-x",
     )
     svc = _job_services(
@@ -352,6 +354,7 @@ def test_foreign_local_session_does_not_trip_or_cancel(monkeypatch):
     )
     code, body = post_swarm_cancel({"selection": {"version": 1, "source": "local",
         "repo": "/repo", "session_id": "sess-x",
+        "local_incarnation": pilot._local_metadata.incarnation,
         "job_ref": {"job_id": "local-other", "state_id": None}}}, svc)
     assert code == 409
     assert body["ok"] is False

@@ -125,6 +125,8 @@ def test_api_settings_endpoints_with_key(monkeypatch):
     # Keep rebuild on clear off a live openrouter pilot (ambient workspace
     # driver) so clearing the key cannot 500 the settings handler.
     monkeypatch.setenv("HARNESS_DRIVER", "stub-oracle-v2")
+    import harness.server as srv
+    monkeypatch.setattr(srv._cfg, "driver", "stub-oracle-v2")
     httpd, port, srv = _server()
     try:
         # GET settings initial check

@@ -65,16 +65,29 @@ def test_auto_refuses_unindexed_analysis(tmp_path):
     assert "no .codegraph index" in events[0].data["reason"]
 
 
-def test_auto_governor_stops_neverending_pilot():
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_auto_governor_stops_neverending_pilot(tmp_path, monkeypatch):
+    from harness.conversation import ConvEvent
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
-    s.pilot = _NeverDonePilot()
-    events = list(s.run_auto("dig forever", AutoBudget(max_swarms=3)))
+    # Isolate the governor from send's duplicate-action guards and background
+    # swarm timers. This turn never finishes; only the governor can stop it.
+    closed = []
+    def neverending_turn(*args, **kwargs):
+        try:
+            while True:
+                yield ConvEvent("action_result", {"kind": "run_swarm", "num": 1})
+        finally:
+            closed.append(True)
+    monkeypatch.setattr(s, "send", neverending_turn)
+    budget = AutoBudget(max_swarms=3)
+    events = list(s.run_auto("dig forever", budget))
     halts = [e for e in events if e.kind == "auto_halt"]
-    assert halts, "governor must halt a never-ending pilot"
-    assert "ceiling" in halts[-1].data["reason"] or "stall" in halts[-1].data["reason"]
-    # and it must not have run unbounded
-    assert sum(1 for e in events if e.kind == "action_result") <= 12
+    assert len(halts) == 1
+    assert "swarm ceiling" in halts[0].data["reason"]
+    assert budget.swarms_used == 3
+    assert sum(e.kind == "action_result" for e in events) == 3
+    assert closed == [True]
 
 
 def test_auto_stops_when_pilot_done():
@@ -196,3 +209,17 @@ def test_auto_killswitch(tmp_path):
     events = list(s.run_auto("go", AutoBudget(max_swarms=99, killswitch_path=str(ks))))
     halts = [e for e in events if e.kind == "auto_halt"]
     assert halts and "killswitch" in halts[-1].data["reason"]
+
+
+@pytest.mark.parametrize('error', ['backend unavailable', 'authentication failed', 'request denied'])
+def test_auto_tool_errors_do_not_report_objective_met(tmp_path, monkeypatch, error):
+    from harness.conversation import ConvEvent
+    session = ConversationalSession(HarnessConfig(driver='stub-oracle-v2', state_dir=str(tmp_path)))
+    def failed_turn(*args, **kwargs):
+        yield ConvEvent('action_result', {'kind': 'run_swarm', 'error': error})
+    monkeypatch.setattr(session, 'send', failed_turn)
+    events = list(session.run_auto('finish the repair', AutoBudget(max_idle_steps=2)))
+    halts = [event for event in events if event.kind == 'auto_halt']
+    assert len(halts) == 1
+    assert 'stall' in halts[0].data['reason']
+    assert 'objective met' not in halts[0].data['reason']

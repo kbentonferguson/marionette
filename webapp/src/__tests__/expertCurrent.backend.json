@@ -1,0 +1,110 @@
+{
+  "kind": "available",
+  "reason": null,
+  "header": {
+    "created_at": "2026-09-07T12:00:00+00:00",
+    "completed_at": null,
+    "cost": {
+      "selected_usd": null,
+      "source": "unavailable",
+      "basis": "unknown",
+      "measured_cost_usd": null,
+      "estimated_cost_usd": null
+    }
+  },
+  "tasks": [
+    {
+      "id": "task-1",
+      "role": "Auditor",
+      "instruction": "Exact selected instruction",
+      "instruction_truncated": false,
+      "adapter": "local",
+      "model": null,
+      "created_at": "2026-09-07T12:00:00+00:00",
+      "updated_at": "2026-09-07T12:00:00+00:00",
+      "usage": {
+        "tokens_in": null,
+        "tokens_out": null,
+        "est_cost_usd": 0,
+        "estimated": false,
+        "cost_provenance": "provider"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "artifact-1",
+      "task_id": "task-1",
+      "type": "verification",
+      "created_by": "worker",
+      "created_at": "2026-09-07T12:00:00+00:00",
+      "headline": "Regression checks",
+      "detail": "Producer verified",
+      "result": null,
+      "failure": null,
+      "confidence": 1,
+      "model": null,
+      "adapter": null,
+      "policy": null,
+      "provider": null,
+      "role": null,
+      "est_cost_usd": null,
+      "rejected": [],
+      "check_result": "passed"
+    }
+  ],
+  "coverage": {
+    "tasks": "complete",
+    "artifacts": "complete"
+  },
+  "quality": "unverified",
+  "economics": {
+    "header": {
+      "created_at": "2026-09-07T12:00:00+00:00",
+      "completed_at": null,
+      "updated_at": null,
+      "latest_task_updated_at": "2026-09-07T12:00:00+00:00",
+      "completed_workers": 0,
+      "selected_workers": 1,
+      "workers_complete": true,
+      "usage": {
+        "tokens": 120,
+        "tokens_known_workers": 1,
+        "cost_known_workers": 1,
+        "selected_workers": 1,
+        "complete": true
+      },
+      "cost": {
+        "selected_usd": 0,
+        "measured_cost_usd": 0,
+        "estimated_cost_usd": null,
+        "source": "selected_current_records",
+        "basis": "measured",
+        "plan_workers": 0,
+        "complete": true
+      },
+      "savings": {
+        "routing_usd": null,
+        "cache_usd": null,
+        "compaction_usd": null,
+        "compact_tokens": null,
+        "basis": "estimated",
+        "source": "selected_current_records",
+        "selected_usd": null
+      }
+    },
+    "tasks": {
+      "task-1": {
+        "tokens_in": 100,
+        "tokens_out": 20,
+        "tokens": 120,
+        "est_cost_usd": 0,
+        "estimated": false,
+        "cost_provenance": "provider",
+        "source_artifact_id": "artifact-1",
+        "route_forecast_usd": null,
+        "plan_billed": false
+      }
+    }
+  }
+}
