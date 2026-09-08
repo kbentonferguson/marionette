@@ -73,7 +73,31 @@ export class JobMetadataStore {
   private timer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private scheduleGeneration = 0;
+  private sessionPages = new Map<string, Pick<JobMetadataState, 'observations' | 'local' | 'headers' | 'pins'>>();
   constructor(client = new JobMetadataClient()) { this.client = client; }
+  private sessionPageKey(target: { repo: string; session_id: string }): string {
+    return `${target.repo}\n${target.session_id}`;
+  }
+  private rememberSessionPage(): void {
+    const view = this.state.view;
+    if (view.kind === 'idle' || !view.target.session_id) return;
+    if (!this.state.observations.length && !this.state.local.observations.length) return;
+    const key = this.sessionPageKey(view.target);
+    this.sessionPages.delete(key);
+    this.sessionPages.set(key, {
+      observations: this.state.observations,
+      local: this.state.local,
+      headers: this.state.headers,
+      pins: this.state.pins,
+    });
+    if (this.sessionPages.size > 8) {
+      const oldest = this.sessionPages.keys().next().value;
+      if (oldest) this.sessionPages.delete(oldest);
+    }
+  }
+  private restoreSessionPage(target: MetadataTarget): Pick<JobMetadataState, 'observations' | 'local' | 'headers' | 'pins'> | undefined {
+    return this.sessionPages.get(this.sessionPageKey(target));
+  }
   getSnapshot = (): JobMetadataState => this.state;
   private publish(state: JobMetadataState): void {
     const selected = state.detail;
@@ -107,11 +131,25 @@ export class JobMetadataStore {
   setTarget(target: MetadataTarget): void {
     if (this.disposed) return;
     // Every call is a new incarnation, even when the visible IDs are equal.
+    this.rememberSessionPage();
     this.stopTicks();
-    this.publish({ ...blank(this.state.epoch + 1, { kind: 'target', target: validateMetadataTarget(target), reason: 'not_opened' }), contextEpoch: this.state.contextEpoch + 1, working: this.inFlight });
+    const nextTarget = validateMetadataTarget(target);
+    const previous = this.state.view;
+    const sameIds = previous.kind !== 'idle'
+      && previous.target.repo === nextTarget.repo
+      && previous.target.session_id === nextTarget.session_id;
+    // Same-target reopen is a blank incarnation. Restore only a different visited session.
+    const page = sameIds ? undefined : this.restoreSessionPage(nextTarget);
+    this.publish({
+      ...blank(this.state.epoch + 1, { kind: 'target', target: nextTarget, reason: 'not_opened' }),
+      contextEpoch: this.state.contextEpoch + 1,
+      working: this.inFlight,
+      ...(page ? { observations: page.observations, local: page.local, headers: page.headers, pins: page.pins, startupStopped: true } : {}),
+    });
   }
   invalidate = (): void => {
     if (this.disposed) return;
+    this.rememberSessionPage();
     const old = this.state.view;
     this.publish({ ...blank(this.state.epoch + 1, old.kind === 'idle' ? old : { kind: 'target', target: old.target, reason: 'invalidated' }), contextEpoch: this.state.contextEpoch + 1, working: this.inFlight });
   };
@@ -169,7 +207,21 @@ export class JobMetadataStore {
     const previous = this.state.view;
     const same = previous.kind === 'view' && sameMetadataContext(previous.context, context)
       && previous.view.local?.incarnation === view.local?.incarnation;
-    const base = same ? this.state : { ...blank(this.state.epoch, { kind: 'idle' }), contextEpoch: this.state.contextEpoch + (previous.kind === 'view' ? 1 : 0) };
+    const sameSession = previous.kind !== 'idle'
+      && previous.target.repo === target.repo
+      && previous.target.session_id === target.session_id;
+    const sameIncarnation = previous.kind !== 'view'
+      || previous.view.local?.incarnation === view.local?.incarnation;
+    const keep = !same && sameSession && sameIncarnation && (this.state.observations.length || this.state.local.observations.length)
+      ? {
+        observations: this.state.observations,
+        local: this.state.local,
+        headers: this.state.headers,
+        pins: this.state.pins,
+        startupStopped: this.state.startupStopped,
+      }
+      : {};
+    const base = same ? this.state : { ...blank(this.state.epoch, { kind: 'idle' }), ...keep, contextEpoch: this.state.contextEpoch + (previous.kind === 'view' ? 1 : 0) };
     this.publish({ ...base, error: this.sourceCapture?.key === this.captureKey(view) ? this.sourceCapture.error : null, working: true, view: { kind: 'view', target, context, view, refresh: 'idle' },
       streams: same ? base.streams : metadataStreams(view, target.scope).map(initialMetadataStream) });
   }

@@ -221,6 +221,7 @@ export {
   blankQueueItemsOnSessionSwitch,
   blankMsgQueueOnSessionSwitch,
   shouldApplyQueueRefresh,
+  applyQueueListIdentity,
   QUEUE_LOAD_FAIL_NOTICE,
 } from "./queueOps";
 export {

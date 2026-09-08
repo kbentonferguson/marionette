@@ -49,6 +49,17 @@ export function shouldApplyQueueRefresh(opts: {
   );
 }
 
+/** A hop in flight is not a queue failure. Drop the foreign row; do not paint. */
+export function applyQueueListIdentity(
+  res: { session_id?: string },
+  requestSessionId: string | null,
+): "apply" | "drop" {
+  const returned = (res.session_id || "").trim();
+  const requested = (requestSessionId || "").trim();
+  if (requested && returned && returned !== requested) return "drop";
+  return "apply";
+}
+
 export const QUEUE_LOAD_FAIL_NOTICE = "Couldn’t refresh prompt queue";
 
 /** Soft client msgQueue is session-local; clear on switch. */

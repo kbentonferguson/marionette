@@ -57,10 +57,17 @@ export function currentHeader(state: JobMetadataState, key: string) {
     ? { ...selected, model: header.model, model_provenance: header.model_provenance } : selected;
   return header;
 }
+/** Session id for ownership filters while the view is still opening. */
+export function metadataViewSessionId(state: JobMetadataState): string {
+  if (state.view.kind === 'view') return String(state.view.context.session_id || '').trim();
+  if (state.view.kind === 'target') return String(state.view.target.session_id || '').trim();
+  return '';
+}
 /** Presentation only: missing bodies/economics remain explicitly unavailable. No identity inference. */
 export function metadataJobs(state: JobMetadataState): Job[] {
-  if (state.view.kind !== 'view') return [];
-  const view = state.view;
+  if (state.view.kind === 'idle') return [];
+  if (state.view.kind !== 'view' && !state.observations.length && !state.local.observations.length) return [];
+  const sources = state.view.kind === 'view' ? state.view.view.sources : [];
   const observed = new Map(state.observations.map(o => [metadataSelectionKey(o.row.selection), o]));
   for (const pin of state.pins) {
     if (!pin.observation) continue;
@@ -74,7 +81,7 @@ export function metadataJobs(state: JobMetadataState): Job[] {
     metadata_key: metadataSelectionKey(row.selection), metadata_only: true,
     goal: row.display.kind === 'available' && row.display.goal_preview ? row.display.goal_preview : `${row.selection.source === 'cli' ? 'PM CLI job' : 'PM harness job'}`,
     status: row.lifecycle ?? 'unknown', session_id: row.ownership.session_id ?? undefined,
-    cross_project: view.view.sources.find(s => s.state_id === row.selection.job_ref.state_id)?.cross_project,
+    cross_project: sources.find(s => s.state_id === row.selection.job_ref.state_id)?.cross_project,
     ...(freshness === 'stale' ? { read_status: 'unavailable' } : {}),
     unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
     ...(row.task_count === null ? {} : { task_count: row.task_count }),

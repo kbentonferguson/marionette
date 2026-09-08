@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { JobMetadataClient } from '../lib/jobMetadata';
+import { metadataJobs, metadataViewSessionId } from '../lib/jobMetadataContext';
 import { JobMetadataStore, useJobMetadata } from '../lib/useJobMetadata';
 import { context, detail, handshake, list, response, selection, summary, token, view } from './jobMetadata.fixtures';
 
@@ -16,6 +17,52 @@ beforeEach(() => {
 });
 afterEach(() => { store.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it('restores the last observation page when hopping back to a visited session', async () => {
+  await open();
+  await store.advance();
+  const first = store.getSnapshot().observations;
+  expect(first.length).toBeGreaterThan(0);
+  store.setTarget({ ...context, session_id: 'other-session' });
+  expect(store.getSnapshot().observations).toEqual([]);
+  expect(store.getSnapshot().view.kind).toBe('target');
+  store.setTarget(context);
+  expect(store.getSnapshot().observations).toEqual(first);
+  expect(store.getSnapshot().view.kind).toBe('target');
+  expect(store.getSnapshot().startupStopped).toBe(true);
+  expect(metadataJobs(store.getSnapshot()).map(job => job.id)).toEqual(first.map(o => o.row.selection.job_ref.job_id));
+  expect(metadataViewSessionId(store.getSnapshot())).toBe(context.session_id);
+});
+it('readView after hop-back keeps the restored observation page', async () => {
+  await open();
+  await store.advance();
+  const first = store.getSnapshot().observations;
+  store.setTarget({ ...context, session_id: 'other-session' });
+  store.setTarget(context);
+  expect(await store.readView()).toBe('applied');
+  expect(store.getSnapshot().observations).toEqual(first);
+  expect(store.getSnapshot().view.kind).toBe('view');
+  expect(metadataJobs(store.getSnapshot()).map(job => job.id)).toEqual(first.map(o => o.row.selection.job_ref.job_id));
+});
+it('same-target setTarget is a blank incarnation, not a self-restore', async () => {
+  await open();
+  await store.advance();
+  expect(store.getSnapshot().observations.length).toBeGreaterThan(0);
+  store.setTarget(context);
+  expect(store.getSnapshot().observations).toEqual([]);
+  expect(store.getSnapshot().startupStopped).toBe(false);
+});
+it('hop-back ownerTick opens the view without restarting startup pages', async () => {
+  await open();
+  await store.advance();
+  const first = store.getSnapshot().observations;
+  request.mockClear();
+  store.setTarget({ ...context, session_id: 'other-session' });
+  store.setTarget(context);
+  await store.ownerTick();
+  expect(request.mock.calls.some(([path]) => String(path).includes('/metadata') && !String(path).includes('/view'))).toBe(false);
+  expect(store.getSnapshot().observations).toEqual(first);
+  expect(store.getSnapshot().view.kind).toBe('view');
+});
 it('three subscribers share one view and perform no automatic network activity', async () => {
   const a = renderHook(() => useJobMetadata(store)), b = renderHook(() => useJobMetadata(store)), c = renderHook(() => useJobMetadata(store));
   expect(request).not.toHaveBeenCalled();

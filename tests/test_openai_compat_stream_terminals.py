@@ -73,6 +73,20 @@ def test_clean_stop_succeeds(monkeypatch):
     assert resp.meta["malformed_sse_chunks"] == 0
 
 
+def test_duplicate_content_snapshot_does_not_double_text(monkeypatch):
+    phrase = "Received—single response."
+    seen = []
+    lines = [
+        _data({"choices": [{"delta": {"content": phrase}}]}),
+        _data({"choices": [{"delta": {"content": phrase}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    resp = _run_stream(monkeypatch, _driver(), lines, on_delta=seen.append)
+    assert resp.error is None
+    assert resp.text == phrase
+    assert "".join(seen) == phrase
+
+
 def test_finish_reason_length_is_explicit_incomplete(monkeypatch):
     lines = [
         _data({"choices": [{"delta": {"content": "partial "}}]}),

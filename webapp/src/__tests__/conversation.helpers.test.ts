@@ -207,6 +207,7 @@ import {
   type DirectoryEntryLike,
 } from "../components/conversation/composerInput";
 import {
+  applyQueueListIdentity,
   blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
   moveItem,
@@ -2445,6 +2446,12 @@ describe("prompt queue session-switch honesty", () => {
       }),
     ).toBe(false);
     expect(QUEUE_LOAD_FAIL_NOTICE.length).toBeGreaterThan(0);
+  });
+
+  it("drops a queueList identity mismatch without a hop error", () => {
+    expect(applyQueueListIdentity({ session_id: "sess-a" }, "sess-b")).toBe("drop");
+    expect(applyQueueListIdentity({ session_id: "sess-b" }, "sess-b")).toBe("apply");
+    expect(applyQueueListIdentity({}, "sess-b")).toBe("apply");
   });
 });
 

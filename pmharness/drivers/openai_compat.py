@@ -25,6 +25,7 @@ from .prompt_cache import (
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 from pmharness.think_scrubber import StreamingThinkScrubber
+from pmharness.stream_snapshot import absorb_stream_snapshot
 
 _SUCCESS_CHAT_FINISH = frozenset({"stop", "stop_sequence", "end_turn"})
 _TOOL_CHAT_FINISH = frozenset({"tool_calls", "function_call"})
@@ -272,11 +273,13 @@ class _OpenAIChatSseAccumulator:
 
         content_delta = delta.get("content") or ""
         if content_delta:
+            piece = absorb_stream_snapshot(self.full_text, content_delta)
             self.stream_started = True
-            self.full_text += content_delta
-            visible = self.think_scrubber.feed(content_delta)
-            if visible and self.on_delta is not None:
-                self.on_delta(visible)
+            if piece:
+                self.full_text += piece
+                visible = self.think_scrubber.feed(piece)
+                if visible and self.on_delta is not None:
+                    self.on_delta(visible)
 
         reasoning_delta = (
             delta.get("reasoning")
