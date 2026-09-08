@@ -13,6 +13,14 @@ import { context, selection as legacySelection } from './jobMetadata.fixtures';
 import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 
 function selection(n = 1): MetadataSelection { const s = legacySelection(n); return { ...s, job_ref: { ...s.job_ref, version: 2, incarnation: '12345678-1234-4234-8234-123456789abc' } }; }
+async function expandAndInspect(name: string | RegExp) {
+  fireEvent.click(screen.getByRole('button', { name }));
+  fireEvent.click(screen.getByRole('button', { name: /Inspect (tasks and artifacts|actions)/ }));
+  await screen.findByRole('region', { name: 'Selected job inspector' });
+}
+function inspected() {
+  return within(screen.getByRole('region', { name: 'Selected job inspector' }));
+}
 let fixture: Awaited<ReturnType<typeof expertMetadataFixture>> | undefined;
 afterEach(() => { cleanup(); fixture?.dispose(); fixture = undefined; localStorage.clear(); vi.restoreAllMocks(); });
 async function setup(rows = [expertSummary(selection(), 'Audit auth flow')]) {
@@ -91,13 +99,13 @@ describe('original positive inspector requirements through parser/store/render',
     f.selected.mockResolvedValue({ ...sqlite.detail, context: f.context() });
     await act(async () => { await f.store.advance(); await f.store.refreshHeaders(); });
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Inspect consumer integration/ }));
-    expect(await screen.findByTitle('Model: gpt-6-astra')).toBeVisible();
-    expect(screen.getByText('100 compact')).toBeVisible();
-    expect(screen.getByText(/Compaction coverage: complete/)).toBeVisible();
+    await expandAndInspect(/Inspect consumer integration/);
+    expect(await inspected().findByTitle('Model: gpt-6-astra')).toBeVisible();
+    expect(inspected().getByText('100 compact')).toBeVisible();
+    expect(inspected().getByText(/Compaction coverage: complete/)).toBeVisible();
     expect(document.querySelector('[data-job-id]')).toHaveAttribute('data-quality', 'degraded');
-    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }));
-    const worker = within(document.querySelector<HTMLElement>('[data-task-id]')!);
+    fireEvent.click(inspected().getByRole('button', { name: /Reviewer/ }));
+    const worker = within(inspected().getByRole('button', { name: /Reviewer/ }).closest('[data-task-id]')!);
     expect(worker.getByText('Inspect the real diff; token=REDACTED')).toBeVisible();
     expect(worker.getByText('smaller-model: insufficient context')).toBeVisible();
     expect(worker.getByText('Expected two rows; got one')).toBeVisible();
@@ -110,18 +118,18 @@ describe('original positive inspector requirements through parser/store/render',
     const f = await setup();
     f.selected.mockImplementation(async s => ({ ...selected(facts(), s), expert: backend, context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    expect(await screen.findByText('120t')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Job cost' })).toHaveTextContent('$0');
-    fireEvent.click(screen.getByRole('button', { name: /Auditor/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Show tokens and cost' }));
+    await expandAndInspect(/Audit auth flow/);
+    expect(await inspected().findByText('120t')).toBeVisible();
+    expect(inspected().getByRole('button', { name: 'Job cost' })).toHaveTextContent('$0');
+    fireEvent.click(inspected().getByRole('button', { name: /Auditor/ }));
+    fireEvent.click(inspected().getByRole('button', { name: 'Show tokens and cost' }));
     expect(screen.getByText('Provider-reported cost $0')).toBeVisible();
   });
   it('opens Evidence from the real expanded job detail', async () => {
     const f = await setup(); render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    await screen.findByTitle('Model: gpt-6-astra');
-    fireEvent.click(screen.getByRole('button', { name: 'Evidence', exact: true }));
+    await expandAndInspect(/Audit auth flow/);
+    await inspected().findByTitle('Model: gpt-6-astra');
+    fireEvent.click(inspected().getByRole('button', { name: 'Evidence', exact: true }));
     const evidence = screen.getByRole('region', { name: 'Job evidence' });
     expect(within(evidence).getByText('Recorded checks passed: 1')).toBeVisible();
     fireEvent.click(within(evidence).getByText('Regression checks'));
@@ -133,17 +141,17 @@ describe('original positive inspector requirements through parser/store/render',
     const first = facts(); first.artifacts.push({ ...first.artifacts[0], id: 'route', type: 'routing', created_by: 'router-escalation', model: 'gpt-6-astra', headline: '', detail: null, result: null, check_result: 'unavailable' });
     f.selected.mockImplementation(async s => ({ ...selected(first, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    await screen.findByTitle('Model: gpt-6-astra');
+    await expandAndInspect(/Audit auth flow/);
+    await inspected().findByTitle('Model: gpt-6-astra');
     const changed = facts('gpt-6-astra', 'Credential expired');
     changed.artifacts.push({ ...changed.artifacts[0], id: 'route', type: 'routing', created_by: 'router-escalation', model: 'gpt-6-astra-low', headline: '', detail: null, failure: null, result: null, check_result: 'unavailable' });
     changed.quality = 'degraded'; changed.artifacts[0].check_result = 'failed'; changed.artifacts[0].failure = 'auth_failure';
     f.selected.mockImplementation(async s => ({ ...selected(changed, s, 101), context: f.context() }));
     await act(async () => { await f.store.readDetail(); });
-    expect(screen.getByTitle('Model: gpt-6-astra-low')).toBeVisible();
-    expect(screen.queryByTitle('Model: gpt-6-astra')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Auditor/ }));
-    expect(within(document.querySelector('[data-task-id]')!).getByText('Credential expired')).toBeVisible();
+    expect(inspected().getByTitle('Model: gpt-6-astra-low')).toBeVisible();
+    expect(inspected().queryByTitle('Model: gpt-6-astra')).toBeNull();
+    fireEvent.click(inspected().getByRole('button', { name: /Auditor/ }));
+    expect(within(inspected().getByRole('button', { name: /Auditor/ }).closest('[data-task-id]')!).getByText('Credential expired')).toBeVisible();
     expect(document.querySelector('[data-job-id]')).toHaveAttribute('data-quality', 'degraded');
     expect(screen.queryByText('Tests passed')).toBeNull();
   });
@@ -184,10 +192,10 @@ describe('original positive inspector requirements through parser/store/render',
     expert.live_economics.cost = { ...expert.live_economics.cost, selected_usd: 1.5, measured_cost_usd: 1.25, estimated_cost_usd: .25, basis: 'mixed' };
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    expect(await screen.findByText('Estimated savings ~$0.0200')).toBeVisible();
-    expect(screen.queryByText('Measured')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Job cost' }));
+    await expandAndInspect(/Audit auth flow/);
+    expect(await inspected().findByText('Estimated savings ~$0.0200')).toBeVisible();
+    expect(inspected().queryByText('Measured')).toBeNull();
+    fireEvent.click(inspected().getByRole('button', { name: 'Job cost' }));
     expect(screen.getByText('Measured')).toBeVisible();
     expect(screen.getByText('$1.25')).toBeVisible();
     expect(screen.getByText('$0.25')).toBeVisible();
@@ -246,8 +254,8 @@ describe('original worker routing requirements through the selected store', () =
     const f = await setup(); const expert = facts(); expert.artifacts.push(...routes);
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    expect(await screen.findByTitle(`Model: ${model}`)).toBeVisible();
+    await expandAndInspect(/Audit auth flow/);
+    expect(await inspected().findByTitle(`Model: ${model}`)).toBeVisible();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(1);
   });
   it('keeps the model slot distinct from a long role and hides collapsed instructions and alternatives', async () => {
@@ -255,12 +263,12 @@ describe('original worker routing requirements through the selected store', () =
     expert.artifacts.push(route('gpt-6-astra', { policy: 'explicit_pin', provider: 'openai', rejected: [{ model: 'smaller', reason: 'context too short' }] }));
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    await screen.findByTitle('Model: gpt-6-astra');
+    await expandAndInspect(/Audit auth flow/);
+    await inspected().findByTitle('Model: gpt-6-astra');
     expect(screen.queryByText('Exact current instruction')).toBeNull();
     expect(screen.queryByText('smaller: context too short')).toBeNull();
-    expect(screen.getByTitle('Model: gpt-6-astra')).toHaveClass('min-w-0', 'break-words', '[overflow-wrap:anywhere]');
-    fireEvent.click(screen.getByRole('button', { name: /A very long worker role/ }));
+    expect(inspected().getByTitle('Model: gpt-6-astra')).toHaveClass('min-w-0', 'break-words', '[overflow-wrap:anywhere]');
+    fireEvent.click(inspected().getByRole('button', { name: /A very long worker role/ }));
     expect(screen.getByText('Exact current instruction')).toBeVisible();
     expect(screen.getByText('Policy: explicit_pin')).toBeVisible();
     expect(screen.getByText('smaller: context too short')).toBeVisible();
@@ -270,7 +278,7 @@ describe('original worker routing requirements through the selected store', () =
     expert.artifacts = [route('fallback', { task_id: null, created_by: 'router-fallback' }), route('escalated', { id: 'escalation', task_id: null, created_by: 'router-escalation' })];
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
+    await expandAndInspect(/Audit auth flow/);
     expect(await screen.findByTitle('Model: escalated')).toBeVisible();
     expect(screen.queryByTitle('Model: fallback')).toBeNull();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(0);
@@ -281,16 +289,16 @@ describe('original worker routing requirements through the selected store', () =
     expert.quality = 'unverified';
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    expect(await screen.findByTitle('Model: gpt-6-astra')).toBeVisible();
-    expect(screen.getByTitle('Model: openrouter')).toBeVisible();
+    await expandAndInspect(/Audit auth flow/);
+    expect(await inspected().findByTitle('Model: gpt-6-astra')).toBeVisible();
+    expect(inspected().getByTitle('Model: openrouter')).toBeVisible();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(2);
   });
   it.each(['pending', 'queued', 'complete'])('keeps %s worker model state distinct from the job model', async status => {
     const f = await setup(); const expert = facts(); expert.tasks[0].model = null;
     f.selected.mockImplementation(async s => { const value = selected(expert, s); value.tasks.rows[0].status = status; return { ...value, context: f.context() }; });
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
+    await expandAndInspect(/Audit auth flow/);
     expect(await screen.findByText(status === 'complete' ? 'No model recorded' : 'routing…')).toBeVisible();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(1);
     expect(screen.queryByTitle('Model: gpt-6-astra')).toBeNull();
@@ -299,7 +307,7 @@ describe('original worker routing requirements through the selected store', () =
     const f = await setup(); const expert = facts(); expert.tasks = []; expert.artifacts = []; expert.quality = 'unverified';
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
+    await expandAndInspect(/Audit auth flow/);
     expect(await screen.findByText(/routing…/)).toBeVisible();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(0);
   });
@@ -310,7 +318,7 @@ describe('original worker routing requirements through the selected store', () =
     expert.quality = 'unverified';
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
+    await expandAndInspect(/Audit auth flow/);
     expect(await screen.findByText('Findings (1)')).toBeVisible();
     expect(screen.getByText(headline, { exact: false })).toBeVisible();
     expect(screen.getByText('looks like prompt echo')).toBeVisible();
@@ -325,10 +333,10 @@ describe('original worker routing requirements through the selected store', () =
     expert.artifacts.push({ ...expert.artifacts[0], id: 'job-check', task_id: null, check_result: 'failed', detail: 'Job-level verification failed' });
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    await screen.findByTitle('Model: gpt-6-astra');
+    await expandAndInspect(/Audit auth flow/);
+    await inspected().findByTitle('Model: gpt-6-astra');
     expect(document.querySelector('[data-job-id]')).toHaveAttribute('data-quality', 'degraded');
-    expect(document.querySelector('[data-task-id]')).toHaveAttribute('data-quality', 'ok');
+    expect(inspected().getByRole('button', { name: /Auditor/ }).closest('[data-task-id]')).toHaveAttribute('data-quality', 'ok');
   });
 });
 
@@ -338,14 +346,14 @@ describe('positive owner polling and narrow worker layouts', () => {
     expert.artifacts.push(route('initial-model'));
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<f.Provider><MetadataJobs /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    expect(await screen.findByTitle('Model: initial-model')).toBeVisible();
+    await expandAndInspect(/Audit auth flow/);
+    expect(await inspected().findByTitle('Model: initial-model')).toBeVisible();
     const next = facts(); next.artifacts.push(route('settled-model'));
     f.selected.mockImplementation(async s => ({ ...selected(next, s), context: f.context() }));
     const later = Date.now() + 5000; vi.spyOn(Date, 'now').mockReturnValue(later);
     for (let i = 0; i < 16; i++) await act(async () => { await f.store.ownerTick(); });
-    expect(screen.getByTitle('Model: settled-model')).toBeVisible();
-    expect(screen.queryByTitle('Model: initial-model')).toBeNull();
+    expect(inspected().getByTitle('Model: settled-model')).toBeVisible();
+    expect(inspected().queryByTitle('Model: initial-model')).toBeNull();
     expect(next.tasks).toEqual(expert.tasks);
   });
   it.each([320, 220])('keeps current role and model separate and breakable in a %ipx rail', async width => {
@@ -354,8 +362,9 @@ describe('positive owner polling and narrow worker layouts', () => {
     expert.tasks[0].model = 'provider/an-extremely-long-current-assigned-model-identifier-with-context';
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
     render(<div style={{ width }}><f.Provider><MetadataJobs /></f.Provider></div>);
-    fireEvent.click(screen.getByRole('button', { name: /Audit auth flow/ }));
-    const model = await screen.findByTitle(`Model: ${expert.tasks[0].model}`);
+    await expandAndInspect(/Audit auth flow/);
+    const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
+    const model = await within(inspector).findByTitle(`Model: ${expert.tasks[0].model}`);
     expect(model).toBeVisible();
     expect(model).toHaveClass('min-w-0', 'break-words', '[overflow-wrap:anywhere]');
     const worker = model.closest('button')!;

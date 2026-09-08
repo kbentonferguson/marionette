@@ -3,18 +3,19 @@ import type { ExpertHeader } from '../lib/expertMetadata';
 import { expertAge, expertDollars, expertTokens, expertWorkerCost } from '../lib/expertEconomicsFacts';
 import type { ExpertEconomicsHeader, ExpertUsageFacts } from '../lib/expertEconomicsFacts';
 
-export type ExpertCostProps = { header: ExpertHeader | ExpertEconomicsHeader | null; now?: number };
-export type ExpertWorkerUsageProps = { usage: ExpertUsageFacts; planBilled?: boolean };
+export type ExpertCostProps = { header: ExpertHeader | ExpertEconomicsHeader | null; now?: number; compact?: boolean };
+export type ExpertWorkerUsageProps = { usage: ExpertUsageFacts; planBilled?: boolean; compact?: boolean };
 const pill = 'min-w-0 rounded border border-edge px-2 py-1 text-xs text-muted break-words [overflow-wrap:anywhere]';
+const usageLink = 'text-[10px] text-faint hover:text-muted focus-visible:outline focus-visible:outline-accent';
 
-export function ExpertWorkerUsage({ usage, planBilled = false }: ExpertWorkerUsageProps) {
+export function ExpertWorkerUsage({ usage, planBilled = false, compact = false }: ExpertWorkerUsageProps) {
   const [open, setOpen] = useState(false);
   const tokens = expertTokens(usage), cost = expertWorkerCost(usage, planBilled || usage.plan_billed === true);
   const forecast = usage.route_forecast_usd;
   if (tokens === null && cost === null && forecast == null) return null;
   return <div className="min-w-0">
-    <button type="button" className={pill} aria-label="Show tokens and cost" aria-expanded={open}
-      onClick={event => { event.stopPropagation(); setOpen(!open); }}>Usage</button>
+    <button type="button" className={compact ? usageLink : pill} aria-label="Show tokens and cost" aria-expanded={open}
+      onClick={event => { event.stopPropagation(); setOpen(!open); }}>Usage{compact ? ' >' : ''}</button>
     {open && <div className="text-xs break-words [overflow-wrap:anywhere]">
       {tokens !== null && <p>{tokens.toLocaleString('en-US')}t</p>}
       <p>Input {usage.tokens_in?.toLocaleString('en-US') ?? 'unknown'} · Output {usage.tokens_out?.toLocaleString('en-US') ?? 'unknown'}</p>
@@ -25,21 +26,22 @@ export function ExpertWorkerUsage({ usage, planBilled = false }: ExpertWorkerUsa
   </div>;
 }
 
-export function ExpertCost({ header, now = Date.now() }: ExpertCostProps) {
+export function ExpertCost({ header, now = Date.now(), compact = false }: ExpertCostProps) {
   const [costOpen, setCostOpen] = useState(false), [savingsOpen, setSavingsOpen] = useState(false);
   if (!header) return null;
   const cost = header.cost, live = header.usage ? header : null;
   const savings = live?.savings, age = expertAge(header.created_at, now);
   const partialCost = live !== null && !live.cost.complete;
-  return <div className="min-w-0 flex flex-wrap items-start gap-1 text-xs">
-    {live && <span>{live.completed_workers}/{live.selected_workers} workers completed{live.workers_complete ? '' : ' (selected)'}</span>}
-    {age && <time dateTime={header.created_at ?? undefined} title={`Created ${header.created_at}`}>{age}</time>}
+  const meter = compact ? usageLink : pill;
+  return <div className={`min-w-0 flex flex-wrap items-start gap-1 ${compact ? 'text-[10px] text-muted' : 'text-xs'}`}>
+    {!compact && live && <span>{live.completed_workers}/{live.selected_workers} workers completed{live.workers_complete ? '' : ' (selected)'}</span>}
+    {!compact && age && <time dateTime={header.created_at ?? undefined} title={`Created ${header.created_at}`}>{age}</time>}
     {live?.usage?.tokens !== null && live?.usage?.tokens !== undefined && <span>{live.usage?.tokens.toLocaleString('en-US')}t{!live.usage?.complete || live.usage?.tokens_known_workers !== live.usage?.selected_workers ? ' (partial)' : ''}</span>}
-    {savings?.compact_tokens !== null && savings?.compact_tokens !== undefined && <span>{savings.compact_tokens.toLocaleString('en-US')} compact</span>}
+    {!compact && savings?.compact_tokens !== null && savings?.compact_tokens !== undefined && <span>{savings.compact_tokens.toLocaleString('en-US')} compact</span>}
     {cost.selected_usd !== null && <div className="min-w-0">
-      <button type="button" className={pill} aria-label="Job cost" aria-expanded={costOpen}
+      <button type="button" className={meter} aria-label="Job cost" aria-expanded={costOpen}
         onClick={event => { event.stopPropagation(); setCostOpen(!costOpen); }}>
-        {cost.basis === 'plan' ? 'Plan-billed' : expertDollars(cost.selected_usd)}{partialCost ? ' (partial)' : ''}
+        {cost.basis === 'plan' ? 'Plan-billed' : expertDollars(cost.selected_usd)}{partialCost ? ' (partial)' : ''}{compact ? ' >' : ''}
       </button>
       {costOpen && <div>
         {cost.measured_cost_usd !== null && <p><span>Measured</span> <span>{expertDollars(cost.measured_cost_usd)}</span></p>}
@@ -53,8 +55,8 @@ export function ExpertCost({ header, now = Date.now() }: ExpertCostProps) {
       </div>}
     </div>}
     {savings?.selected_usd !== null && savings?.selected_usd !== undefined && savings.selected_usd > 0 && <div className="min-w-0">
-      <button type="button" className={pill} aria-expanded={savingsOpen} onClick={event => { event.stopPropagation(); setSavingsOpen(!savingsOpen); }}>
-        Estimated savings ~${savings.selected_usd.toFixed(4)}
+      <button type="button" className={meter} aria-expanded={savingsOpen} onClick={event => { event.stopPropagation(); setSavingsOpen(!savingsOpen); }}>
+        Estimated savings ~${savings.selected_usd.toFixed(4)}{compact ? ' >' : ''}
       </button>
       {savingsOpen && <div><p>Selected list-price value; not billed savings. Missing components are excluded.</p>
         {savings.routing_usd !== null && <p title="model selection value vs frontier-equivalent list price">Routing ~${savings.routing_usd.toFixed(4)}</p>}

@@ -39,6 +39,7 @@ import {
 import { splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
   activityWorkDurationMs,
+  foldWorkDurationMs,
   aggregateExplorationSummary,
   cardEffectivelyRunning,
   cardHasDurableJob,
@@ -2626,11 +2627,12 @@ function ActivityGroup({
   // disagreed with Cursor/Hermes (collapsed until the user opens them).
 
   const sealedWorkMs = (() => {
-    const fromItems = activityWorkDurationMs(items);
-    if (fromItems != null && fromItems > 0) return fromItems;
-    // Live fold only: wall-clock busy timer seeds Worked for (label clamps to 1s).
-    // Prior folds must not inherit the current turn's busyElapsedMs.
-    if (isLiveFold && busyElapsedMs != null && busyElapsedMs > 0) return busyElapsedMs;
+    const resolved = foldWorkDurationMs({
+      fromItems: activityWorkDurationMs(items),
+      busyElapsedMs,
+      isLiveFold,
+    });
+    if (resolved != null) return resolved;
     // Tools/thinking ran but no duration was recorded — chrome is visible, so
     // show at least 1s instead of a bare "Worked for" label.
     if (actionCount > 0 || thinkingItems.length > 0) return 1000;

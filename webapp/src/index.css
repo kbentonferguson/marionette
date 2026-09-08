@@ -57,8 +57,9 @@ body {
 
 /* Inset outlines survive overflow-clipped chrome. Override focus:outline-none's
    specificity, but leave explicit component outlines and ring widths in charge.
-   A ring color alone (focus:ring-accent) is not a visible indicator. */
-:root body :where(button, a[href], input, select, textarea, summary, [tabindex], [contenteditable="true"]):focus-visible:not(:where(
+   A ring color alone (focus:ring-accent) is not a visible indicator.
+   Text fields keep caret + border; the accent box belongs on chrome, not typing. */
+:root body :where(button, a[href], summary, [tabindex]:not(input):not(select):not(textarea):not([contenteditable="true"])):focus-visible:not(:where(
   [class~="focus-visible:outline"], [class~="focus:outline"],
   [class~="focus-visible:ring"], [class~="focus-visible:ring-1"],
   [class~="focus-visible:ring-2"], [class~="focus-visible:ring-4"], [class~="focus-visible:ring-8"],
@@ -74,8 +75,15 @@ body {
   --chrome-focus-color: theme('colors.bg');
 }
 
+:root :where(input, select, textarea, [contenteditable="true"]):focus,
+:root :where(input, select, textarea, [contenteditable="true"]):focus-visible {
+  outline-color: transparent;
+  outline-width: 0;
+  outline-offset: 0;
+}
+
 @media (forced-colors: active) {
-  :root :where(button, a[href], input, select, textarea, summary, [tabindex], [contenteditable="true"]):focus-visible {
+  :root :where(button, a[href], summary, [tabindex]:not(input):not(select):not(textarea):not([contenteditable="true"])):focus-visible {
     outline: 2px solid Highlight !important;
     outline-offset: -2px !important;
   }

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import ComposerActivityRail from '../components/conversation/ComposerActivityRail';
+import MetadataActivity from '../components/conversation/MetadataActivity';
 import { JobMetadataContext, metadataJobs, useSharedJobMetadata } from '../lib/jobMetadataContext';
 import { JobMetadataStore } from '../lib/useJobMetadata';
 import { JobMetadataClient } from '../lib/jobMetadata';
@@ -18,7 +18,7 @@ afterEach(() => { cleanup(); stores.splice(0).forEach(store => store.dispose());
 function Rail({ sessionId, empty }: { sessionId: string; empty: boolean }) {
   const { state } = useSharedJobMetadata();
   return <div data-testid="composer-context" className="max-h-[25dvh] overflow-y-auto">
-    <ComposerActivityRail jobs={empty ? [] : metadataJobs(state)} sessionId={sessionId} />
+    <MetadataActivity key={sessionId} jobs={empty ? [] : metadataJobs(state)} />
   </div>;
 }
 async function fixture() {

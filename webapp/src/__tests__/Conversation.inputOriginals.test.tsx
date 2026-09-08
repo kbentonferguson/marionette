@@ -41,9 +41,7 @@ async function send() {
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
 }
 async function copy() {
-  fireEvent.click(await screen.findByText('Saved inputs · 1 · 1 held for review'));
-  fireEvent.click(screen.getByText(/Delivery uncertain · held for review/));
-  fireEvent.click(screen.getByRole('button', { name: 'Copy original to draft' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Copy original to draft' }));
 }
 function streamMock() {
   let event: Parameters<typeof api.chat>[1] = () => {};
@@ -62,11 +60,12 @@ it('shows held originals after reload and copies exact text, images and document
   const save = vi.spyOn(api, 'queueAdd').mockRejectedValue(new Error('keep draft'));
   const stream = streamMock();
   const { input } = await mount([], [original]);
+  expect(screen.queryByText(/Saved inputs/)).toBeNull();
   fireEvent.change(input, { target: { value: 'existing' } });
   await copy();
   expect(input).toHaveValue('existing\n\n' + original.original_text);
   expect(screen.getByRole('button', { name: 'Remove document notes.txt' })).toBeTruthy();
-  expect(screen.getAllByAltText('photo.png')).toHaveLength(2);
+  expect(screen.getAllByAltText('photo.png')).toHaveLength(1);
   expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
   queue();
   await waitFor(() => expect(save).toHaveBeenCalledWith('existing\n\n' + original.original_text, ['input:A:image'], 'A', {
