@@ -16,7 +16,7 @@ from harness.session_runners import SessionRunnerRegistry
 def _session_svc(runners: SessionRunnerRegistry, *, active: str = "sess-a"):
     sessions = MagicMock()
     sessions.active = active
-    sessions.list.return_value = [
+    sessions.rows.return_value = [
         {"id": "sess-a", "title": "Alpha"},
         {"id": "sess-b", "title": "Beta"},
     ]
@@ -33,7 +33,7 @@ def _session_svc(runners: SessionRunnerRegistry, *, active: str = "sess-a"):
         get_pilot=lambda: pilot,
         sessions_state_dir=lambda: "/tmp/state",
         save_active_transcript=lambda: None,
-        attach_view=lambda sid, defer_cold_build=False: pilot,
+        attach_view=MagicMock(side_effect=lambda sid, **kwargs: runners.set_active_view(sid)),
         sync_pilot_session_id=lambda: None,
         attach_view_transcript_payload=lambda _p, sid: {"history": [], "display": []},
         lease_exhausted_body=lambda e: {"ok": False, "code": "lease_exhausted"},
@@ -77,3 +77,6 @@ def test_attach_points_view_at_live_runner():
     assert payload["ok"] is True
     assert payload["id"] == "sess-b"
     svc.sessions.switch.assert_called_once_with("sess-b")
+    svc.attach_view.assert_called_once_with("sess-b", defer_cold_build=True, view_repo="/tmp/repo")
+    assert payload["active_view_id"] == "sess-b"
+    assert reg.get("sess-b") is not None

@@ -1,3 +1,5 @@
+import type { ExpertMetadata } from '../lib/expertMetadata';
+import { ExpertFindings } from './ExpertEvidenceDetails';
 import { useEffect, useId, useState } from 'react';
 import { fetchJobEvidence, type EvidenceSelection, type JobEvidenceData, type ConsumptionMetric } from '../lib/jobEvidence';
 
@@ -126,4 +128,14 @@ export default function JobEvidence(selection: EvidenceSelection) {
       <div id={contentId}>{open && <EvidenceContent key={identity} {...selection} />}</div>
     </section>
   );
+}
+
+/** The selected inspector supplies its fenced current projection; no legacy read. */
+export function SelectedJobEvidence({ expert }: { expert: ExpertMetadata }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return <section aria-label="Job evidence" className="border-t border-edge pt-2">
+    <button type="button" className="min-h-11" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>Evidence</button>
+    {open && <div id={id}><ExpertFindings expert={expert} /></div>}
+  </section>;
 }

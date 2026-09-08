@@ -112,7 +112,7 @@ for (const mode of ['browser', 'desktop']) {
 it('passes renderer correlation to main and preserves connection error code without replay', async () => {
   setCorrelationId('client-correlation');
   const headers = desktop(200, '', 'ECONNRESET');
-  await expect(postJSON('/write', {})).rejects.toMatchObject({message:'connection lost', code:'ECONNRESET'});
+  await expect(postJSON('/write', {})).rejects.toMatchObject({message: expect.stringContaining('Backend JSON connection failed'), code:'ECONNRESET'});
   expect(headers).toHaveLength(1);
   expect(headers[0]['X-Correlation-Id']).toBe('client-correlation');
 });
