@@ -892,6 +892,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/artifacts": get_json(
             _jobs_api.get_artifacts, services=svc.job_services, qs_arg="job_id",
             empty_as_none=True),
+        "/api/swarm/cancellation-receipt": get_json(
+            _jobs_api.get_cancellation_receipt, services=svc.job_services, pass_qs=True, keep_blank_values=True),
         "/api/swarm/live": _get_swarm_live,
         "/api/providers": get_json(_prov_api.get_providers),
         "/api/secrets/presence": get_json(
