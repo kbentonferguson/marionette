@@ -136,6 +136,7 @@ it('keeps the same focused expanded row when chronology and lifecycle change', a
   await observe();
   expect(toggle('older-active')).toBe(selected); expect(selected).toHaveFocus();
   expect(selected).toHaveAttribute('aria-expanded', 'true');
+  fireEvent.click(within(row('older-active')).getByRole('button', { name: 'Inspect actions' }));
   expect(within(row('older-active')).getByText(/Lifecycle: completed/)).toBeVisible();
 });
 it('keeps group collapse independent from expansion and opens exact pending targets', async () => {

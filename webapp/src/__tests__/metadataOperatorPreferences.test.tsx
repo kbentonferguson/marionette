@@ -174,6 +174,7 @@ it('renders accounting ownership separately from exclusion without asserting tot
   native = ['declared', 'excluded', 'unresolved'].map((kind, i) => ({ ...nativeSummary(i + 1), accounting: { kind: kind === 'declared' ? 'declared' : kind === 'excluded' ? 'excluded' : 'unresolved', aggregation_authority: false } }));
   await start(); mount();
   for (const job of metadataJobs(store.getSnapshot()).filter(j => j.local_ref)) openTarget(job.id, job.metadata_key);
+  for (const inspect of screen.getAllByRole('button', { name: 'Inspect actions' })) fireEvent.click(inspect);
   expect(screen.getByText(/Accounting ownership: declared/)).toBeVisible();
   expect(screen.getByText(/Accounting exclusion: reported/)).toBeVisible();
   expect(screen.getAllByText(/This view does not calculate totals/)).toHaveLength(3);

@@ -1,6 +1,6 @@
 import { SessionWorkerUsage } from './SessionWorkerUsage';
 import { expertHeaderModel, expertJobModel } from '../lib/expertRoutingFacts';
-import { expertJobQuality } from '../lib/expertOutcomeFacts';
+import { expertJobQuality, expertTaskOutcome } from '../lib/expertOutcomeFacts';
 import { ExpertCost } from './ExpertCurrentFacts';
 import { failedOutcomeStatuses, MetadataOutcomeLabel, metadataOutcomeLabel } from './MetadataOutcomeChrome';
 import MetadataActivityIndicator from './MetadataActivityIndicator';
@@ -9,7 +9,8 @@ import MetadataExpertPanels from './MetadataExpertPanels';
 import { navigationMatches, peekPendingSwarmNavigation, queuePendingSwarmNavigation, swarmNavigationTarget, takePendingSwarmNavigation } from '../lib/pendingSwarmOpenJob';
 import type { SwarmNavigationTarget } from '../lib/pendingSwarmOpenJob';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, Network, X, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, Network, X, XCircle } from 'lucide-react';
+import type { ExpertTask } from '../lib/expertMetadata';
 import { selectNativeMetadataControl } from '../lib/jobControl';
 import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
@@ -60,18 +61,54 @@ export function NativeOperatorFacts({ row }: { row: LocalSummary }) {
     <p>{row.accounting?.kind === 'declared' ? 'Accounting ownership: declared' : row.accounting?.kind === 'excluded' ? 'Accounting exclusion: reported' : 'Accounting ownership: unresolved'}. This view does not calculate totals.</p>
   </div>;
 }
-export function MetadataInspection({ job, navigation }: { job: Job; navigation?: SwarmNavigationTarget }) {
+function relativeSince(ts: number | string | null | undefined, now: number): string {
+  if (ts == null || ts === '') return '';
+  const t = typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : Date.parse(String(ts));
+  if (!Number.isFinite(t)) return '';
+  const secs = Math.max(0, Math.round((now - t) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
+}
+function expertAsLocalTask(task: ExpertTask, status: string) {
+  return {
+    task_id: task.id,
+    role: task.role,
+    instruction: task.instruction,
+    status,
+    adapter: task.adapter,
+    model: task.model ?? '',
+    model_kind: task.model ? 'assigned' as const : 'unavailable' as const,
+    truncated: task.instruction_truncated,
+  };
+}
+export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
+}) {
   const { state } = useSharedJobMetadata();
   const identity = JSON.stringify([job.metadata_key, job.local_ref, state.contextEpoch]);
-  return <SelectedInspection key={identity} job={job} navigation={navigation} />;
+  return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} />;
 }
-function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmNavigationTarget }) {
+function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact: boolean; revealed: boolean; onReveal?: () => void;
+}) {
   const { store, state } = useSharedJobMetadata();
   const [notice, setNotice] = useState('');
   const [stopping, setStopping] = useState(false);
   const [stopAcknowledged, setStopAcknowledged] = useState(false);
+  const [dialogClosed, setDialogClosed] = useState(false);
+  const inspectionOpen = !compact || revealed || !!navigation?.artifactId;
+  const showDump = inspectionOpen && !dialogClosed;
+  const [now, setNow] = useState(Date.now);
+  const revealInspection = () => { onReveal?.(); setDialogClosed(false); };
+  useEffect(() => { if (navigation?.artifactId) { onReveal?.(); setDialogClosed(false); } }, [navigation, onReveal]);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 1000);
+    return () => clearInterval(clock);
+  }, []);
   const local = job.local_ref;
   const listed = local ? state.local.observations.find(o => localKey(o.row.local_ref) === localKey(local)) : null;
   const listedSummary = listed?.row;
@@ -88,6 +125,7 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
     ? native?.summaryFreshness === 'observed'
     : listed?.freshness === 'observed');
   const inspect = (lane: LocalDetail['lane'] = 'actions') => {
+    revealInspection();
     if (state.working || state.view.kind !== 'view') return;
     if (local) { if (!native || native.lane !== lane) store.selectLocal(local, lane); void store.readLocalDetail(); }
     else if (selectedPM) { if (state.detail.kind !== 'selected' || metadataSelectionKey(state.detail.selection) !== metadataSelectionKey(selectedPM)) store.select(selectedPM); void store.readDetail(); }
@@ -164,24 +202,81 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
   };
   const stopNotice = stopAcknowledged && nativeFresh && nativeSummary && !nativeActiveStatuses.includes(nativeSummary.lifecycle)
     ? `Stop request accepted; observed lifecycle: ${nativeSummary.lifecycle}.` : notice;
-  return <div className="px-2 py-1 space-y-1 text-xs text-muted">
-    <button className={button} aria-label={`Job ${job.id}`} onClick={() => {
-      void navigator.clipboard.writeText(job.id).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
-    }}>Job {job.id}</button>
-    <p className="break-all">{job.source} / {local ? `native ${local.incarnation}` : job.job_ref?.state_id} / {job.id}</p>
-    {nativeSummary && <p>Native {nativeSummary.kind.replaceAll('_', ' ')} · Actions {nativeSummary.action_count ?? 'unknown'} · Children {nativeSummary.child_count ?? 'unknown'}{nativeSummary.parent_ref ? ` · Parent ${nativeSummary.parent_ref.job_id} / ${nativeSummary.parent_ref.incarnation}` : ' · Parent relationship unknown'}. Receipt presence: {Object.entries(nativeSummary.receipts).filter(([, present]) => present).map(([name]) => name).join(', ') || 'none observed'}.</p>}
-    {nativeSummary && <NativeOperatorFacts row={nativeSummary} />}
-    {nativeSummary?.kind !== 'provider' && native?.observation?.selected_context && <div>
-      <p>{native.observation.selected_context.source === 'command_preview' ? 'Command preview' : 'Requested instruction'}{native.summaryFreshness === 'stale' ? ' (stale)' : ''}</p>
-      {native.observation.selected_context.request ? <pre className="whitespace-pre-wrap break-words">{native.observation.selected_context.request.text}{native.observation.selected_context.request.truncated ? '\n(truncated to 2048 UTF-8 bytes)' : ''}</pre> : <p>Request unavailable.</p>}
-      {native.observation.selected_context.omission === 'raw_command_not_retained' && <p>Stored preview may be redacted or shortened; raw command is not retained.</p>}
-      {native.observation.selected_context.cwd ? <p className="break-all">Working directory: {native.observation.selected_context.cwd.text}{native.observation.selected_context.cwd.truncated ? ' (truncated to 512 UTF-8 bytes)' : ''}</p> : <p>Working directory unavailable.</p>}
+  const expert = currentExpert(state, job.metadata_key ?? '');
+  const nativeRows = native?.tasks?.rows ?? [];
+  const expertRows = nativeRows.length === 0 && expert && expert.kind !== 'unavailable' ? expert.tasks : [];
+  const adapter = nativeSummary?.display?.adapter || nativeRows[0]?.adapter || expertRows[0]?.adapter || '';
+  const activityAt = nativeSummary && nativeActiveStatuses.includes(nativeSummary.lifecycle)
+    ? nativeSummary.updated_at ?? nativeSummary.created_at : null;
+  const since = relativeSince(activityAt, now);
+  const workerCount = nativeRows.length || expertRows.length || nativeSummary?.task_count || 0;
+  const workerKill = nativeSummary?.kind === 'provider' && view.kind === 'view' && job.session_id === view.context.session_id ? {
+    disabled: !nativeSelection || !nativeFresh || terminal.has(nativeSummary.lifecycle) || state.working || stopping,
+    request: () => void nativeStop(),
+  } : undefined;
+  const costHeader = (expert && expert.kind !== 'unavailable' ? expert.live_economics ?? expert.header : null)
+    ?? (job.metadata_key ? currentHeader(state, job.metadata_key) : null);
+  const dump = showDump ? <>
+      <p className="break-all">{job.source} / {local ? `native ${local.incarnation}` : job.job_ref?.state_id} / {job.id}</p>
+      {nativeSummary && <p>Native {nativeSummary.kind.replaceAll('_', ' ')} · Actions {nativeSummary.action_count ?? 'unknown'} · Children {nativeSummary.child_count ?? 'unknown'}{nativeSummary.parent_ref ? ` · Parent ${nativeSummary.parent_ref.job_id} / ${nativeSummary.parent_ref.incarnation}` : ' · Parent relationship unknown'}. Receipt presence: {Object.entries(nativeSummary.receipts).filter(([, present]) => present).map(([name]) => name).join(', ') || 'none observed'}.</p>}
+      {nativeSummary && <NativeOperatorFacts row={nativeSummary} />}
+      {nativeSummary?.kind !== 'provider' && native?.observation?.selected_context && <div>
+        <p>{native.observation.selected_context.source === 'command_preview' ? 'Command preview' : 'Requested instruction'}{native.summaryFreshness === 'stale' ? ' (stale)' : ''}</p>
+        {native.observation.selected_context.request ? <pre className="whitespace-pre-wrap break-words">{native.observation.selected_context.request.text}{native.observation.selected_context.request.truncated ? '\n(truncated to 2048 UTF-8 bytes)' : ''}</pre> : <p>Request unavailable.</p>}
+        {native.observation.selected_context.omission === 'raw_command_not_retained' && <p>Stored preview may be redacted or shortened; raw command is not retained.</p>}
+        {native.observation.selected_context.cwd ? <p className="break-all">Working directory: {native.observation.selected_context.cwd.text}{native.observation.selected_context.cwd.truncated ? ' (truncated to 512 UTF-8 bytes)' : ''}</p> : <p>Working directory unavailable.</p>}
+      </div>}
+      {!local && job.metadata_key && !observation?.expert && <ExpertCost header={currentHeader(state, job.metadata_key) ?? null} />}
+      <p>Lifecycle: {nativeSummary?.lifecycle ?? job.status}. {!local && (!observation || observation.cost.kind === 'unavailable') ? 'Cost unavailable.' : ''} {(local ? !nativeFresh : job.read_status === 'unavailable') ? 'Observation is stale.' : ''}</p>
+      {state.working && !observation && state.detail.kind === 'selected' && pm && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(pm.row.selection) && <p role="status">Loading artifacts...</p>}
+      {observation && <MetadataExpertPanels key={metadataSelectionKey(observation.selection)} detail={observation} navigation={navigation} store={store} busy={state.working} stale={!detailFresh} />}
+      {native?.tasks && <>
+        {native.tasks.page.revision !== nativeSummary?.revision && <p>Retained task details are stale. Inspect workers to refresh.</p>}
+        {native.routing?.missing.includes('frontend_routing_limit') && <p>Routing display limit reached; final route unavailable.</p>}
+        {native.routing?.rows.some(row => row.association === 'unavailable') && <p>Some recorded routes have unavailable task association.</p>}
+        {native.routing?.page.outcome !== 'complete' && <p>Final recorded route unavailable until routing traversal completes.</p>}
+      </>}
+      {native?.observation && <>
+        {native.laneFreshness === 'stale' && native.observation.rows.length > 0 && <p>Retained {native.observation.lane} rows are stale. Requested lane: {native.lane}.</p>}
+        <p>{native.observation.lane}: {native.observation.page.outcome} · {native.observation.total ?? 'Unknown'} retained {native.observation.lane === 'output' ? 'characters' : 'entries'}. Selected observation at revision {native.observation.page.revision}.{nativeSummary && nativeSummary.revision > native.observation.page.revision ? ' Newer job activity observed; inspect again to refresh.' : ''}</p>
+        {native.observation.lane === 'actions' && native.observation.rows.map((a, i) => 'unavailable' in a ? <p key={`unavailable:${i}`}>Action unavailable</p> : <p key={`${a.action_id}:${i}`}>{a.worker_id} {a.kind}: {a.goal} · {a.status} {a.error} {a.truncated ? '(truncated)' : ''}</p>)}
+        {native.observation.lane === 'output' && <><p>In-memory output only. {native.observation.output?.spilled ? 'Additional output was spilled.' : ''}</p>{native.observation.rows.map(r => <pre className="whitespace-pre-wrap break-words" key={r.offset}>{r.text}</pre>)}</>}
+        {native.observation.lane === 'children' && native.observation.rows.map((r, i) => <p key={i}>{'local_ref' in r ? `${r.local_ref.job_id} / ${r.local_ref.incarnation}` : 'Child unavailable'}</p>)}
+        <button className={button} disabled={state.working || native.laneFreshness !== 'observed' || native.observation.page.outcome !== 'partial'} onClick={() => void store.readLocalDetail(true)}>Next selected page</button>
+      </>}
+    </> : null;
+  return <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10 text-xs text-muted">
+    <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
+      <button className="self-start font-mono text-[9px] text-faint hover:text-muted" aria-label={`Job ${job.id}`} onClick={() => {
+        void navigator.clipboard.writeText(job.id).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
+      }}>Job {job.id}</button>
+      {compact && !showDump && <ExpertCost header={costHeader} now={now} compact />}
+      {adapter && <p className="text-faint lowercase">{adapter}</p>}
+      {since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
+        <Activity size={9} className="text-accent/60 animate-pulse" />
+        {since}
+      </div>}
+    </div>
+    {workerCount > 0 && <div className="border-t border-edge/25 pt-2 flex flex-col gap-1.5">
+      <span className="text-[8.5px] uppercase tracking-[0.14em] text-faint font-medium">Workers ({workerCount})</span>
+      <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
+        {nativeRows.map((task, index) => {
+          const routing = native?.routing;
+          const route = native && native.summaryFreshness === 'observed' && task.task_id && routing?.page.outcome === 'complete' && routing.page.revision === native.tasks?.page.revision
+            && routing.page.revision === nativeSummary?.revision && !routing.missing.includes('frontend_routing_limit')
+            ? routing.rows.filter(row => row.task_id === task.task_id && row.association !== 'unavailable').at(-1) : undefined;
+          return <div key={`${task.task_id}:${index}`} data-task-id={task.task_id ?? undefined}>
+            <NativeTaskDisclosure task={task} route={route} kill={workerKill} onInspect={() => inspect('tasks')} />
+          </div>;
+        })}
+        {expertRows.map(task => <div key={task.id} data-task-id={task.id} data-quality={expert ? expertTaskOutcome(expert, task.id) : undefined}>
+          <NativeTaskDisclosure task={expertAsLocalTask(task, job.status)} usage={task.usage} onInspect={() => inspect()} />
+        </div>)}
+      </div>
     </div>}
-    {!local && job.metadata_key && !observation?.expert && <ExpertCost header={currentHeader(state, job.metadata_key) ?? null} />}
-    <p>Lifecycle: {nativeSummary?.lifecycle ?? job.status}. {!local && (!observation || observation.cost.kind === 'unavailable') ? 'Cost unavailable.' : ''} {(local ? !nativeFresh : job.read_status === 'unavailable') ? 'Observation is stale.' : ''}</p>
     <div className="flex flex-wrap gap-1">
-      <button className={button} disabled={state.working || (!local && !selectedPM)} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
-      {local && <><button className={button} disabled={state.working} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} disabled={state.working} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} disabled={state.working} onClick={() => inspect('output')}>Inspect output</button><button className={button} disabled={state.working} onClick={() => inspect('children')}>Inspect children</button></>}
+      <button className={button} disabled={!local && !selectedPM} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
+      {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
     </div>
     {!local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
     {view.kind === 'view' && !local && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
@@ -189,34 +284,15 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
     {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
-    {state.working && !observation && state.detail.kind === 'selected' && pm && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(pm.row.selection) && <p role="status">Loading artifacts...</p>}
-    {observation && <MetadataExpertPanels key={metadataSelectionKey(observation.selection)} detail={observation} navigation={navigation} store={store} busy={state.working} stale={!detailFresh} />}
-    {native?.tasks && <section aria-label="Native workers">
-      {native.tasks.page.revision !== nativeSummary?.revision && <p>Retained task details are stale. Inspect workers to refresh.</p>}
-      {native.tasks.rows.map((task, index) => {
-        const routing = native.routing;
-        const route = native.summaryFreshness === 'observed' && task.task_id && routing?.page.outcome === 'complete' && routing.page.revision === native.tasks?.page.revision
-          && routing.page.revision === nativeSummary?.revision && !routing.missing.includes('frontend_routing_limit')
-          ? routing.rows.filter(row => row.task_id === task.task_id && row.association !== 'unavailable').at(-1) : undefined;
-        return <NativeTaskDisclosure key={`${task.task_id}:${index}`} task={task} route={route}
-          kill={nativeSummary?.kind === 'provider' && view.kind === 'view' && job.session_id === view.context.session_id ? {
-            disabled: !nativeSelection || !nativeFresh || terminal.has(nativeSummary.lifecycle) || state.working || stopping,
-            request: () => void nativeStop(),
-          } : undefined} />;
-      })}
-      {native.routing?.missing.includes('frontend_routing_limit') && <p>Routing display limit reached; final route unavailable.</p>}
-      {native.routing?.rows.some(row => row.association === 'unavailable') && <p>Some recorded routes have unavailable task association.</p>}
-      {native.routing?.page.outcome !== 'complete' && <p>Final recorded route unavailable until routing traversal completes.</p>}
-    </section>}
     {native?.error && <p role="alert">{native.summaryFreshness === 'observed' ? 'Selected lane is stale or unavailable. Retry inspection.' : 'Selected read unavailable. Retry inspection.'}</p>}
-    {native?.observation && <>
-      {native.laneFreshness === 'stale' && native.observation.rows.length > 0 && <p>Retained {native.observation.lane} rows are stale. Requested lane: {native.lane}.</p>}
-      <p>{native.observation.lane}: {native.observation.page.outcome} · {native.observation.total ?? 'Unknown'} retained {native.observation.lane === 'output' ? 'characters' : 'entries'}. Selected observation at revision {native.observation.page.revision}.{nativeSummary && nativeSummary.revision > native.observation.page.revision ? ' Newer job activity observed; inspect again to refresh.' : ''}</p>
-      {native.observation.lane === 'actions' && native.observation.rows.map((a, i) => 'unavailable' in a ? <p key={`unavailable:${i}`}>Action unavailable</p> : <p key={`${a.action_id}:${i}`}>{a.worker_id} {a.kind}: {a.goal} · {a.status} {a.error} {a.truncated ? '(truncated)' : ''}</p>)}
-      {native.observation.lane === 'output' && <><p>In-memory output only. {native.observation.output?.spilled ? 'Additional output was spilled.' : ''}</p>{native.observation.rows.map(r => <pre className="whitespace-pre-wrap break-words" key={r.offset}>{r.text}</pre>)}</>}
-      {native.observation.lane === 'children' && native.observation.rows.map((r, i) => <p key={i}>{'local_ref' in r ? `${r.local_ref.job_id} / ${r.local_ref.incarnation}` : 'Child unavailable'}</p>)}
-      <button className={button} disabled={state.working || native.laneFreshness !== 'observed' || native.observation.page.outcome !== 'partial'} onClick={() => void store.readLocalDetail(true)}>Next selected page</button>
-    </>}
+    {compact && dump && <div role="dialog" aria-label="Selected job inspection" className="fixed inset-4 z-[80] m-auto flex h-3/4 max-h-full w-auto max-w-3xl flex-col overflow-hidden rounded-2xl border border-edge bg-panel text-txt shadow-lg">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-edge px-4 py-2">
+        <h2 className="text-sm font-semibold">Job inspection</h2>
+        <button type="button" className="min-h-11 shrink-0 px-2 text-xs text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent" onClick={() => setDialogClosed(true)}>Close job inspection</button>
+      </header>
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain break-words p-4 text-xs text-muted">{dump}</div>
+    </div>}
+    {!compact && dump}
   </div>;
 }
 type JobPreferences = { expanded: string[]; dismissed: string[] };
@@ -260,6 +336,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [jobScope, setJobScope] = useState<JobScope>(loadJobScope);
   const [finishedOpen, setFinishedOpen] = useState(true);
+  const [inspected, setInspected] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
   const jobs = useMemo(() => metadataJobs(state), [state]);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
@@ -421,7 +498,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from tracker: ${job.goal}`} title="Dismiss from tracker (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
       {job.read_status === 'unavailable' && <p className="px-2 text-xs text-muted">Retained observation is stale; current lifecycle is unconfirmed.</p>}
       {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
-      {open && <MetadataInspection job={job} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
+      {open && <MetadataInspection compact revealed={inspected.includes(key)} onReveal={() => setInspected(p => p.includes(key) ? p : [...p, key].slice(-8))} job={job} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
     </div>;
   };
   const jobList: ReactNode[] = [];

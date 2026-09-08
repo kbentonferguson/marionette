@@ -867,7 +867,8 @@ describe("SwarmPane mid-run job-row meters", () => {
     const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-cost ·/);
-      expect(screen.getByText('12,000 combined tokens · reported by native job')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
+      expect(await screen.findByText('12,000 combined tokens · reported by native job')).toBeVisible();
       expect(screen.getByText('Estimated spend: $0.05 · static pricing · financial receipt')).toBeVisible();
       expect(screen.getByText('Estimated savings: $0.0553 · financial receipt estimate; not measured savings.')).toBeVisible();
       expect(screen.getByText('Route forecast: $0.1000 · financial receipt estimate; not spend.')).toBeVisible();
@@ -883,7 +884,8 @@ describe("SwarmPane mid-run job-row meters", () => {
     const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-update ·/);
-      expect(screen.getByText(/Estimated savings: \$0.0200/)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
+      expect(await screen.findByText(/Estimated savings: \$0.0200/)).toBeVisible();
       await waitFor(() => expect(fixture.store.getSnapshot().working).toBe(false));
       await fixture.update([{ ...row, revision: 2, economics: { ...row.economics, estimated_savings_usd: 0.11 } }]);
       expect(screen.getByText(/Estimated savings: \$0.1100/)).toBeVisible();
@@ -1051,6 +1053,26 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
     expect(screen.queryByText(/Unmatched routing/)).not.toBeInTheDocument();
     expect(screen.queryByText(/no matching worker/)).not.toBeInTheDocument();
+  });
+
+  it("keeps compact job and worker chrome on expand and hides the operator dump until Inspect", async () => {
+    const metadata = await nativeExpertFixture({ jobId: 'local-compact' });
+    outcomeFixture = metadata;
+    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    await expandJob(/Provider worker/);
+    expect(screen.getByLabelText('Job local-compact')).toBeVisible();
+    expect(await screen.findByText(/Workers \(1\)/)).toBeVisible();
+    expect(await screen.findByRole('button', { name: /implement \(agentic\)/ })).toBeVisible();
+    expect(screen.queryByText(/Lifecycle:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Parent relationship unknown/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/combined tokens|Estimated spend|Native provider/)).not.toBeInTheDocument();
+    const worker = await screen.findByRole('button', { name: /implement \(agentic\)/ });
+    fireEvent.click(worker);
+    expect(screen.getByText('Keyboard disclosure')).toBeVisible();
+    expect(document.querySelector('[data-job-id]')?.textContent).not.toContain('Keyboard disclosure');
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect actions' }));
+    expect(screen.getByRole('dialog', { name: 'Selected job inspection' })).toBeVisible();
+    expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
   });
 });
 

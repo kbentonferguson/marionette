@@ -37,6 +37,7 @@ it('withholds final route on partial history, then preserves prior-page associat
   });
   render(<f.Provider><MetadataJobs /></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: /Provider worker/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect routing' }));
   await screen.findByText(/routing: partial/);
   expect(screen.queryByText(/cheap-model/)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Next selected page' }));
