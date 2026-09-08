@@ -188,6 +188,34 @@ describe("composer-family chrome", () => {
     expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
   });
 
+  it("does not dump provider workers onto the composer activity rail", () => {
+    const providers = [
+      {
+        id: "local-1",
+        goal: "Provider worker · agentic/gpt-5.6-luna",
+        status: "failed",
+        session_id: "sess-1",
+        metadata_only: true,
+        job_kind: "provider",
+        read_status: "unavailable",
+      },
+      {
+        id: "local-2",
+        goal: "Provider worker · running",
+        status: "running",
+        session_id: "sess-1",
+        metadata_only: true,
+        job_kind: "provider",
+      },
+    ] as Job[];
+    const rail = render(
+      <ComposerActivityRail jobs={providers} sessionId="sess-1" />,
+    );
+    expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
+    expect(rail.queryByText(/Provider worker/)).toBeNull();
+    expect(rail.queryByText(/Coverage incomplete/)).toBeNull();
+  });
+
   it("renders a nested session TODO tree on the activity rail", () => {
     publishSessionTodos({
       phases: [

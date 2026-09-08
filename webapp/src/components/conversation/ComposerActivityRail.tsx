@@ -6,6 +6,7 @@ import {
   listAgentCommandSessions,
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
+import { isJobsListRow } from "../../lib/jobMetadataContext";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
 import { todoHasWork } from "../../lib/composerTodos";
 import { getSessionTodos, getSessionTodosSessionId, subscribeSessionTodos } from "../../lib/sessionTodos";
@@ -23,7 +24,7 @@ export default function ComposerActivityRail({
   sessionId: string;
 }) {
   const bodyJobs = jobs.filter(job => !job.metadata_only);
-  const observedJobs = jobs.filter(job => job.metadata_only && job.session_id === sessionId);
+  const observedJobs = jobs.filter(job => job.metadata_only && job.session_id === sessionId && isJobsListRow(job));
   const commandIndexVersion = useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,

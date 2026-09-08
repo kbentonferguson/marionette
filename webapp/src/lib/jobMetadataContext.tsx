@@ -26,6 +26,10 @@ export function useSharedJobMetadata() {
   const store = useContext(JobMetadataContext);
   return { store, state: useJobMetadata(store) };
 }
+/** Leaf provider workers belong under Swarm Tracker inspect, not Jobs or the composer rail. */
+export function isJobsListRow(job: Pick<Job, "job_kind">): boolean {
+  return job.job_kind !== "provider";
+}
 export function metadataActivity(state: JobMetadataState): { count: number; label: string } {
   const active = new Set(nativeActiveStatuses);
   const count = state.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle ?? '')).length

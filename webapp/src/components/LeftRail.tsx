@@ -1,6 +1,6 @@
 import { metadataSelectionKey } from '../lib/jobMetadata';
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
-import { useSharedJobMetadata, metadataJobs } from '../lib/jobMetadataContext';
+import { useSharedJobMetadata, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
 import { MetadataInspection, MetadataStatus } from './MetadataJobs';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
@@ -1352,7 +1352,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     artifactContextRef.current = artifactContext;
     artifactEpoch.current += 1;
   }
-  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId).sort((a, b) =>
+  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId)
+    .filter(isJobsListRow)
+    .sort((a, b) =>
     Number(b.read_status !== 'unavailable' && nativeActiveStatuses.includes(b.status))
     - Number(a.read_status !== 'unavailable' && nativeActiveStatuses.includes(a.status)),
   );
