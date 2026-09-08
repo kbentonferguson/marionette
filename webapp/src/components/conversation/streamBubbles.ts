@@ -25,6 +25,27 @@ export function assistantProseCovers(existing: string, incoming: string): boolea
   return false;
 }
 
+/**
+ * Open-bubble absorb: live token deltas still append; snapshot / ring replay
+ * of the same sentence (or sentence+sentence) does not concatenate.
+ */
+export function absorbOpenPilotDelta(existing: string, incoming: string): string {
+  const acc = existing || "";
+  const inc = incoming || "";
+  if (!inc) return acc;
+  if (isTrivialAssistantCrumb(inc)) return acc;
+  if (!acc || isTrivialAssistantCrumb(acc)) return sanitizeThinkingStatusGlue(inc);
+  if (inc === acc) return acc;
+  if (acc.startsWith(inc)) return acc;
+  if (inc.startsWith(acc)) {
+    const rest = inc.slice(acc.length);
+    if (rest.trim() === acc.trim()) return acc;
+    return sanitizeThinkingStatusGlue(inc);
+  }
+  if (inc.trim().length >= PROSE_COVER_MIN_CHUNK && acc.endsWith(inc)) return acc;
+  return sanitizeThinkingStatusGlue(acc + inc);
+}
+
 /** Current-turn sealed (non-streaming) assistant texts, newest last. */
 export function sealedAssistantTextsInTurn(items: Item[]): string[] {
   const texts: string[] = [];
@@ -178,9 +199,9 @@ export function appendStreamingTextToItems(
     const updated = [...items];
     const stampWorkerId =
       workerStream && workerId && !(bubble.msg.worker_id || "").trim();
-    const nextText = isTrivialAssistantCrumb(chunk)
-      ? bubble.msg.text
-      : sanitizeThinkingStatusGlue(bubble.msg.text + chunk);
+    const nextText = workerStream
+      ? (isTrivialAssistantCrumb(chunk) ? bubble.msg.text : sanitizeThinkingStatusGlue(bubble.msg.text + chunk))
+      : absorbOpenPilotDelta(bubble.msg.text, chunk);
     updated[idx] = {
       kind: "msg",
       msg: {

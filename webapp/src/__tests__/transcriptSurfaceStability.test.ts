@@ -1274,4 +1274,22 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       cmd: "make check",
     });
   });
+
+  it("open pilot bubble absorbs snapshot replay instead of concatenating Benton #345", () => {
+    const phrase = "Received—single response.";
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "ping" } },
+      { kind: "msg", msg: { role: "assistant", text: phrase, streaming: true } },
+    ];
+    items = appendStreamingTextToItems(items, phrase);
+    expect(assistantTexts(items)).toEqual([phrase]);
+    items = appendStreamingTextToItems(items, phrase);
+    expect(assistantTexts(items)).toEqual([phrase]);
+    items = appendStreamingTextToItems(items, `${phrase}\n\n${phrase}`);
+    expect(assistantTexts(items)).toEqual([phrase]);
+    items = appendStreamingTextToItems(items, "Received");
+    expect(assistantTexts(items)).toEqual([phrase]);
+    items = appendStreamingTextToItems(items, `${phrase} Next.`);
+    expect(assistantTexts(items)).toEqual([`${phrase} Next.`]);
+  });
 });

@@ -7,7 +7,22 @@ import time
 
 from harness.api.sse import SseEventRing, _SSE_RING_CAP
 from harness.send_loop_phases import drain_stream_queue
-from harness.stream_identity import StreamDeltaBatch, normalize_delta_payload
+from harness.stream_identity import (
+    StreamDeltaBatch,
+    absorb_stream_snapshot,
+    normalize_delta_payload,
+)
+
+
+def test_absorb_stream_snapshot_skips_replay_and_keeps_true_deltas():
+    phrase = "Received—single response."
+    assert absorb_stream_snapshot("", phrase) == phrase
+    assert absorb_stream_snapshot(phrase, phrase) == ""
+    assert absorb_stream_snapshot(phrase, phrase + "\n\n" + phrase) == ""
+    assert absorb_stream_snapshot(phrase, phrase + phrase) == ""
+    assert absorb_stream_snapshot("Received", phrase) == "—single response."
+    assert absorb_stream_snapshot("Hello", " world") == " world"
+    assert absorb_stream_snapshot(phrase, "Received") == ""
 
 
 class _CountingGetQueue(queue.Queue):
