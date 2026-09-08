@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsPane, { clearSettingsSnapshot } from "../components/SettingsPane";
 import { api } from "../lib/api";
@@ -54,5 +54,17 @@ describe("SettingsPane keys-first providers order", () => {
     const keys = screen.getByText("API keys");
     const signIn = screen.getByText("Optional plan sign-in");
     expect(keys.compareDocumentPosition(signIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps API keys closed after Settings remounts", async () => {
+    localStorage.clear();
+    const first = render(<SettingsPane onOpenWizard={vi.fn()} section="providers" />);
+    const keys = screen.getByRole("button", { name: /API keys/ });
+    fireEvent.click(keys);
+    expect(screen.queryByText(/One Full stack key/)).toBeNull();
+    first.unmount();
+    render(<SettingsPane onOpenWizard={vi.fn()} section="providers" />);
+    expect(screen.getByRole("button", { name: /API keys/ })).toBeInTheDocument();
+    expect(screen.queryByText(/One Full stack key/)).toBeNull();
   });
 });

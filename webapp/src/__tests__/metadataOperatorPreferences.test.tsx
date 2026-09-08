@@ -92,12 +92,12 @@ it('keeps interrupted and PM stalled finished, with recoverable and native stall
   pm = [{ ...summary(), lifecycle: 'interrupted' }, { ...summary(2), lifecycle: 'stalled' }];
   native = [{ ...nativeSummary(3), lifecycle: 'stalled' }];
   await start(); mount();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'attention' } });
+  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'attention' } });
   expect(row('job_1').getByRole('button', { name: /interrupted/ })).toBeVisible();
   expect(row('job_2').getByText(/recoverable/i)).toBeVisible();
   expect(row('job_3', 'local').getByText(/may still be active/i)).toBeVisible();
   expect(row('job_3', 'local').queryByRole('button', { name: /Dismiss/ })).toBeNull();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'finished' } });
+  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'finished' } });
   expect(row('job_1').getByRole('button', { name: /interrupted/ })).toBeVisible();
   expect(row('job_2').getByRole('button', { name: /stalled/ })).toBeVisible();
   expect(document.querySelector('[data-job-source="local"]')).toBeNull();
@@ -128,8 +128,8 @@ it('retains artifact navigation and states its unavailability without stealing f
   expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveFocus();
   const otherArtifact = document.querySelector('[data-artifact-ids="artifact-1"]');
   expect(otherArtifact).not.toHaveAttribute('open');
-  screen.getByRole('combobox').focus(); await observe();
-  expect(screen.getByRole('combobox')).toHaveFocus();
+  screen.getByLabelText('Filter swarms').focus(); await observe();
+  expect(screen.getByLabelText('Filter swarms')).toHaveFocus();
   expect(peekPendingSwarmNavigation()).toBe(queued);
   expect(screen.getByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeVisible();
   expect(read).toHaveBeenCalledTimes(1);
@@ -142,8 +142,8 @@ it('retains artifact navigation and states its unavailability without stealing f
   expect(peekPendingSwarmNavigation()).toBeNull();
   expect(screen.queryByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeNull();
   expect(screen.getAllByText(/Artifact body unavailable/)).toHaveLength(2);
-  screen.getByRole('combobox').focus(); await observe();
-  expect(screen.getByRole('combobox')).toHaveFocus(); expect(read).toHaveBeenCalledTimes(2);
+  screen.getByLabelText('Filter swarms').focus(); await observe();
+  expect(screen.getByLabelText('Filter swarms')).toHaveFocus(); expect(read).toHaveBeenCalledTimes(2);
 });
 it('holds an unobserved exact target until that exact row appears', async () => {
   await start(); mount(); openTarget('job_2', metadataSelectionKey(selection(2)));
@@ -185,9 +185,9 @@ it.each(['attention', 'active'])('keeps Hide finished within the %s filter', asy
   await start();
   pinned = [pm[1]]; store.setPendingSelections(pinned.map(r => r.selection), []); await store.refreshPins();
   mount();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: filter } });
+  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: filter } });
   fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } });
+  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'all' } });
   expect(row('job_2', 'cli').getByRole('button', { name: /^PM CLI job/ })).toBeVisible();
   expect(preference().dismissed).toHaveLength(filter === 'active' ? 0 : 1);
 });
