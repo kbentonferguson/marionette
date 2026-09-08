@@ -272,8 +272,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (!d.aborted) {
         window.dispatchEvent(new Event("harness-context-changed"));
       }
+    } else if (ev.kind === "notice" && d.reason === "implement_unverified") {
+      // Intentionally dropped: do not paint or latch a wait hint.
     } else if (ev.kind === "notice" && noticeIsHonestyTranscript(d.reason)) {
-      // Stop honesty and unverified-land (#323): durable transcript row.
+      // Stop honesty: durable transcript row.
       // Omit wait-hint — the operator must still see the sentence after idle.
       setItems((p) => appendStopHonestyNotice(p, d.message));
     } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {

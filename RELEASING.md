@@ -43,14 +43,14 @@ Green CI Before Tag still holds: the `tests` workflow (Ubuntu 3.9 xdist,
 Windows 3.9 four-way shard, frontend-build) must be green for **this git
 tree**. macOS, Python 3.11, and `@pytest.mark.resource_soak` run in
 `tests-full.yml` (nightly / manual) and do not block the tag. The tag may
-point at the dest-into-main merge commit; it does not need a second `tests`
-run on that SHA when `merge^{tree}` equals the already-green dest PR tree.
+point at the dev-into-main merge commit; it does not need a second `tests`
+run on that SHA when `merge^{tree}` equals the already-green dev PR tree.
 
-`.github/workflows/release.yml` does **not** re-run pytest. On a dest-into-main
+`.github/workflows/release.yml` does **not** re-run pytest. On a dev-into-main
 PR it starts installer builds in parallel with `tests.yml`. On a `v*` tag it
 checks that a successful `tests` run exists for this tree (or this commit),
 reuses those PR installers when the tree matches, and publishes only after
-that check. Dest-PR mac builds must Developer ID-sign
+that check. Dev-PR mac builds must Developer ID-sign
 (`CSC_FOR_PULL_REQUEST`); an unsigned zip fails ShipIt on existing installs
 and must not be adopted. Users wait `max(tests, builds)`, not tests + builds
 + a second pytest gate.
@@ -59,9 +59,9 @@ If a conflict resolution changes the tree, wait for `tests` on the new tree.
 That is the only exception.
 
 ```bash
-# Preferred ship path (version bump already on dest, dest contains main):
-# 1. Open dest -> main. Wait for that PR's tests matrix.
-# 2. Merge. Confirm merge^{tree} == dest^{tree}.
+# Preferred ship path (version bump already on dev, dev contains main):
+# 1. Open dev -> main. Wait for that PR's tests matrix.
+# 2. Merge. Confirm merge^{tree} == dev^{tree}.
 # 3. Tag immediately:
 git tag vX.Y.Z
 git push origin vX.Y.Z
@@ -72,7 +72,7 @@ bash scripts/release.sh X.Y.Z "release notes"
 
 `scripts/release.sh` bumps `webapp/package.json`, commits `release: vX.Y.Z` if
 needed, requires a green `tests` workflow for the resulting tree, then tags
-and pushes. A version bump on `main` that was not in the dest PR changes the
+and pushes. A version bump on `main` that was not in the dev PR changes the
 tree; wait for `tests` on that commit.
 
 ### Faster Windows (optional)

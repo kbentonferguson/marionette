@@ -182,12 +182,8 @@ def test_drain_swarm_results_in_turn_skips_pilot_resume():
     )
 
 
-def test_drain_unverified_land_emits_user_honesty_notice():
-    from harness.pilot_guards import (
-        UNVERIFIED_LAND_NOTICE_REASON,
-        UNVERIFIED_LAND_USER_MESSAGE,
-        new_turn_guard_state,
-    )
+def test_drain_applied_without_acceptance_does_not_emit_worse_notice():
+    from harness.pilot_guards import new_turn_guard_state
 
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     session = ConversationalSession(cfg)
@@ -206,17 +202,40 @@ def test_drain_unverified_land_emits_user_honesty_notice():
         emit_resume=False, already_holding_busy=True,
     ))
     notices = [e for e in events if e.kind == "notice"]
-    assert len(notices) == 1
-    assert notices[0].data["reason"] == UNVERIFIED_LAND_NOTICE_REASON
-    assert notices[0].data["message"] == UNVERIFIED_LAND_USER_MESSAGE
-    assert any(
-        row.get("type") == "message"
-        and row.get("role") == "assistant"
-        and row.get("text") == UNVERIFIED_LAND_USER_MESSAGE
+    assert notices == []
+    assert not any(
+        "I made this worse" in str(row.get("text") or "")
         for row in session._display_transcript
     )
-    kinds = [e.kind for e in events]
-    assert kinds.index("swarm_result") < kinds.index("notice")
+    assert any(e.kind == "swarm_result" for e in events)
+
+
+def test_drain_failed_acceptance_does_not_resume_take_the_next_step():
+    from harness.pilot_guards import new_turn_guard_state
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    session._turn_guard_state = new_turn_guard_state("land a patch")
+    session._swarm_results.put({
+        "job_id": "job_failed_gate",
+        "objective": "land a patch",
+        "result": {
+            "applied": True,
+            "files": ["a.py"],
+            "summary": "tests red",
+            "has_patch_art": True,
+            "acceptance": "failed",
+        },
+    })
+    events = list(session.drain_swarm_results(
+        emit_resume=True, already_holding_busy=True,
+    ))
+    assert not any(e.kind == "notice" and "I made this worse" in str(e.data.get("message") or "") for e in events)
+    assert "pilot_resume" not in [e.kind for e in events]
+    assert not any(
+        "take the appropriate next step" in str(m.get("content") or "")
+        for m in session._history
+    )
 
 
 def test_run_provider_worker_background_finishes_local_job():

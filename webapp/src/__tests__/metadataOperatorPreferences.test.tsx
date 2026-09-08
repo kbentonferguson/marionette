@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import MetadataJobs from '../components/MetadataJobs';
+import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
 import { JobMetadataContext, metadataJobs } from '../lib/jobMetadataContext';
 import { JobMetadataStore } from '../lib/useJobMetadata';
 import { JobMetadataClient, metadataSelectionKey } from '../lib/jobMetadata';
@@ -90,7 +90,7 @@ it('hides finished only within the shown session filter', async () => {
 });
 it('keeps interrupted and PM stalled finished, with recoverable and native stalled distinctions', async () => {
   pm = [{ ...summary(), lifecycle: 'interrupted' }, { ...summary(2), lifecycle: 'stalled' }];
-  native = [{ ...nativeSummary(3), lifecycle: 'stalled' }];
+  native = [{ ...nativeSummary(3), kind: 'provider', lifecycle: 'stalled' }];
   await start(); mount();
   fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'attention' } });
   expect(row('job_1').getByRole('button', { name: /interrupted/ })).toBeVisible();
@@ -171,10 +171,11 @@ it('preserves expansion across remount and isolates source and incarnation dismi
   expect(row('job_1', 'local').getByRole('button', { name: /completed/ })).toBeVisible();
 });
 it('renders accounting ownership separately from exclusion without asserting totals', async () => {
-  native = ['declared', 'excluded', 'unresolved'].map((kind, i) => ({ ...nativeSummary(i + 1), accounting: { kind: kind === 'declared' ? 'declared' : kind === 'excluded' ? 'excluded' : 'unresolved', aggregation_authority: false } }));
+  native = ['declared', 'excluded', 'unresolved'].map((kind, i) => ({ ...nativeSummary(i + 1), kind: 'provider', accounting: { kind: kind === 'declared' ? 'declared' : kind === 'excluded' ? 'excluded' : 'unresolved', aggregation_authority: false } }));
   await start(); mount();
-  for (const job of metadataJobs(store.getSnapshot()).filter(j => j.local_ref)) openTarget(job.id, job.metadata_key);
-  for (const inspect of screen.getAllByRole('button', { name: 'Inspect actions' })) fireEvent.click(inspect);
+  for (const job of metadataJobs(store.getSnapshot()).filter(j => j.local_ref)) {
+    render(<JobMetadataContext.Provider value={store}><MetadataInspection job={job} /></JobMetadataContext.Provider>);
+  }
   expect(screen.getByText(/Accounting ownership: declared/)).toBeVisible();
   expect(screen.getByText(/Accounting exclusion: reported/)).toBeVisible();
   expect(screen.getAllByText(/This view does not calculate totals/)).toHaveLength(3);

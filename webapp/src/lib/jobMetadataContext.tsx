@@ -5,6 +5,7 @@ import type { JobMetadataState } from './useJobMetadata';
 import type { Job } from './api';
 import { metadataSelectionKey } from './jobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
+import { isCommandJob } from './jobClassification';
 
 const inactive = new JobMetadataStore();
 export const JobMetadataContext = createContext(inactive);
@@ -26,9 +27,9 @@ export function useSharedJobMetadata() {
   const store = useContext(JobMetadataContext);
   return { store, state: useJobMetadata(store) };
 }
-/** Leaf provider workers belong under Swarm Tracker inspect, not Jobs or the composer rail. */
-export function isJobsListRow(job: Pick<Job, "job_kind">): boolean {
-  return job.job_kind !== "provider";
+/** Leaf provider workers and command jobs stay off the Jobs list. */
+export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapter">): boolean {
+  return job.job_kind !== "provider" && !isCommandJob(job);
 }
 export function metadataActivity(state: JobMetadataState): { count: number; label: string } {
   const active = new Set(nativeActiveStatuses);

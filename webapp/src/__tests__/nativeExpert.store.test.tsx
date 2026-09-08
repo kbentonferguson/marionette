@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
-import MetadataJobs from '../components/MetadataJobs';
+import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
+import { metadataJobs } from '../lib/jobMetadataContext';
 import { expertSummary } from './metadataExpert.fixtures';
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
 import { token } from './jobMetadata.fixtures';
@@ -35,8 +36,9 @@ it('withholds final route on partial history, then preserves prior-page associat
     }
     return original(method, path);
   });
-  render(<f.Provider><MetadataJobs /></f.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: /Provider worker/ }));
+  const job = metadataJobs(f.store.getSnapshot()).find(row => row.local_ref);
+  if (!job) throw Error('Missing native job');
+  render(<f.Provider><MetadataInspection job={job} /></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect routing' }));
   await screen.findByText(/routing: partial/);
   expect(screen.queryByText(/cheap-model/)).toBeNull();

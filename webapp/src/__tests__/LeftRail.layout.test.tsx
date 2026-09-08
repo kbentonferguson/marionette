@@ -66,8 +66,8 @@ it('keeps observed active PM and native jobs above finished history in the cappe
   const target = { ...context, repo: '/workspace', session_id: 'session-1' };
   const queued = summary();
   const snapshot = store.getSnapshot();
-  const activeNative = { ...nativeSummary(100), session_id: target.session_id, kind: 'run_command', lifecycle: 'running' };
-  const retained = Array.from({ length: 30 }, (_, i) => ({ ...nativeSummary(i + 1), session_id: target.session_id, kind: 'run_command', lifecycle: 'completed' }));
+  const activeNative = { ...nativeSummary(100), session_id: target.session_id, kind: 'run_implement', lifecycle: 'running' };
+  const retained = Array.from({ length: 30 }, (_, i) => ({ ...nativeSummary(i + 1), session_id: target.session_id, kind: 'run_implement', lifecycle: 'completed' }));
   const hiddenLeaves = Array.from({ length: 8 }, (_, i) => ({ ...nativeSummary(i + 200), session_id: target.session_id, kind: 'provider', lifecycle: 'completed' }));
   vi.spyOn(store, 'getSnapshot').mockReturnValue({ ...snapshot,
     view: { kind: 'view', target, context: target, view: { ...view(), context: target }, refresh: 'idle' },
@@ -78,11 +78,11 @@ it('keeps observed active PM and native jobs above finished history in the cappe
   try {
     await screen.findByRole('button', { name: 'Show all (32)' });
     expect(screen.getByRole('button', { name: 'PM harness job', exact: true })).toBeVisible();
-    expect(screen.getAllByRole('button', { name: 'run command', exact: true }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'run implement', exact: true }).length).toBeGreaterThan(0);
     const list = mounted.container.querySelector('[data-slot="left-rail-jobs"]');
     const labels = [...(list?.querySelectorAll('button') ?? [])].map(button => button.textContent?.trim());
     expect(labels.filter(label => label === 'provider')).toEqual([]);
-    const listed = labels.filter(label => label === 'PM harness job' || label === 'run command');
-    expect(listed.slice(0, 2).sort()).toEqual(['PM harness job', 'run command']);
+    const listed = labels.filter(label => label === 'PM harness job' || label === 'run implement');
+    expect(listed.slice(0, 2).sort()).toEqual(['PM harness job', 'run implement']);
   } finally { mounted.unmount(); vi.restoreAllMocks(); store.dispose(); }
 });

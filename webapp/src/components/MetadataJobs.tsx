@@ -17,6 +17,7 @@ import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
 import { useSharedJobMetadata, metadataActivity, metadataJobs, currentExpert, currentHeader } from '../lib/jobMetadataContext';
+import { isSwarmTrackerJob } from '../lib/jobClassification';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
@@ -139,7 +140,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   }, [local, selectedPM, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
   useEffect(() => {
-    if (initialNativeRead.current || !local || nativeSummary?.kind !== 'provider' || state.working || state.view.kind !== 'view') return;
+    if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working || state.view.kind !== 'view') return;
     initialNativeRead.current = true;
     store.selectLocal(local, 'tasks');
     void store.readLocalDetail();
@@ -210,8 +211,8 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     ? nativeSummary.updated_at ?? nativeSummary.created_at : null;
   const since = relativeSince(activityAt, now);
   const workerCount = nativeRows.length || expertRows.length || nativeSummary?.task_count || 0;
-  const workerKill = nativeSummary?.kind === 'provider' && view.kind === 'view' && job.session_id === view.context.session_id ? {
-    disabled: !nativeSelection || !nativeFresh || terminal.has(nativeSummary.lifecycle) || state.working || stopping,
+  const workerKill = local && view.kind === 'view' && job.session_id === view.context.session_id ? {
+    disabled: !nativeSelection || !nativeFresh || (nativeSummary != null && terminal.has(nativeSummary.lifecycle)) || state.working || stopping,
     request: () => void nativeStop(),
   } : undefined;
   const costHeader = (expert && expert.kind !== 'unavailable' ? expert.live_economics ?? expert.header : null)
@@ -267,22 +268,25 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
             && routing.page.revision === nativeSummary?.revision && !routing.missing.includes('frontend_routing_limit')
             ? routing.rows.filter(row => row.task_id === task.task_id && row.association !== 'unavailable').at(-1) : undefined;
           return <div key={`${task.task_id}:${index}`} data-task-id={task.task_id ?? undefined}>
-            <NativeTaskDisclosure task={task} route={route} kill={workerKill} onInspect={() => inspect('tasks')} />
+            <NativeTaskDisclosure task={task} route={route} kill={workerKill} onInspect={compact ? undefined : () => inspect('tasks')} />
           </div>;
         })}
         {expertRows.map(task => <div key={task.id} data-task-id={task.id} data-quality={expert ? expertTaskOutcome(expert, task.id) : undefined}>
-          <NativeTaskDisclosure task={expertAsLocalTask(task, job.status)} usage={task.usage} onInspect={() => inspect()} />
+          <NativeTaskDisclosure task={expertAsLocalTask(task, job.status)} usage={task.usage} onInspect={compact ? undefined : () => inspect()} />
         </div>)}
       </div>
     </div>}
-    <div className="flex flex-wrap gap-1">
+    {!compact && <div className="flex flex-wrap gap-1">
       <button className={button} disabled={!local && !selectedPM} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
-    </div>
-    {!local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
+    </div>}
+    {compact && !local && <div className="flex flex-wrap gap-1">
+      <button className={button} disabled={!selectedPM} onClick={() => inspect()}>Inspect tasks and artifacts</button>
+    </div>}
+    {!compact && !local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
     {view.kind === 'view' && !local && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
-    {local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
-    {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
+    {!compact && local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
+    {!compact && local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
     {native?.error && <p role="alert">{native.summaryFreshness === 'observed' ? 'Selected lane is stale or unavailable. Retry inspection.' : 'Selected read unavailable. Retry inspection.'}</p>}
@@ -339,7 +343,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [finishedOpen, setFinishedOpen] = useState(true);
   const [inspected, setInspected] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
-  const jobs = useMemo(() => metadataJobs(state), [state]);
+  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
@@ -497,7 +501,6 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
         <span className={`text-[9px] font-medium tabular-nums shrink-0 ${job.status === 'cancelled' ? 'text-muted' : failedOutcomeStatuses.has(job.status) ? 'text-risk/80' : quality(job) === 'degraded' ? 'text-warn/80' : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? 'text-good' : 'text-accent/80'}`}>{quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span>
       </button>
       {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from tracker: ${job.goal}`} title="Dismiss from tracker (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
-      {job.read_status === 'unavailable' && <p className="px-2 text-xs text-muted">Retained observation is stale; current lifecycle is unconfirmed.</p>}
       {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
       {open && <MetadataInspection compact revealed={inspected.includes(key)} onReveal={() => setInspected(p => p.includes(key) ? p : [...p, key].slice(-8))} job={job} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
     </div>;

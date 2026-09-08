@@ -3,9 +3,9 @@ name: release
 # Thin Electron shell installers. The packaged app bootstraps a source checkout
 # on first launch; it does NOT bundle Python or a PyInstaller backend.
 #
-# Dest->main PRs start installer builds in parallel with tests.yml. A v* tag
+# Dev->main PRs start installer builds in parallel with tests.yml. A v* tag
 # publishes only after a successful `tests` workflow exists for this git tree
-# (commit or same-tree dest PR). release.yml does not re-run pytest.
+# (commit or same-tree dev PR). release.yml does not re-run pytest.
 
 on:
   pull_request:
@@ -63,7 +63,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Reuse same-tree installers from dest PR
+      - name: Reuse same-tree installers from dev PR
         id: reuse
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -102,7 +102,7 @@ jobs:
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
-          # Dest->main PRs build the installers the tag later adopts. electron-builder
+          # Dev->main PRs build the installers the tag later adopts. electron-builder
           # skips signing on pull_request unless this is set; unsigned mac zips then
           # fail ShipIt ("code failed to satisfy specified code requirement(s)") on
           # every existing Developer ID install. Fork PRs still cannot sign: GitHub

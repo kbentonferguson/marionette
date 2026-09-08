@@ -25,7 +25,7 @@ const parsed = parseLocalList(wire.active, context, wire.descriptor.incarnation,
 function sample(id: string, lifecycle: string, created_at: number | null): LocalSummary {
   const row = parsed.rows[0];
   if (row.deleted) throw Error('Expected live backend fixture');
-  return { ...row, local_ref: { ...row.local_ref, job_id: id }, lifecycle, created_at,
+  return { ...row, local_ref: { ...row.local_ref, job_id: id }, lifecycle, created_at, kind: 'provider',
     display: { label: 'Provider worker', model: id, adapter: 'native', truncated: false } };
 }
 function row(id: string, source = 'local') {
@@ -136,8 +136,7 @@ it('keeps the same focused expanded row when chronology and lifecycle change', a
   await observe();
   expect(toggle('older-active')).toBe(selected); expect(selected).toHaveFocus();
   expect(selected).toHaveAttribute('aria-expanded', 'true');
-  fireEvent.click(within(row('older-active')).getByRole('button', { name: 'Inspect actions' }));
-  expect(within(row('older-active')).getByText(/Lifecycle: completed/)).toBeVisible();
+  expect(within(row('older-active')).queryByRole('button', { name: 'Inspect actions' })).toBeNull();
 });
 it('keeps group collapse independent from expansion and opens exact pending targets', async () => {
   await start(); mount(); fireEvent.click(toggle('older-complete'));
@@ -213,7 +212,6 @@ it('moves stale lifecycle observations into unconfirmed activity without claimin
   for (let i = 0; i < 24; i++) await act(async () => { await store.advance(); });
   expect(store.getSnapshot().local.observations.every(o => o.freshness === 'stale')).toBe(true);
   expect(toggle('older-active')).toBeVisible();
-  expect(within(row('older-active')).getByText(/Retained observation is stale/)).toBeVisible();
-  expect(screen.queryByRole('button', { name: /^Active/ })).toBeNull();
+  expect(within(row('older-active')).queryByText(/Retained observation is stale/)).toBeNull();
   filter('active'); expect(order()).toEqual([]);
 });

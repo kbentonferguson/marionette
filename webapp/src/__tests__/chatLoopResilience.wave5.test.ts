@@ -595,7 +595,7 @@ describe("Wave 5: completed swarm plus idle pilot", () => {
 });
 
 describe("Wave 5: unverified land honesty", () => {
-  it("paints I made this worse as a transcript row, not a wait hint", () => {
+  it("does not paint I made this worse as a transcript row", () => {
     const { state, apply } = makeApplyDeps();
     apply({
       kind: "notice",
@@ -606,12 +606,6 @@ describe("Wave 5: unverified land honesty", () => {
       },
     });
     expect(state.waitHint).toBeNull();
-    const last = state.items[state.items.length - 1];
-    expect(last.kind).toBe("msg");
-    if (last.kind === "msg") {
-      expect(last.msg.role).toBe("assistant");
-      expect(last.msg.text).toContain("I made this worse");
-      expect(last.msg.text).toContain("I need your decision");
-    }
+    expect(state.items.some((item) => item.kind === "msg" && item.msg.text.includes("I made this worse"))).toBe(false);
   });
 });

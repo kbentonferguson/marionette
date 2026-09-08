@@ -135,13 +135,14 @@ it("retries unavailable metadata summary and restores identical retained rows", 
   for (let i = 0; i < 12 && !f.store.getSnapshot().observations.some(o => o.freshness === 'stale'); i++) {
     await act(async () => { await f.store.advance(); });
   }
-  expect(screen.getByText('Retained observation is stale; current lifecycle is unconfirmed.')).toBeVisible();
+  expect(f.store.getSnapshot().observations.some(o => o.freshness === 'stale')).toBe(true);
+  expect(screen.queryByText('Retained observation is stale; current lifecycle is unconfirmed.')).not.toBeInTheDocument();
   expect(f.store.getSnapshot().streams.some(stream => stream.state === 'unavailable')).toBe(true);
   f.request.mockImplementation(original);
   fireEvent.click(screen.getByRole('button', { name: 'Retry updates' }));
   await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-  await waitFor(() => expect(screen.queryByText('Retained observation is stale; current lifecycle is unconfirmed.')).not.toBeInTheDocument());
+  await waitFor(() => expect(f.store.getSnapshot().observations.every(o => o.freshness !== 'stale')).toBe(true));
   expect(screen.getByRole('button', { name: /^Inspect A · running/ })).toBeVisible();
   expect(f.store.getSnapshot().observations.map(o => o.row)).toEqual(rows);
   expect(f.store.getSnapshot().streams.some(stream => stream.state === 'unavailable')).toBe(false);

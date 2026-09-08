@@ -2,7 +2,7 @@
 """Release CI helpers: tree-green tests check, same-tree installer reuse.
 
 Green CI Before Tag stays: a successful `tests` workflow must exist for this
-git tree (commit or dest-PR merge with the same tree). release.yml must not
+git tree (commit or dev-PR merge with the same tree). release.yml must not
 re-run pytest. See RELEASING.md.
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ def _tree_resolver(repo):
             return cache[sha]
         tree = None
         # Prefer local git when the object exists (tag checkout is
-        # fetch-depth 0, so dest-PR parent SHAs resolve without the API).
+        # fetch-depth 0, so dev-PR parent SHAs resolve without the API).
         try:
             tree = git_tree_sha(sha)
         except subprocess.CalledProcessError:
@@ -157,7 +157,7 @@ def filter_successful_runs(runs):
     """Keep conclusion=success only.
 
     Do not pass ``gh run list --status success``: on tag jobs GITHUB_TOKEN
-    has omitted dest-PR successes, so ``tests-already-green`` failed and
+    has omitted dev-PR successes, so ``tests-already-green`` failed and
     signed mac artifacts never published.
     """
     out = []
@@ -232,7 +232,7 @@ def cmd_require_green(args):
     if match is None:
         sys.stderr.write(
             "No successful `tests` workflow for tree {} (commit {}).\n"
-            "Wait for dest->main PR tests if merge^{{tree}} matches, or for "
+            "Wait for dev->main PR tests if merge^{{tree}} matches, or for "
             "main tests if a conflict resolution changed the tree.\n".format(
                 target_tree, target_commit
             )

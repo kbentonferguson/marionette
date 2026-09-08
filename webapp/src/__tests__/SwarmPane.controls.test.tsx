@@ -18,7 +18,7 @@ import { metadataSelectionKey } from "../lib/jobMetadata";
 
 import type { MetadataSummary, MetadataSelection } from "../lib/jobMetadata";
 
-import nativeWire from "./nativeSelectedContext.backend.json";
+import { nativeControlFixture } from "./outcomeControls.fixtures";
 
 vi.mock('../lib/jobArtifacts', async importOriginal => ({
   ...await importOriginal<typeof import('../lib/jobArtifacts')>(), fetchJobArtifacts: vi.fn(),
@@ -153,32 +153,18 @@ it('fences cancel rejection after switching sessions and starting another cancel
 });
 
 it('sends a session-scoped local selection without a durable reference', async () => {
-  const f = await expertMetadataFixture([controlRow()]); metadata = f;
-  const request = f.request.getMockImplementation();
-  const local_ref = { job_id: 'local-test', incarnation: nativeWire.descriptor.incarnation };
-  f.request.mockImplementation(async (method, path) => {
-    const url = new URL(path, 'http://fixture');
-    if (url.pathname.endsWith('/view')) {
-      const result = await request?.(method, path);
-      if (!result || typeof result !== 'object') throw Error('Missing view response');
-      return { ...result, local: nativeWire.descriptor };
-    }
-    if (url.pathname.endsWith('/local')) return {
-      ...(url.searchParams.get('lane') === 'active' ? nativeWire.active : nativeWire.history), context: f.context(),
-      rows: [{ ...nativeWire.active.rows[0], local_ref, session_id: 'A', display: nativeWire.active.rows[0].display }],
-    };
-    return request?.(method, path);
-  });
-  await f.observe();
-  for (let i = 0; i < 8; i++) await act(async () => { await f.store.advance(); });
+  const f = await nativeControlFixture();
+  metadata = f;
   expect(f.store.getSnapshot().local.observations).toHaveLength(1);
   vi.mocked(api.swarmCancel).mockReturnValue(new Promise(() => {}));
   render(<f.Provider><SwarmPane /></f.Provider>);
-  await expand('Command');
-  const cancel = screen.getByRole('button', { name: 'Request native stop' });
+  await expand('Provider worker');
+  const worker = await screen.findByRole('button', { name: /implement/ });
+  fireEvent.click(worker);
+  const cancel = screen.getByRole('button', { name: 'Cancel this job' });
   expect(cancel).toBeEnabled(); fireEvent.click(cancel);
-  expect(api.swarmCancel).toHaveBeenCalledWith({ version: 1, source: 'local', repo: '/A', session_id: 'A',
-    local_incarnation: local_ref.incarnation, job_ref: { job_id: 'local-test', state_id: null } });
+  expect(api.swarmCancel).toHaveBeenCalledWith({ version: 1, source: 'local', repo: f.context().repo, session_id: f.context().session_id,
+    local_incarnation: 'native-1', job_ref: { job_id: 'local-kill', state_id: null } });
   expect(api.requestCancellation).not.toHaveBeenCalled();
   expect(api.swarmLive).not.toHaveBeenCalled();
 });

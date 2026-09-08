@@ -1,6 +1,6 @@
 name: tests
 
-# Fast dest-into-main / main-push gate. Wall clock target is ~5 minutes:
+# Fast dev-into-main / main-push gate. Wall clock target is ~5 minutes:
 # Ubuntu 3.9 with xdist, Windows 3.9 split into 4 shards, frontend-build.
 # The 3.9 floor and one Windows cell stay required. macOS, 3.11, and the
 # million-token soak live in tests-full.yml (nightly / manual).
