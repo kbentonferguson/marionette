@@ -120,3 +120,12 @@ it('clears deleted history and stops queue reads when the active session is expl
   expect(list).toHaveBeenCalledTimes(reads);
   expect(screen.queryByText('Active session changed. Queue refresh is pending.')).toBeNull();
 });
+
+it('does not paint a hop error when queueList returns another session id', async () => {
+  vi.spyOn(api, 'queueList').mockResolvedValue({
+    ok: true, items: [{ id: 'foreign', text: 'other session row' }], recovery: [], session_id: 'someone-else',
+  });
+  await mount();
+  expect(screen.queryByText('Active session changed. Queue refresh is pending.')).toBeNull();
+  expect(screen.queryByText('other session row')).toBeNull();
+});

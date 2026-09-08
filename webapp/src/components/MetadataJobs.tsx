@@ -16,8 +16,8 @@ import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
-import { useSharedJobMetadata, metadataActivity, metadataJobs, currentExpert, currentHeader } from '../lib/jobMetadataContext';
-import { isSwarmTrackerJob } from '../lib/jobClassification';
+import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
+import { isSwarmTrackerListRow } from '../lib/jobClassification';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
@@ -335,7 +335,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [finishedOpen, setFinishedOpen] = useState(true);
   const [inspected, setInspected] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
-  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
+  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerListRow), [state]);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
@@ -417,7 +417,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     setFocusRequest(null);
   }, [focusRequest, enabled, visible, jobs, state.contextEpoch, state.view]);
   if (!enabled) return <p className="p-2 text-xs text-muted">Job metadata paused for this view.</p>;
-  const activeSessionId = state.view.kind === 'view' ? state.view.context.session_id : '';
+  const activeSessionId = metadataViewSessionId(state);
   const scoped = filterJobsByScope(jobs, jobScope, activeSessionId, {
     includeJobIds: pending?.jobId ? [pending.jobId] : undefined,
   });
@@ -450,7 +450,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     if (left !== null && right === null) return -1;
     return (a.metadata_key ?? '').localeCompare(b.metadata_key ?? '');
   });
-  const trackerCount = scoped.filter(job => !isNativeActivity(job)).length;
+  const trackerCount = [...shown, ...hidden].filter(job => !isNativeActivity(job)).length;
   const activeRows = shown.filter(j => !isFinished(j));
   const finishedRows = shown.filter(j => isFinished(j));
   const failedCount = finishedRows.filter(j => failedOutcomeStatuses.has(j.status)).length;

@@ -180,6 +180,7 @@ import {
 } from "../lib/operationalRecovery";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import {
+  applyQueueListIdentity,
   blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
   moveItem,
@@ -913,9 +914,7 @@ export default function Conversation({
         })) {
           return;
         }
-        if (requestSessionId && res.session_id !== requestSessionId) {
-          queueReadBlockedRef.current = true;
-          setQueueLoadError("Active session changed. Queue refresh is pending.");
+        if (applyQueueListIdentity(res, requestSessionId) === "drop") {
           return;
         }
         setQueueRecovery(res.recovery || []);
