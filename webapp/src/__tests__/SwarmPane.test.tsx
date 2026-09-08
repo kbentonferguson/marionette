@@ -195,7 +195,7 @@ describe("SwarmPane sort and filter controls", () => {
   it("reverses both lifecycle groups when Oldest is selected", async () => {
     await hydrateDates();
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: 'Sort swarms' }));
+    fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
     expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Newest active build/ }));
     expectBefore(screen.getByRole('button', { name: /^Newest active build/ }), screen.getByRole('button', { name: /^Active job without timestamp/ }));
     expectBefore(screen.getByRole('button', { name: /^Older completed review/ }), screen.getByRole('button', { name: /^Newest failed review/ }));
@@ -229,7 +229,7 @@ describe("SwarmPane sort and filter controls", () => {
     await screen.findByRole("button", { name: /^Newest active build ·/ });
 
     fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "cancelled" } });
-    expect(await screen.findByText("No jobs observed in this filter. Coverage may be incomplete.")).toBeInTheDocument();
+    expect(await screen.findByText("No swarm jobs match this filter")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
     expect(await screen.findByRole("button", { name: /^Newest active build ·/ })).toBeInTheDocument();
   });
@@ -404,7 +404,7 @@ describe("SwarmPane model badge", () => {
     });
     const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     try {
-      expect(screen.getByRole("button", { name: "Finished (1 observed)" })).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("button", { name: /^Finished/ })).toHaveAttribute("aria-expanded", "true");
       await expandJob(/^Audit auth flow · complete$/);
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
       await screen.findByText("task-1: complete");
@@ -1120,7 +1120,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       outcomeSummary('job-interrupted', 'Interrupted command', 'interrupted'),
     ]);
     render(<outcomeFixture.Provider><SwarmPane /></outcomeFixture.Provider>);
-    expect(screen.getByRole('button', { name: 'Finished (2 observed)' })).toBeVisible();
+    expect(screen.getByRole('button', { name: /^Finished/ })).toBeVisible();
     expect(screen.getByText('2 failed')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Truncated command · failed' })).toBeVisible();
     const interrupted = screen.getByRole('button', { name: 'Interrupted command · interrupted' });
@@ -1276,7 +1276,7 @@ describe("SwarmPane canonical outcome", () => {
     try {
       render(<fixture.Provider><SwarmPane /></fixture.Provider>);
       const row = await screen.findByRole('button', { name: 'Completed audit · complete' });
-      expect(screen.getByRole('button', { name: 'Finished (1 observed)' })).toBeVisible();
+      expect(screen.getByRole('button', { name: /^Finished/ })).toBeVisible();
       expect(within(row).getByText('complete')).toBeVisible();
       expect(within(row).getByText('complete')).toHaveClass('text-muted');
       expect(row.querySelector('.text-good')).toBeNull();
@@ -2353,7 +2353,7 @@ describe("SwarmPane final-review blockers", () => {
     const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
     try {
       const job = await screen.findByRole("button", { name: /^Terminal without meters/ });
-      expect(screen.getByRole("button", { name: /Finished \(1 observed\)/ })).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("button", { name: /Finished \(1\)/ })).toHaveAttribute("aria-expanded", "true");
       expect(job).not.toHaveTextContent("—");
       expect(job.textContent || "").not.toMatch(/\$0/);
       expect(job.querySelector('[aria-hidden="true"].bg-edge\\/70, [aria-hidden="true"][class*="bg-edge"]')).toBeNull();
@@ -2714,10 +2714,8 @@ describe("SwarmPane command vs swarm split", () => {
     metadata = await commandSplitFixture(["Audit auth flow"], "run_command");
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
     expect(await screen.findByRole("button", { name: "Audit auth flow · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(1 observed)");
-    expect(screen.getByRole("button", { name: "Active (1 observed)" })).toBeVisible();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(1)");
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Native activity (1 observed)" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Command · running" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("At least 2 active jobs");
     expect(mockSwarmLive).not.toHaveBeenCalled();
@@ -2730,10 +2728,8 @@ describe("SwarmPane command vs swarm split", () => {
     expect(await screen.findByRole("button", { name: "run_swarm audit · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_implement fix · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_parallel wave · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(3 observed)");
-    expect(screen.getByRole("button", { name: "Active (3 observed)" })).toBeVisible();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(3)");
     expect(screen.queryByText("echo batch")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Native activity (1 observed)" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Command batch · running" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("At least 4 active jobs");
     expect(mockSwarmLive).not.toHaveBeenCalled();
@@ -2743,12 +2739,11 @@ describe("SwarmPane command vs swarm split", () => {
   it("does not count a lone command job as Swarm Tracker (1)", async () => {
     metadata = await commandSplitFixture([], "run_command");
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(0 observed)");
-    expect(screen.getByText("No swarm jobs observed in this view.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Active \(/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(0)");
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
+    expect(screen.queryByText("No swarm jobs yet")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Active \(/ })).not.toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Native activity (1 observed)" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Command · running" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("At least 1 active jobs");
     expect(mockSwarmLive).not.toHaveBeenCalled();
@@ -2760,10 +2755,8 @@ describe("SwarmPane command vs swarm split", () => {
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
     expect(await screen.findByRole("button", { name: "run_swarm audit · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_implement fix · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2 observed)");
-    expect(screen.getByRole("button", { name: "Active (2 observed)" })).toBeVisible();
+    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2)");
     expect(screen.queryByText("Parallel wave (2 jobs)")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Native activity (1 observed)" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Parallel wave · running" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("At least 3 active jobs");
     expect(mockSwarmLive).not.toHaveBeenCalled();

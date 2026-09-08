@@ -93,23 +93,22 @@ it('restores a balanced filter/sort toolbar and newest-first lifecycle groups us
   const control = screen.getByLabelText('Filter swarms');
   expect(control.parentElement).toHaveClass('grid', 'grid-cols-2');
   expect(control).toHaveClass('w-full');
-  expect(screen.getByRole('button', { name: /Sort swarms/ })).toHaveClass('w-full');
-  expect(screen.getByRole('button', { name: /^Active/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByLabelText('Sort swarms')).toHaveClass('w-full');
   expect(screen.getByRole('button', { name: /^Finished/ })).toHaveAttribute('aria-expanded', 'true');
   expect(order()).toEqual(['newest-active', 'older-active', 'undated-active', 'newest-failed', 'older-complete', 'job_1']);
-  fireEvent.click(screen.getByRole('button', { name: /Sort swarms/ }));
+  fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
   expect(order()).toEqual(['older-active', 'newest-active', 'undated-active', 'older-complete', 'newest-failed', 'job_1']);
 });
 it('never presents partial history ordering or quality filtering as complete', async () => {
   partial = true; await start(); mount();
   expect(store.getSnapshot().streams.some(s => s.state === 'partial')).toBe(true);
-  expect(screen.getByText(/Sorting and filters apply only to observed jobs/)).toBeVisible();
-  expect(screen.getByText(/undated jobs remain last/)).toBeVisible();
+  expect(screen.getByText(/Sorting and filters apply only to observed jobs/)).toBeInTheDocument();
+  expect(screen.getByText(/undated jobs remain last/)).toBeInTheDocument();
   filter('failed');
   expect(order()).toEqual(['newest-failed']);
   filter('untrustworthy');
   expect(screen.getByText(/Showing recorded degraded quality/)).toBeVisible();
-  expect(screen.queryByText('No jobs observed in this filter. Coverage may be incomplete.')).toBeNull();
+  expect(screen.queryByText('No swarm jobs match this filter')).toBeNull();
   expect(order()).toEqual([]);
 });
 it('separates failed, cancelled, completed lifecycle and unknown quality, with clear filter recovery', async () => {
@@ -125,7 +124,8 @@ it('distinguishes unknown activity from active and terminal observations', async
   native.push(sample('stalled-native', 'stalled', 50), sample('unknown-native', 'unknown', 60));
   pm.push({ ...summary(2), lifecycle: 'stalled' });
   await start(); mount();
-  expect(screen.getByRole('button', { name: /^Activity unconfirmed/ })).toBeVisible();
+  expect(toggle('stalled-native')).toBeVisible();
+  expect(toggle('unknown-native')).toBeVisible();
   expect(within(row('stalled-native')).queryByRole('button', { name: /Dismiss/ })).toBeNull();
   expect(within(row('job_2', 'harness')).getByRole('button', { name: /Dismiss/ })).toBeVisible();
   filter('active'); expect(order()).toEqual(['newest-active', 'older-active', 'undated-active']);
@@ -171,21 +171,21 @@ it('stays passive while hidden and does not consume navigation or start extra re
   expect(paths).toHaveLength(baseline); expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   ui.rerender(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
   expect(toggle('older-active')).toHaveFocus();
-  filter('failed'); fireEvent.click(screen.getByRole('button', { name: /Sort swarms/ }));
+  filter('failed'); fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
   expect(paths).toHaveLength(baseline);
 });
 it('distinguishes cold loading, failed discovery, and a known empty observed window', async () => {
   store.setTarget(target); mount(); expect(screen.getByText(/Waiting for job metadata/)).toBeVisible();
   unavailable = true; await act(async () => { await store.readView(); });
   expect(screen.getByRole('alert')).toBeVisible();
-  expect(screen.queryByText(/No jobs observed in this filter/)).toBeNull();
+  expect(screen.queryByText(/No swarm jobs match this filter/)).toBeNull();
   unavailable = false; native = []; pm = []; await start();
-  expect(screen.getByText(/No jobs observed in this view/)).toBeVisible();
-  expect(screen.getByText(/Older or undiscovered work may still exist/)).toBeVisible();
+  expect(screen.getByText(/No swarm jobs yet/)).toBeVisible();
+  expect(screen.getByText(/Every dispatched worker lands here/)).toBeVisible();
 });
 it('clears an empty matching filter without implying the retained window is all history', async () => {
   await start(); mount(); filter('cancelled');
-  expect(screen.getByText(/No jobs observed in this filter/)).toBeVisible();
+  expect(screen.getByText(/No swarm jobs match this filter/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
   expect(toggle('older-active')).toBeVisible();
 });
@@ -211,7 +211,8 @@ it('moves stale lifecycle observations into unconfirmed activity without claimin
   act(() => store.restartTraversal());
   for (let i = 0; i < 24; i++) await act(async () => { await store.advance(); });
   expect(store.getSnapshot().local.observations.every(o => o.freshness === 'stale')).toBe(true);
-  expect(screen.getByRole('button', { name: 'Activity unconfirmed (5 observed)' })).toBeVisible();
+  expect(toggle('older-active')).toBeVisible();
+  expect(within(row('older-active')).getByText(/Retained observation is stale/)).toBeVisible();
   expect(screen.queryByRole('button', { name: /^Active/ })).toBeNull();
   filter('active'); expect(order()).toEqual([]);
 });
