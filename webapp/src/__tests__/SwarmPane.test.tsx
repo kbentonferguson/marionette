@@ -1,3 +1,4 @@
+import { currentFacts, currentDetail } from './expertCurrent.fixtures';
 import { economicsNativeFixture, economicsReceiptFixture, nativeEconomicsRow } from './frontend52-economics.fixtures';
 import { identityFixture, identityTask, workerDetails } from './frontend52-identity.fixtures';
 import { capturedRoutingFixture, referenceHash, routingReference } from './frontend52-routing.fixtures';
@@ -172,45 +173,39 @@ describe("SwarmPane sort and filter controls", () => {
     expect(sort).toHaveClass("w-full");
   });
 
-  it("sorts dated native jobs newest-first ahead of undated observations", async () => {
-    const native = await economicsNativeFixture([
-      nativeEconomicsRow('local-z-new', 'running', 200), nativeEconomicsRow('local-a-old', 'running', 100),
-      nativeEconomicsRow('local-b-undated', 'running', null), nativeEconomicsRow('local-z-finished-new', 'failed', 200),
-      nativeEconomicsRow('local-a-finished-old', 'completed', 100),
-    ]);
-    const mounted = render(<native.Provider><SwarmPane /></native.Provider>);
-    try {
-      const row = (id: string) => screen.getByRole('button', { name: new RegExp(`^Provider worker · ${id} ·`) });
-      expectBefore(row('local-z-new'), row('local-a-old'));
-      expectBefore(row('local-a-old'), row('local-b-undated'));
-      expectBefore(row('local-z-finished-new'), row('local-a-finished-old'));
-      expectBefore(row('local-a-old'), screen.getByRole('button', { name: /^Undated PM observation ·/ }));
-      expectBefore(row('local-z-new'), screen.getByRole('button', { name: /^Undated PM observation ·/ }));
-      expect(screen.getByText(/PM creation times are unavailable/)).toBeVisible();
-    } finally { mounted.unmount(); native.dispose(); }
+  async function hydrateDates() {
+    const rows = metadata.store.getSnapshot().observations.map(o => o.row);
+    const original = metadata.request.getMockImplementation()!;
+    metadata.request.mockImplementation(async (method, path, body) => {
+      if (!path.endsWith('/pins')) return original(method, path, body);
+      if (!body || typeof body !== 'object' || !('selections' in body) || !Array.isArray(body.selections)) throw Error('Missing selections');
+      const requested = body.selections.map(s => rows.find(r => metadataSelectionKey(r.selection) === metadataSelectionKey(s))!);
+      return { version: 1, context: metadata.context(), results: requested.map(row => ({ selection: row.selection, result: { kind: 'present', row: { ...row, header: { ...currentFacts().header,
+        created_at: row.selection.job_ref.job_id === 'job_no-time' ? null : ['job_a', 'job_b'].includes(row.selection.job_ref.job_id) ? '2026-09-07T12:00:00Z' : '2026-09-01T12:00:00Z' } } } })) };
+    });
+    await act(async () => { await metadata.store.refreshHeaders(); });
+  }
+  it("sorts active and finished jobs newest-first by creation time", async () => {
+    await hydrateDates();
+    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    expectBefore(screen.getByRole('button', { name: /^Newest active build/ }), screen.getByRole('button', { name: /^Older active audit/ }));
+    expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Active job without timestamp/ }));
+    expectBefore(screen.getByRole('button', { name: /^Newest failed review/ }), screen.getByRole('button', { name: /^Older completed review/ }));
+  });
+  it("reverses both lifecycle groups when Oldest is selected", async () => {
+    await hydrateDates();
+    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Sort swarms' }));
+    expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Newest active build/ }));
+    expectBefore(screen.getByRole('button', { name: /^Newest active build/ }), screen.getByRole('button', { name: /^Active job without timestamp/ }));
+    expectBefore(screen.getByRole('button', { name: /^Older completed review/ }), screen.getByRole('button', { name: /^Newest failed review/ }));
   });
 
-  it("reverses dated native jobs in both lifecycle groups when Oldest is selected", async () => {
-    const native = await economicsNativeFixture([
-      nativeEconomicsRow('local-z-new', 'running', 200), nativeEconomicsRow('local-a-old', 'running', 100),
-      nativeEconomicsRow('local-b-undated', 'running', null), nativeEconomicsRow('local-z-finished-new', 'failed', 200),
-      nativeEconomicsRow('local-a-finished-old', 'completed', 100),
-    ]);
-    const mounted = render(<native.Provider><SwarmPane /></native.Provider>);
-    try {
-      fireEvent.click(screen.getByRole('button', { name: 'Sort swarms' }));
-      expect(screen.getByRole('button', { name: 'Sort swarms' })).toHaveTextContent('Oldest first');
-      const row = (id: string) => screen.getByRole('button', { name: new RegExp(`^Provider worker · ${id} ·`) });
-      expectBefore(row('local-a-old'), row('local-z-new'));
-      expectBefore(row('local-z-new'), row('local-b-undated'));
-      expectBefore(row('local-a-finished-old'), row('local-z-finished-new'));
-      expectBefore(row('local-a-old'), screen.getByRole('button', { name: /^Undated PM observation ·/ }));
-      expectBefore(row('local-z-new'), screen.getByRole('button', { name: /^Undated PM observation ·/ }));
-      expect(screen.getByText(/PM creation times are unavailable/)).toBeVisible();
-    } finally { mounted.unmount(); native.dispose(); }
-  });
-
-  it("filters lifecycle without treating verification quality as known", async () => {
+  it("filters by lifecycle without conflating failed and untrustworthy jobs", async () => {
+    const row = metadata.store.getSnapshot().observations.find(o => o.row.selection.job_ref.job_id === 'job_c')!.row;
+    const expert = currentFacts(); expert.quality = 'degraded'; expert.artifacts[0].check_result = 'failed';
+    metadata.selected.mockResolvedValue({ ...currentDetail(expert, row.selection), context: metadata.context() });
+    await act(async () => { metadata.store.select(row.selection); await metadata.store.readDetail(); });
     render(<metadata.Provider><SwarmPane /></metadata.Provider>);
     fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'failed' } });
     expect(screen.getByRole('button', { name: /^Newest failed review ·/ })).toBeVisible();
@@ -222,8 +217,8 @@ describe("SwarmPane sort and filter controls", () => {
     expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
     expect(screen.getByText('Completed lifecycle does not establish successful verification.')).toBeVisible();
     fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'untrustworthy' } });
-    expect(screen.getByText(/Quality cannot be assessed/)).toBeVisible();
-    expect(screen.queryByRole('button', { name: /^Degraded architecture review ·/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
     expect(screen.getByRole('button', { name: /^Newest failed review ·/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();

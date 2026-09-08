@@ -1,0 +1,549 @@
+{
+  "context": {
+    "session_id": "session-a",
+    "repo": "/repo",
+    "view_generation": "view-a",
+    "scope": "session"
+  },
+  "selection": {
+    "job_ref": {
+      "job_id": "job_f48185aeffba",
+      "state_id": "state_170784be5afff270",
+      "version": 2,
+      "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+    },
+    "source": "harness",
+    "session_id": "session-a",
+    "repo": "/repo"
+  },
+  "list": {
+    "version": 1,
+    "context": {
+      "session_id": "session-a",
+      "repo": "/repo",
+      "view_generation": "view-a",
+      "scope": "session"
+    },
+    "store": {
+      "source": "harness",
+      "state_id": "state_170784be5afff270"
+    },
+    "mode": "snapshot",
+    "page": {
+      "outcome": "complete",
+      "revision": 11,
+      "next_cursor": null,
+      "scanned": 1,
+      "checkpoint": 11
+    },
+    "rows": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_f48185aeffba",
+            "state_id": "state_170784be5afff270",
+            "version": 2,
+            "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+          },
+          "source": "harness",
+          "session_id": "session-a",
+          "repo": "/repo"
+        },
+        "revision": 11,
+        "deleted": false,
+        "lifecycle": "queued",
+        "activity": "active",
+        "ownership": {
+          "origin": "marionette",
+          "session_id": "session-a",
+          "project_id": null
+        },
+        "task_count": 1,
+        "artifact_count": 3,
+        "stamp": "known",
+        "display": {
+          "kind": "available",
+          "goal_preview": "Inspect consumer integration",
+          "goal_preview_truncated": false,
+          "delivery": "pending",
+          "quality": "unverified"
+        },
+        "economics": {
+          "kind": "unavailable",
+          "reason": "selected_only"
+        }
+      }
+    ],
+    "coverage": {
+      "membership": "known_metadata",
+      "legacy": "unavailable",
+      "ordering": "id",
+      "store_set": "known_sources"
+    },
+    "missing": [
+      "legacy_ownership",
+      "economics"
+    ],
+    "lanes": {
+      "statuses": [
+        "cancelled",
+        "complete",
+        "failed",
+        "in_progress",
+        "pending",
+        "queued",
+        "running",
+        "stalled",
+        "started",
+        "stitching"
+      ],
+      "active_statuses": [
+        "in_progress",
+        "pending",
+        "queued",
+        "running",
+        "started",
+        "stitching"
+      ],
+      "attention_statuses": [
+        "failed",
+        "stalled"
+      ]
+    }
+  },
+  "pins": {
+    "version": 1,
+    "context": {
+      "session_id": "session-a",
+      "repo": "/repo",
+      "view_generation": "view-a",
+      "scope": "session"
+    },
+    "results": [
+      {
+        "selection": {
+          "job_ref": {
+            "job_id": "job_f48185aeffba",
+            "state_id": "state_170784be5afff270",
+            "version": 2,
+            "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+          },
+          "source": "harness",
+          "session_id": "session-a",
+          "repo": "/repo"
+        },
+        "result": {
+          "kind": "present",
+          "row": {
+            "selection": {
+              "job_ref": {
+                "job_id": "job_f48185aeffba",
+                "state_id": "state_170784be5afff270",
+                "version": 2,
+                "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+              },
+              "source": "harness",
+              "session_id": "session-a",
+              "repo": "/repo"
+            },
+            "revision": 11,
+            "deleted": false,
+            "lifecycle": "queued",
+            "activity": "active",
+            "ownership": {
+              "origin": "marionette",
+              "session_id": "session-a",
+              "project_id": null
+            },
+            "task_count": 1,
+            "artifact_count": 3,
+            "stamp": "known",
+            "display": {
+              "kind": "available",
+              "goal_preview": "Inspect consumer integration",
+              "goal_preview_truncated": false,
+              "delivery": "pending",
+              "quality": "unverified"
+            },
+            "economics": {
+              "kind": "unavailable",
+              "reason": "selected_only"
+            },
+            "header": {
+              "created_at": "2026-09-08T05:25:32+00:00",
+              "completed_at": null,
+              "updated_at": null,
+              "latest_task_updated_at": "2026-09-08T05:25:32+00:00",
+              "completed_workers": 0,
+              "selected_workers": 1,
+              "workers_complete": true,
+              "usage": {
+                "tokens": 120,
+                "tokens_known_workers": 1,
+                "cost_known_workers": 1,
+                "selected_workers": 1,
+                "complete": true
+              },
+              "cost": {
+                "selected_usd": 0,
+                "measured_cost_usd": 0,
+                "estimated_cost_usd": null,
+                "source": "selected_current_records",
+                "basis": "measured",
+                "plan_workers": 0,
+                "complete": true
+              },
+              "savings": {
+                "routing_usd": null,
+                "cache_usd": null,
+                "compaction_usd": null,
+                "compact_tokens": 100,
+                "basis": "estimated",
+                "source": "selected_current_records",
+                "selected_usd": null
+              },
+              "quality": "degraded",
+              "model": "gpt-6-astra",
+              "model_provenance": "task_assignment"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "detail": {
+    "version": 1,
+    "selection": {
+      "job_ref": {
+        "job_id": "job_f48185aeffba",
+        "state_id": "state_170784be5afff270",
+        "version": 2,
+        "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+      },
+      "source": "harness",
+      "session_id": "session-a",
+      "repo": "/repo"
+    },
+    "context": {
+      "session_id": "session-a",
+      "repo": "/repo",
+      "view_generation": "view-a",
+      "scope": "session"
+    },
+    "lifecycle": "queued",
+    "tasks": {
+      "page": {
+        "outcome": "complete",
+        "revision": 11,
+        "next_cursor": null,
+        "scanned": 1,
+        "checkpoint": 11
+      },
+      "rows": [
+        {
+          "id": "task_b872b9b8eea4",
+          "status": "running",
+          "stamp": "known",
+          "revision": 10,
+          "binding": {
+            "task_id": "task_b872b9b8eea4",
+            "generation": 1,
+            "lease_id": "lease_4aefaa83070f",
+            "owner": "worker"
+          }
+        }
+      ]
+    },
+    "artifacts": {
+      "page": {
+        "outcome": "complete",
+        "revision": 11,
+        "next_cursor": null,
+        "scanned": 3,
+        "checkpoint": 11
+      },
+      "rows": [
+        {
+          "id": "artifact_0565bec31028",
+          "status": "unknown",
+          "stamp": "known",
+          "revision": 8,
+          "task_id": "task_b872b9b8eea4",
+          "type": "finding",
+          "sha256": "d0093da618911f97a26cdf6d0da726737fd4caff3221117a5c427089cb4d64a8",
+          "presence": "recorded",
+          "check_result": "unavailable"
+        },
+        {
+          "id": "artifact_81cd0f85b619",
+          "status": "failed",
+          "stamp": "known",
+          "revision": 6,
+          "task_id": "task_b872b9b8eea4",
+          "type": "verification",
+          "sha256": "ad0251b60b26398b7d3d87132a91734ca1867eb9622c696bc1c3ba95ae6ccd7a",
+          "presence": "recorded",
+          "check_result": "unavailable"
+        },
+        {
+          "id": "artifact_837d5a471135",
+          "status": "unknown",
+          "stamp": "known",
+          "revision": 4,
+          "task_id": "task_b872b9b8eea4",
+          "type": "routing",
+          "sha256": "c37bfdceb4848a12017d033a50077096ef5c88e3f7d28ca39b16cd40d74c26a9",
+          "presence": "recorded",
+          "check_result": "unavailable"
+        }
+      ]
+    },
+    "display": {
+      "kind": "available",
+      "goal_preview": "Inspect consumer integration",
+      "goal_preview_truncated": false,
+      "delivery": "pending",
+      "quality": "unverified"
+    },
+    "task_count": 1,
+    "artifact_count": 3,
+    "history": {
+      "kind": "available",
+      "counts": {
+        "captured_attempts": 0,
+        "captured_runs": 0,
+        "captured_process_outcomes": 0,
+        "captured_observations": 0,
+        "outcome": "available",
+        "coverage": "unknown",
+        "complete_invocation_history": false
+      },
+      "missing": [],
+      "attempts": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 0,
+          "captured_count": 0,
+          "coverage": "unknown",
+          "complete_invocation_history": false
+        },
+        "rows": []
+      },
+      "runs": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 0,
+          "captured_count": 0,
+          "coverage": "unknown",
+          "complete_invocation_history": false
+        },
+        "rows": []
+      },
+      "process_outcomes": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 0,
+          "captured_count": 0,
+          "coverage": "unknown",
+          "complete_invocation_history": false
+        },
+        "rows": []
+      },
+      "observations": {
+        "page": {
+          "outcome": "complete",
+          "next_cursor": null,
+          "scanned": 0,
+          "captured_count": 0,
+          "coverage": "unknown",
+          "complete_invocation_history": false
+        },
+        "rows": []
+      }
+    },
+    "cost": {
+      "kind": "unavailable",
+      "job_ref": {
+        "job_id": "job_f48185aeffba",
+        "state_id": "state_170784be5afff270",
+        "version": 2,
+        "incarnation": "9f1b3746-952d-41b5-bb97-0848cbce8e65"
+      },
+      "outcome": "unavailable",
+      "summary_revision": 11,
+      "receipt_digest": null,
+      "source": "unavailable",
+      "coverage": "unknown",
+      "selected_count": null,
+      "totals": null,
+      "reason": "no_terminal_receipt",
+      "retry_after_ms": null
+    },
+    "cancellation_authority": false,
+    "missing": [
+      "cost"
+    ],
+    "expert": {
+      "kind": "available",
+      "reason": null,
+      "header": {
+        "created_at": "2026-09-08T05:25:32+00:00",
+        "completed_at": null,
+        "cost": {
+          "selected_usd": null,
+          "source": "unavailable",
+          "basis": "unknown",
+          "measured_cost_usd": null,
+          "estimated_cost_usd": null
+        }
+      },
+      "tasks": [
+        {
+          "id": "task_b872b9b8eea4",
+          "role": "Reviewer",
+          "instruction": "Inspect the real diff; token=REDACTED",
+          "instruction_truncated": false,
+          "adapter": "codex",
+          "model": "gpt-6-astra",
+          "created_at": "2026-09-08T05:25:32+00:00",
+          "updated_at": "2026-09-08T05:25:32+00:00",
+          "usage": {
+            "tokens_in": 120,
+            "tokens_out": 0,
+            "est_cost_usd": 0,
+            "estimated": false,
+            "cost_provenance": "provider"
+          }
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "artifact_0565bec31028",
+          "task_id": "task_b872b9b8eea4",
+          "type": "finding",
+          "created_by": "worker",
+          "created_at": "2026-09-08T05:25:32+00:00",
+          "headline": "Exact routing matched the selected worker",
+          "detail": null,
+          "result": null,
+          "failure": null,
+          "confidence": 1,
+          "model": null,
+          "adapter": null,
+          "policy": null,
+          "provider": null,
+          "role": null,
+          "est_cost_usd": null,
+          "rejected": [],
+          "check_result": "unavailable"
+        },
+        {
+          "id": "artifact_81cd0f85b619",
+          "task_id": "task_b872b9b8eea4",
+          "type": "verification",
+          "created_by": "worker",
+          "created_at": "2026-09-08T05:25:32+00:00",
+          "headline": "Regression suite",
+          "detail": "Expected two rows; got one",
+          "result": "failed",
+          "failure": null,
+          "confidence": 1,
+          "model": "gpt-6-astra",
+          "adapter": null,
+          "policy": null,
+          "provider": null,
+          "role": null,
+          "est_cost_usd": null,
+          "rejected": [],
+          "check_result": "failed"
+        },
+        {
+          "id": "artifact_837d5a471135",
+          "task_id": "task_b872b9b8eea4",
+          "type": "routing",
+          "created_by": "router-escalation",
+          "created_at": "2026-09-08T05:25:32+00:00",
+          "headline": "",
+          "detail": null,
+          "result": null,
+          "failure": null,
+          "confidence": 1,
+          "model": "gpt-6-astra",
+          "adapter": "codex",
+          "policy": "quality",
+          "provider": "openai",
+          "role": "Reviewer",
+          "est_cost_usd": null,
+          "rejected": [
+            {
+              "model": "smaller-model",
+              "reason": "insufficient context"
+            }
+          ],
+          "check_result": "unavailable"
+        }
+      ],
+      "coverage": {
+        "tasks": "complete",
+        "artifacts": "complete"
+      },
+      "quality": "degraded",
+      "economics": {
+        "header": {
+          "created_at": "2026-09-08T05:25:32+00:00",
+          "completed_at": null,
+          "updated_at": null,
+          "latest_task_updated_at": "2026-09-08T05:25:32+00:00",
+          "completed_workers": 0,
+          "selected_workers": 1,
+          "workers_complete": true,
+          "usage": {
+            "tokens": 120,
+            "tokens_known_workers": 1,
+            "cost_known_workers": 1,
+            "selected_workers": 1,
+            "complete": true
+          },
+          "cost": {
+            "selected_usd": 0,
+            "measured_cost_usd": 0,
+            "estimated_cost_usd": null,
+            "source": "selected_current_records",
+            "basis": "measured",
+            "plan_workers": 0,
+            "complete": true
+          },
+          "savings": {
+            "routing_usd": null,
+            "cache_usd": null,
+            "compaction_usd": null,
+            "compact_tokens": 100,
+            "basis": "estimated",
+            "source": "selected_current_records",
+            "selected_usd": null
+          }
+        },
+        "tasks": {
+          "task_b872b9b8eea4": {
+            "tokens_in": 120,
+            "tokens_out": 0,
+            "tokens": 120,
+            "est_cost_usd": 0,
+            "estimated": false,
+            "cost_provenance": "provider",
+            "source_artifact_id": "artifact_81cd0f85b619",
+            "route_forecast_usd": null,
+            "plan_billed": false
+          }
+        },
+        "compaction": {
+          "coverage": "complete",
+          "reason": "exact_sqlite_selection"
+        }
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import backend from './localMetadata.backend.json';
 import { parseLocalDetail } from '../lib/localJobMetadata';
-import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { JobMetadataClient } from '../lib/jobMetadata';
 import { JobMetadataStore } from '../lib/useJobMetadata';
@@ -26,12 +26,14 @@ async function open() { store.setTarget(context); expect(await store.readView())
 
 it('bounds 1101 native and PM jobs together, preserves collisions and applies exact native removal', async () => {
   await open();
-  for (let i = 0; i < 256; i++) {
+  for (let i = 0; i < 512; i++) {
     const before = fixture.calls.length;
     expect(await store.advance()).toBe('applied');
     expect(fixture.calls).toHaveLength(before + 1);
     const s = store.getSnapshot();
     expect(s.local.observations.length + s.observations.length + s.removals.length).toBeLessThanOrEqual(200);
+    expect(Object.keys(s.headers).length).toBeLessThanOrEqual(200);
+    expect(Object.keys(s.headerReads).length).toBeLessThanOrEqual(200);
   }
   const jobs = metadataJobs(store.getSnapshot());
   const collision = jobs.filter(j => j.id === 'job_1090');
@@ -39,7 +41,7 @@ it('bounds 1101 native and PM jobs together, preserves collisions and applies ex
   expect(collision.find(j => j.source === 'local')?.job_ref).toBeUndefined();
   expect(new Set(collision.map(j => j.metadata_key)).size).toBe(2);
   fixture.deletedNative = 1090; fixture.revision++;
-  for (let i = 0; i < 8; i++) await store.advance();
+  for (let i = 0; i < 16; i++) await store.advance();
   expect(metadataJobs(store.getSnapshot()).filter(j => j.id === 'job_1090').map(j => j.source)).toEqual(['harness']);
   expect(fixture.maximumActive).toBe(1);
   expect(fixture.calls.some(c => /^\/api\/(jobs|swarm\/live)$/.test(c.path))).toBe(false);
@@ -133,15 +135,17 @@ it('reserves native and primary cadence with 192 sibling streams and bounded pen
   fixture.sources = [ ...fixture.sources, { source: 'cli', state_id: 'primary_cli', cross_project: false, available: true },
     ...Array.from({ length: 32 }, (_, i) => ({ source: 'cli' as const, state_id: `sibling_${i}`, cross_project: true, available: true })) ];
   store.setTarget({ ...context, scope: 'all' }); await store.readView();
-  const primaryVisits: number[][] = [[], []]; let nativeVisits = 0;
+  const primaryVisits: number[][] = [[], []]; const nativeVisits: number[] = [];
   for (let i = 0; i < 540; i++) {
     await store.advance();
     const u = new URL(fixture.calls.at(-1)!.path, 'http://fixture');
-    if (u.pathname === '/api/jobs/metadata/local') nativeVisits++;
+    if (u.pathname === '/api/jobs/metadata/local') nativeVisits.push(i);
     if (u.searchParams.get('state_id') === 'store-A') primaryVisits[0].push(i);
     if (u.searchParams.get('state_id') === 'primary_cli') primaryVisits[1].push(i);
   }
-  expect(nativeVisits).toBe(68);
+  expect(nativeVisits.length).toBeGreaterThanOrEqual(33);
+  expect(Math.max(...nativeVisits.slice(1).map((v, i) => v - nativeVisits[i]))).toBeLessThanOrEqual(16);
+  expect(fixture.calls.some(c => c.path.endsWith('/pins'))).toBe(true);
   for (const visits of primaryVisits) expect(Math.max(...visits.slice(1).map((v, i) => v - visits[i]))).toBeLessThanOrEqual(8);
   expect(new Set(fixture.calls.map(c => new URL(c.path, 'http://fixture').searchParams.get('state_id')).filter(s => s?.startsWith('sibling'))).size).toBe(32);
   store.setPendingSelections([selection()], [nativeSummary(1).local_ref]);
@@ -196,6 +200,7 @@ it('keeps expansion and individual dismissal separate for colliding stores', asy
   const first = render(wrapper(<MetadataJobs />));
   fireEvent.click(screen.getByRole('button', { name: /^PM CLI job/ }));
   expect(screen.getByRole('button', { name: /^PM harness/ })).toHaveAttribute('aria-expanded', 'false');
+  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
   first.unmount(); await open(); for (let i = 0; i < 6; i++) await store.advance();
   render(wrapper(<MetadataJobs />));
   expect(screen.getByRole('button', { name: /^PM CLI job/ })).toHaveAttribute('aria-expanded', 'true');

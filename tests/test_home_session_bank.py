@@ -96,6 +96,7 @@ def test_home_session_create_rerecords_after_forget(tmp_path, monkeypatch):
     home = srv._ensure_home_workspace()
     srv._forget_recent_workspace(home)
 
+    from harness.session_runners import SessionRunnerRegistry
     from harness.api.sessions import SessionServices, post_sessions_create
     from types import SimpleNamespace
 
@@ -105,7 +106,7 @@ def test_home_session_create_rerecords_after_forget(tmp_path, monkeypatch):
 
     svc = SessionServices(
         sessions=store,
-        runners=SimpleNamespace(),
+        runners=SessionRunnerRegistry(),
         cfg=cfg,
         get_pilot=lambda: SimpleNamespace(load_history=lambda h: None),
         sessions_state_dir=lambda: str(tmp_path / "state"),

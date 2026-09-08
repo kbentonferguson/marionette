@@ -1,4 +1,4 @@
-"""Bounded public PM metadata reads; no body hydration or cancellation authority."""
+"""Body-free PM list reads and explicitly selected, revision-fenced projections."""
 from __future__ import annotations
 
 import base64
@@ -6,8 +6,10 @@ import hmac
 import json
 import secrets
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -25,6 +27,8 @@ from .cli_job_merge import (
 from .job_scoping import job_owned_by_marionette
 from .paths import same_workspace_path
 from .job_metadata_capability import ActiveContext, ViewChanged
+from . import job_expert
+from .job_expert_compaction import read_selected_compaction
 
 PAGE_BUDGET = dict(limit=50, max_scan=51, max_bytes=32768)
 EXACT_BUDGET = dict(limit=1, max_scan=2, max_bytes=8192)
@@ -159,6 +163,9 @@ class MetadataReader:
             len(RUNNING) * 2 if s.cross_project else (len(PM_STATUSES) + 1) * 3
             for s in sources.stores)
         self._seen = OrderedDict()
+        self._headers = OrderedDict()
+        from .api.cost import _swarm_registry
+        self._registry = tuple(_swarm_registry()[:1024])
         self._lock = threading.Lock()
 
     def check(self, ctx):
@@ -345,11 +352,20 @@ class MetadataReader:
             raise InvalidReadRequest()
         self.check(ctx)
         results = []
+        deadline = time.monotonic() + 2
         for selection in selections:
             self.check(ctx)
-            _, row, reason = self._selected(selection, pin=True)
+            store, row, reason = self._selected(selection, pin=True)
+            header = self._header(store, row, selection) if not reason and time.monotonic() < deadline else None
+            if time.monotonic() >= deadline:
+                header = None
+            _, current, changed = self._selected(selection, pin=True)
+            if not reason and (changed or current.revision != row.revision):
+                reason = 'selection_changed'
             result = dict(kind='unavailable', reason=reason) if reason else dict(
                 kind='present', row=self._summary(row, ctx, selection.store))
+            if result['kind'] == 'present' and header is not None:
+                result['row']['header'] = header
             results.append(dict(selection=selection.wire(), result=result))
         response = dict(version=1, context=asdict(ctx), results=results)
         if _size(response) > 65536:
@@ -390,9 +406,11 @@ class MetadataReader:
             return result
         result.update(lifecycle=row.status, display=self._display(row),
                       task_count=row.task_count, artifact_count=row.artifact_count)
+        selected_pages = {}
         for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
             self.check(ctx)
             page = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
+            selected_pages[lane] = page
             rows = []
             for item in page.items:
                 if item.job_ref != selection.job_ref:
@@ -416,6 +434,7 @@ class MetadataReader:
             result['history'] = self._history(store, selection, bindings, history_cursors)
             if result['history']['kind'] == 'available':
                 result['missing'].remove('history')
+        result['expert'] = self._expert(store, row, selection, selected_pages, cursors)
         # Separate bounded reads are not a transaction. Never return lanes from a
         # selection that lost ownership or changed while they were being read.
         _, current, reason = self._selected(selection)
@@ -425,7 +444,10 @@ class MetadataReader:
                           tasks=dict(page=_page(), rows=[]), artifacts=dict(page=_page(), rows=[]),
                           history=dict(kind='unavailable', reason='selection_changed'),
                           cost=dict(kind='unavailable', reason='selection_changed'),
-                          missing=['selection_changed', 'history', 'cost'])
+                          missing=['selection_changed', 'history', 'cost'],
+                          expert=job_expert.unavailable('selection_changed'))
+        if _size(result) > 98304:
+            result['expert'] = job_expert.unavailable('response_budget')
         if _size(result) > 98304:
             result.update(tasks=dict(page=_page(), rows=[]), artifacts=dict(page=_page(), rows=[]),
                           history=dict(kind='unavailable', reason='response_budget'),
@@ -433,6 +455,109 @@ class MetadataReader:
             result['missing'] = list(dict.fromkeys(result['missing'] + ['response_budget', 'history', 'cost']))
         self.check(ctx)
         return result
+
+    def _header(self, store, row, selection):
+        if selection.job_ref.version != 2:
+            return None
+        key = (selection, row.revision)
+        with self._lock:
+            cached = self._headers.get(key)
+            if cached and time.monotonic() - cached[0] < 2:
+                return cached[1]
+        job = store.get_job(selection.job_ref.job_id)
+        if job.id != row.job_ref.job_id or str(job.status) != row.status:
+            return None
+        cursors = dict(tasks=None, artifacts=None)
+        pages = {lane: method(selection.job_ref, cursor=None, **PAGE_BUDGET)
+                 for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs))}
+        expert = self._expert(store, row, selection, pages, cursors, job=job, pin=True, for_header=True)
+        header = job_expert.summary_header(job, expert)
+        with self._lock:
+            self._headers[key] = (time.monotonic(), header)
+            self._headers.move_to_end(key)
+            while len(self._headers) > 64:
+                self._headers.popitem(last=False)
+        return header
+
+    def _expert(self, store, row, selection, pages, cursors, *, job=None, pin=False, for_header=False):
+        if selection.job_ref.version != 2:
+            return job_expert.unavailable('legacy_ref')
+        deadline = time.monotonic() + 2
+        _, current, reason = self._selected(selection, pin=pin)
+        if reason or current.revision != row.revision:
+            return job_expert.unavailable('selection_changed')
+        job = job or store.get_job(selection.job_ref.job_id)
+        if job.id != selection.job_ref.job_id or str(job.status) != row.status:
+            return job_expert.unavailable('selection_changed')
+        tasks = []
+        coverage = {lane: 'complete' if page.outcome == 'complete' and cursors[lane] is None else 'partial'
+                    for lane, page in pages.items()}
+        for ref in pages['tasks'].items:
+            self.check(selection.context)
+            if time.monotonic() >= deadline:
+                coverage['tasks'] = 'partial'
+                break
+            task = store.get_task_by_id(ref.id)
+            if not job_expert.task_matches(task, ref, job.id):
+                return job_expert.unavailable('task_changed')
+            if task.payload.get('session_id') not in (None, row.session_id):
+                return job_expert.unavailable('task_scope_changed')
+            tasks.append(task)
+        by_id = {task.id: task for task in tasks}
+        artifacts = []
+        if time.monotonic() < deadline:
+            refs = pages['artifacts'].items
+            bodies = store.get_artifacts_by_ids(job.id, [ref.id for ref in refs])
+            for ref in refs:
+                artifact = bodies.get(ref.id)
+                if (artifact is None or artifact.job_id != job.id or artifact.id != ref.id
+                        or artifact.sha256 != ref.sha256 or artifact.task_id != ref.task_id
+                        or str(artifact.type) != ref.artifact_type):
+                    return job_expert.unavailable('artifact_changed')
+                if artifact.task_id:
+                    task = by_id.get(artifact.task_id)
+                    if task is None:
+                        coverage['artifacts'] = 'partial'
+                    elif not job_expert.current_artifact(artifact, task):
+                        coverage['artifacts'] = 'partial'
+                        continue
+                artifacts.append(artifact)
+        else:
+            coverage['artifacts'] = 'partial'
+        compaction = dict(coverage='unavailable', reason='identity_unavailable', records=[])
+        known = self.sources.resolve(selection.store)
+        created_at = job_expert.timestamp(job.created_at)
+        if not job.session_id and row.session_id:
+            job = replace(job, session_id=row.session_id)
+        if known is not None and job.session_id and created_at and time.monotonic() < deadline:
+            compaction = read_selected_compaction(known.root, session_id=job.session_id, job_id=job.id,
+                created_at=datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp())
+        # Re-read the identical finite reference pages. A task binding or artifact
+        # revision changed during hydration must invalidate the entire projection.
+        for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
+            current = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
+            if current != pages[lane]:
+                return job_expert.unavailable('selection_changed')
+        if time.monotonic() >= deadline:
+            return job_expert.unavailable('deadline')
+        projected = job_expert.project(job, tasks, artifacts, coverage, registry=self._registry, compaction=compaction)
+        if for_header:
+            return projected
+        # Preserve useful rows while refusing to turn a capped response into a
+        # complete verification verdict. No extra pages or body scans are started.
+        while _size(projected) > 49152 and (projected['tasks'] or projected['artifacts']):
+            lane = 'artifacts' if projected['artifacts'] else 'tasks'
+            omitted = projected[lane].pop()
+            if lane == 'tasks':
+                projected['economics']['tasks'].pop(omitted['id'], None)
+            projected['coverage'][lane] = 'partial'
+            projected.update(kind='partial', reason='response_budget', quality='unverified')
+            projected['economics']['header']['usage']['complete'] = False
+            projected['economics']['header']['cost']['complete'] = False
+            if lane == 'tasks':
+                projected['economics']['header']['workers_complete'] = False
+        self.check(selection.context)
+        return projected
 
     def _history(self, store, selection, bindings, cursors):
         counts = store.historical_evidence_counts(selection.job_ref)

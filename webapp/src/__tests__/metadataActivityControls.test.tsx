@@ -104,11 +104,11 @@ it('never presents partial history ordering or quality filtering as complete', a
   partial = true; await start(); mount();
   expect(store.getSnapshot().streams.some(s => s.state === 'partial')).toBe(true);
   expect(screen.getByText(/Sorting and filters apply only to observed jobs/)).toBeVisible();
-  expect(screen.getByText(/PM creation times are unavailable/)).toBeVisible();
+  expect(screen.getByText(/undated jobs remain last/)).toBeVisible();
   filter('failed');
   expect(order()).toEqual(['newest-failed']);
   filter('untrustworthy');
-  expect(screen.getByText(/Quality cannot be assessed/)).toBeVisible();
+  expect(screen.getByText(/Showing recorded degraded quality/)).toBeVisible();
   expect(screen.queryByText('No jobs observed in this filter. Coverage may be incomplete.')).toBeNull();
   expect(order()).toEqual([]);
 });

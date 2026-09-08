@@ -140,8 +140,8 @@ it('the real owner retains active freshness and sibling/history/pin fairness aft
   const normal = f.calls.slice(count);
   expect(normal).toHaveLength(32);
   expect(normal.filter(c => c.lane === 'active')).toHaveLength(8);
-  expect(normal.filter(c => c.lane === 'history')).toHaveLength(4);
-  expect(normal.filter(c => c.path === '/api/jobs/metadata/pins')).toHaveLength(2);
+  expect(normal.filter(c => c.lane === 'history')).toHaveLength(2);
+  expect(normal.filter(c => c.path === '/api/jobs/metadata/pins')).toHaveLength(4);
   expect(normal.filter(c => c.path === '/api/jobs/metadata/local/detail')).toHaveLength(4);
   expect(normal.filter(c => c.state?.startsWith('sibling'))).toHaveLength(4);
   expect(normal.filter(c => c.state === 'store-A' && c.status === null).length).toBeGreaterThan(0);

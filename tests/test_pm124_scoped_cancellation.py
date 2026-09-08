@@ -290,7 +290,9 @@ def test_http_route_wiring_for_request_and_receipt(request, case_fixture):
     handler = SimpleNamespace(_send=lambda code, value: sent.append((code, json.loads(value))))
     build_post_json_routes(Services())['/api/swarm/cancel'](handler, body)
     assert sent[-1][0] == 200 and sent[-1][1]['receipt']['outcome'] == 'requested'
-    build_get_routes(Services())['/api/swarm/cancellation-receipt'](handler, None, query(body))
+    from urllib.parse import urlencode, urlsplit
+    url = urlsplit('/api/swarm/cancellation-receipt?' + urlencode(query(body), doseq=True))
+    build_get_routes(Services())['/api/swarm/cancellation-receipt'](handler, url, query(body))
     assert sent[-1] == sent[-2]
 
 

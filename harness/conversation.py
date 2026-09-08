@@ -4304,14 +4304,9 @@ class ConversationalSession(
                     _n = int(ev.data.get("num", 0) or 0)
                     turn_findings_count += _n if _n > 0 else 1
                 elif ev.kind == "action_result" and ev.data.get("error"):
-                    # a tool error (e.g. malformed write_file) is recoverable -- the model
-                    # gets the error in history and should retry; do NOT let this turn count
-                    # as idle and trip a premature "objective met" halt.
-                    _err_txt = str(ev.data.get("error") or "").upper()
-                    if "INVALID TOOL CALL" in _err_txt or "REQUIRES A" in _err_txt:
-                        turn_had_retryable_error = True
-                    # If verification failed previously, we should clear the failed status if they are fixing it?
-                    # No, the prompt says max_retries limit is for consecutive failure loops. Let's keep it simple.
+                    # Errors cannot establish completion. The idle governor still
+                    # bounds repeated failures when the pilot cannot recover.
+                    turn_had_retryable_error = True
                 yield ev
                 if ev.kind == "assistant_done":
                     break
@@ -4446,4 +4441,3 @@ class ConversationalSession(
                         "FINDING/RISK/DECISION summary citing file:line evidence. "
                         "Example: FINDING: harness/foo.py:12 claim"
                     )
-

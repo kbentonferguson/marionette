@@ -29,6 +29,11 @@ it('first open discovers existing PM jobs once without an operator refresh', asy
     if (route === '/api/jobs/metadata/view') return response(discovered ? view('generation-discovered') : {
       ...view(), availability: 'unavailable', sources: [], missing: ['sources_not_refreshed'],
     });
+    if (route === '/api/jobs/metadata/pins') {
+      const body = JSON.parse(String(init?.body));
+      expect(body.selections.length).toBeLessThanOrEqual(8);
+      return response({ version: 1, context: { ...context, scope: 'all', view_generation: 'generation-discovered' }, results: body.selections.map((selection: unknown) => ({ selection, result: { kind: 'unavailable', reason: 'fixture' } })) });
+    }
     if (route === '/api/jobs/metadata') {
       expect(discovered).toBe(true);
       const result = list();
@@ -38,6 +43,7 @@ it('first open discovers existing PM jobs once without an operator refresh', asy
   }));
   render(<JobMetadataOwner repo={context.repo} sessionId={context.session_id}><Observed /></JobMetadataOwner>);
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
-  expect(calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: '/api/jobs/metadata/view/refresh' }]);
+  expect(calls.filter(call => call.path === '/api/jobs/metadata/view/refresh')).toEqual([{ method: 'POST', path: '/api/jobs/metadata/view/refresh' }]);
+  expect(calls.some(call => call.path === '/api/jobs/metadata/pins')).toBe(true);
   expect(screen.getByRole('status').textContent).toContain('job_1');
 });

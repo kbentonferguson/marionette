@@ -21,7 +21,7 @@ export async function expertMetadataFixture(rows: MetadataSummary[], options: { 
   let context: MetadataContext = { repo: first.selection.repo, session_id: first.selection.session_id, scope: 'all', view_generation: 'fixture-generation' };
   const previousBridge = Object.getOwnPropertyDescriptor(window, 'harnessIPC');
   const selected = vi.fn(async (selection: MetadataSelection, _cursors: DetailCursors): Promise<unknown> => expertDetail(selection, context));
-  const request = vi.fn(async (_method: string, path: string): Promise<unknown> => {
+  const request = vi.fn(async (_method: string, path: string, _body?: unknown): Promise<unknown> => {
     const url = new URL(path, 'http://fixture');
     if (url.pathname === '/api/endpoint') return handshake;
     if (url.pathname.endsWith('/view')) return { ...view(), context: { repo: context.repo, session_id: context.session_id, view_generation: context.view_generation },
@@ -39,20 +39,20 @@ export async function expertMetadataFixture(rows: MetadataSummary[], options: { 
     }
     throw Error(`Unexpected metadata request ${url.pathname}`);
   });
-  const wire = vi.fn(async (method: string, path: string) => {
-    try { return { status: 200, body: await request(method, path) }; }
+  const wire = vi.fn(async (method: string, path: string, body?: unknown) => {
+    try { return { status: 200, body: await request(method, path, body) }; }
     catch { return { status: 503, body: { error: 'Store unavailable' } }; }
   });
   const browserFetch = vi.fn(async (path: string | URL | Request, init?: RequestInit) => {
-    const response = await wire(init?.method ?? 'GET', String(path));
+    const response = await wire(init?.method ?? 'GET', String(path), typeof init?.body === 'string' ? JSON.parse(init.body) : undefined);
     return Response.json(response.body, { status: response.status });
   });
   if (options.browser) {
     Reflect.deleteProperty(window, 'harnessIPC');
     vi.stubGlobal('fetch', browserFetch);
   } else Object.defineProperty(window, 'harnessIPC', { configurable: true, value: { endpointHeaders: true,
-    requestJSON: async (method: string, path: string) => {
-      const result = await wire(method, path);
+    requestJSON: async (method: string, path: string, body?: unknown) => {
+      const result = await wire(method, path, body);
       return { kind: 'response', status: result.status, correlationId: '', text: JSON.stringify(result.body) };
     } } });
   const store = new JobMetadataStore(new JobMetadataClient(1000));

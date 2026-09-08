@@ -1,7 +1,6 @@
-import { evidenceFixture, evidenceHash, evidenceSelection } from './frontend52-evidence.fixtures';
-import { expertDetail } from './metadataExpert.fixtures';
-import { parseMetadataDetail } from '../lib/jobMetadata';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { evidenceFixture, evidenceSelection } from './frontend52-evidence.fixtures';
+import { currentFacts, currentDetail } from './expertCurrent.fixtures';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import SwarmPane from '../components/SwarmPane';
 import { navigationFixture } from './navigationProducer.fixtures';
@@ -60,40 +59,22 @@ it('keeps unavailable reads explicit', async () => {
 });
 
 
-it("opens bounded inspection with verification identity and hash without a check verdict", async () => {
-  const fixture = await evidenceFixture('Evidence entry');
-  const detail = expertDetail(evidenceSelection, fixture.context());
-  detail.lifecycle = 'complete';
-  detail.artifacts.rows[0] = { ...detail.artifacts.rows[0], id: 'verification-evidence', type: 'verification', sha256: evidenceHash };
-  fixture.selected.mockResolvedValue(detail);
+it('opens Evidence from the real expanded job detail', async () => {
+  const f = await evidenceFixture('Evidence entry');
+  const expert = currentFacts();
+  expert.artifacts[0].check_result = 'failed'; expert.artifacts[0].result = 'failed'; expert.quality = 'degraded';
+  f.selected.mockResolvedValue({ ...currentDetail(expert, evidenceSelection), context: f.context() });
   try {
     localStorage.clear(); sessionStorage.clear();
-    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    render(<f.Provider><SwarmPane /></f.Provider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Evidence entry · complete' }));
-    expect(fixture.selected).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
     await screen.findByRole('region', { name: 'Selected job inspector' });
-    expect(fixture.selected).toHaveBeenCalledWith(evidenceSelection, expect.objectContaining({ task_cursor: null, artifact_cursor: null }));
-    fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
-    fireEvent.click(screen.getByText('verification / verification-evidence: unknown'));
-    expect(screen.getByText(evidenceHash)).toBeVisible();
-    expect(screen.getByText('task-1')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Checks', exact: true }));
-    expect(screen.getByRole('region', { name: 'Checks' })).toHaveTextContent('Recorded artifacts and completed lifecycle do not establish that checks passed');
-    expect(screen.getByRole('region', { name: 'Checks' })).toHaveTextContent('verification / verification-evidence: recorded');
-    const cursors = { task_cursor: null, artifact_cursor: null };
-    expect(parseMetadataDetail(detail, fixture.context(), evidenceSelection, cursors).artifacts.rows[0].id).toBe('verification-evidence');
-    for (const unsupported of [
-      { ...detail, artifacts: { ...detail.artifacts, rows: [{ ...detail.artifacts.rows[0], check_result: 'failed' }] } },
-      { ...detail, tasks: { ...detail.tasks, rows: [{ ...detail.tasks.rows[0], model: 'gpt-5.3-codex' }] } },
-      { ...detail, tasks: { ...detail.tasks, rows: [{ ...detail.tasks.rows[0], tokens: 120000, est_cost_usd: 0.14 }] } },
-      { ...detail, display: { kind: 'available', goal_preview: 'Evidence entry', goal_preview_truncated: false, delivery: 'unverified', quality: 'degraded' } },
-    ]) expect(() => parseMetadataDetail(unsupported, fixture.context(), evidenceSelection, cursors)).toThrow('invalid_metadata');
+    fireEvent.click(screen.getByRole('button', { name: 'Evidence', exact: true }));
+    expect(within(screen.getByRole('region', { name: 'Job evidence' })).getByText('Recorded checks failed: 1')).toBeVisible();
     expect(fetchJobEvidence).not.toHaveBeenCalled();
-    view.unmount();
-  } finally { fixture.dispose(); }
+  } finally { f.dispose(); }
 });
-
 
 it('shows actual attempt references, distinct spend states and incomplete coverage', async () => {
   vi.mocked(fetchJobEvidence).mockResolvedValue({ ...fixture,

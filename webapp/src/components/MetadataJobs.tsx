@@ -1,3 +1,7 @@
+import { SessionWorkerUsage } from './SessionWorkerUsage';
+import { expertHeaderModel, expertJobModel } from '../lib/expertRoutingFacts';
+import { expertJobQuality } from '../lib/expertOutcomeFacts';
+import { ExpertCost } from './ExpertCurrentFacts';
 import { MetadataOutcomeCounts, MetadataOutcomeLabel, metadataOutcomeLabel } from './MetadataOutcomeChrome';
 import MetadataActivityIndicator from './MetadataActivityIndicator';
 import NativeTaskDisclosure from './NativeTaskDisclosure';
@@ -9,7 +13,7 @@ import { selectNativeMetadataControl } from '../lib/jobControl';
 import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
-import { useSharedJobMetadata, metadataActivity, metadataJobs } from '../lib/jobMetadataContext';
+import { useSharedJobMetadata, metadataActivity, metadataJobs, currentExpert, currentHeader } from '../lib/jobMetadataContext';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
@@ -85,6 +89,13 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
     if (local) { if (!native || native.lane !== lane) store.selectLocal(local, lane); void store.readLocalDetail(); }
     else if (selectedPM) { if (state.detail.kind !== 'selected' || metadataSelectionKey(state.detail.selection) !== metadataSelectionKey(selectedPM)) store.select(selectedPM); void store.readDetail(); }
   };
+  const initialPMRead = useRef(false);
+  useEffect(() => {
+    if (initialPMRead.current || local || !selectedPM || selectedPM.job_ref.version !== 2 || detail?.observation || navigation?.artifactId || state.working || state.view.kind !== 'view') return;
+    initialPMRead.current = true;
+    store.select(selectedPM);
+    void store.readDetail();
+  }, [local, selectedPM, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
   useEffect(() => {
     if (initialNativeRead.current || !local || nativeSummary?.kind !== 'provider' || state.working || state.view.kind !== 'view') return;
@@ -109,9 +120,10 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
     void store.readDetail();
   }, [navigation, selectedPM, state.working, state.view, store]);
   const observation = selectedPM ? detail?.observation : undefined;
+  const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
   const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:
-    observation && detail?.freshness === 'observed' && !detail.cursors.task_cursor && observation.tasks.page.outcome === 'complete'
+    observation && detailFresh && detail?.kind === 'selected' && !detail.cursors.task_cursor && observation.tasks.page.outcome === 'complete'
       && bindings.length > 0 && bindings.length === observation.tasks.rows.length
       ? { status: 'complete', limit: 200, bindings } : { status: 'unavailable', limit: 200 } };
   const view = state.view;
@@ -162,6 +174,7 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
       {native.observation.selected_context.omission === 'raw_command_not_retained' && <p>Stored preview may be redacted or shortened; raw command is not retained.</p>}
       {native.observation.selected_context.cwd ? <p className="break-all">Working directory: {native.observation.selected_context.cwd.text}{native.observation.selected_context.cwd.truncated ? ' (truncated to 512 UTF-8 bytes)' : ''}</p> : <p>Working directory unavailable.</p>}
     </div>}
+    {!local && job.metadata_key && !observation?.expert && <ExpertCost header={currentHeader(state, job.metadata_key) ?? null} />}
     <p>Lifecycle: {nativeSummary?.lifecycle ?? job.status}. {!local && (!observation || observation.cost.kind === 'unavailable') ? 'Cost unavailable.' : ''} {(local ? !nativeFresh : job.read_status === 'unavailable') ? 'Observation is stale.' : ''}</p>
     <div className="flex flex-wrap gap-1">
       <button className={button} disabled={state.working || (!local && !selectedPM)} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
@@ -174,7 +187,7 @@ function SelectedInspection({ job, navigation }: { job: Job; navigation?: SwarmN
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
     {state.working && !observation && state.detail.kind === 'selected' && pm && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(pm.row.selection) && <p role="status">Loading artifacts...</p>}
-    {observation && <MetadataExpertPanels key={metadataSelectionKey(observation.selection)} detail={observation} navigation={navigation} store={store} busy={state.working} stale={detail?.freshness !== 'observed'} />}
+    {observation && <MetadataExpertPanels key={metadataSelectionKey(observation.selection)} detail={observation} navigation={navigation} store={store} busy={state.working} stale={!detailFresh} />}
     {native?.tasks && <section aria-label="Native workers">
       {native.tasks.page.revision !== nativeSummary?.revision && <p>Retained task details are stale. Inspect workers to refresh.</p>}
       {native.tasks.rows.map((task, index) => {
@@ -238,7 +251,7 @@ export default function MetadataJobs({ enabled = true }: { enabled?: boolean }) 
   return <ObservedJobs key={key} preferenceKey={`pmharness.metadata.jobs:${key}`} enabled={enabled} />;
 }
 function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preferenceKey: string }) {
-  const { state } = useSharedJobMetadata();
+  const { store, state } = useSharedJobMetadata();
   const [preferences, setPreferences] = useState(() => readPreferences(preferenceKey));
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
@@ -322,6 +335,11 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   if (!enabled) return <p className="p-2 text-xs text-muted">Job metadata paused for this view.</p>;
   const hidden = jobs.filter(j => isFinished(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
   const createdAt = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o.row.created_at]));
+  for (const job of jobs) {
+    const date = currentHeader(state, job.metadata_key ?? '')?.created_at;
+    if (date) createdAt.set(job.metadata_key ?? '', Date.parse(date));
+  }
+  const quality = (job: Job) => { const expert = currentExpert(state, job.metadata_key ?? ''); return expert ? expertJobQuality(expert) : currentHeader(state, job.metadata_key ?? '')?.quality ?? 'unverified'; };
   const selectedSummary = state.localDetail?.observation?.summary;
   if (selectedSummary && !createdAt.has(localKey(selectedSummary.local_ref))) createdAt.set(localKey(selectedSummary.local_ref), selectedSummary.created_at);
   const shown = jobs.filter(j => !hidden.includes(j)).filter(j => {
@@ -336,7 +354,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       case 'cancelled': return j.status === 'cancelled';
       case 'complete': return ['completed', 'complete', 'done'].includes(j.status);
       // Lifecycle alone cannot establish a failed check or a trustworthy result.
-      case 'untrustworthy': return false;
+      case 'untrustworthy': return quality(j) === 'degraded';
       default: return false;
     }
   }).sort((a, b) => {
@@ -360,22 +378,25 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     <h2 className="px-2 text-sm font-medium"><span>Swarm Tracker</span> ({trackerCount} observed)</h2>
     {trackerCount === 0 && state.view.kind === 'view' && !state.working && <p className="px-2 text-xs text-muted">No swarm jobs observed in this view.</p>}
     <MetadataStatus />
+    <SessionWorkerUsage />
+    <button className={button} disabled={state.working} onClick={() => void store.refreshHeaders()}>Refresh job headers</button>
+    {state.headerError && <p role="status" className="px-2 text-xs text-muted">Job headers could not be refreshed. Retry header refresh; list observations remain available.</p>}
     <div className="grid grid-cols-2 gap-1 px-2 text-sm">
       <select aria-label="Filter swarms" className="min-h-11 w-full min-w-0 bg-panel text-txt focus-visible:outline focus-visible:outline-accent" value={filter} onChange={e => setFilter(e.target.value)}>
         <option value="all">All observed</option><option value="session">This session</option><option value="repo">This repo</option>
         <option value="active">Active</option><option value="attention">Needs attention</option><option value="finished">Finished</option>
         <option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="complete">Completed lifecycle</option>
-        <option value="untrustworthy">Untrustworthy (quality unavailable)</option>
+        <option value="untrustworthy">Untrustworthy</option>
       </select>
       <button className={`${button} w-full min-w-0`} aria-label="Sort swarms" onClick={() => setSort(s => s === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? 'Newest' : 'Oldest'} first</button>
     </div>
-    <p className="px-2 text-xs text-muted">Sorting and filters apply only to observed jobs; history coverage is incomplete. Known creation times are ordered within each lifecycle group; undated jobs remain last. PM creation times are unavailable.</p>
+    <p className="px-2 text-xs text-muted">Sorting and filters apply only to observed jobs; history coverage is incomplete. Known creation times are ordered within each lifecycle group; undated jobs remain last.</p>
     <div className="flex flex-wrap items-center gap-1 px-2 text-sm">
       <button className={button} onClick={() => setPreferences(p => ({ ...p, dismissed: [...new Set([...p.dismissed, ...groups.filter(g => !collapsedGroups.includes(g.key)).flatMap(g => g.rows).filter(j => isFinished(j) && j.read_status !== 'unavailable').flatMap(j => j.metadata_key ? [j.metadata_key] : [])])].slice(-200) }))}>Hide finished</button>
       {hidden.length > 0 && <button className={button} onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>}
       {filter !== 'all' && <button className={button} onClick={() => setFilter('all')}>Clear filter</button>}
     </div>
-    {filter === 'untrustworthy' && <p role="status" className="px-2 text-sm text-muted">Quality cannot be assessed from the current metadata contract. Failed lifecycle is separate from failed verification; no trustworthy or untrustworthy result is inferred.</p>}
+    {filter === 'untrustworthy' && <p role="status" className="px-2 text-sm text-muted">Showing recorded degraded quality. Failed lifecycle is separate from failed verification.</p>}
     {filter === 'complete' && <p className="px-2 text-xs text-muted">Completed lifecycle does not establish successful verification.</p>}
     {notice && <p role="status" className="px-2 text-sm text-muted">{notice}</p>}
     <MetadataOutcomeCounts jobs={shown} />
@@ -383,10 +404,12 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       <button key={`group:${group.key}`} className={`${button} w-full text-left font-medium`} aria-expanded={!collapsedGroups.includes(group.key)} onClick={() => setCollapsedGroups(current => current.includes(group.key) ? current.filter(key => key !== group.key) : [...current, group.key])}>{group.label} ({group.rows.length} observed)</button>,
       ...group.rows.map(job => {
         const key = job.metadata_key ?? '', open = preferences.expanded.includes(key);
+        const expert = currentExpert(state, key), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, key));
+        const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isActive(job) && !model;
         // Keep one keyed sibling list so group changes preserve inspector state and focus.
-        return <div className="border-b border-edge" key={key} hidden={collapsedGroups.includes(group.key)} data-job-id={job.id} data-job-source={job.source}
+        return <div className="border-b border-edge" key={key} hidden={collapsedGroups.includes(group.key)} data-job-id={job.id} data-job-source={job.source} data-quality={quality(job)}
           onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
-          <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`${button} flex items-center w-full text-left`} aria-label={`${job.goal} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>{!job.local_ref && job.read_status !== 'unavailable' && job.status === 'running' && <MetadataActivityIndicator />}<span className="truncate">{job.goal}</span><span className="shrink-0"> · <MetadataOutcomeLabel status={job.status} /></span></button>
+          <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`${button} flex items-center w-full text-left`} aria-label={`${job.goal} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>{!job.local_ref && job.read_status !== 'unavailable' && job.status === 'running' && <MetadataActivityIndicator />}<span className="truncate">{job.goal}</span>{model && <span title={`Model: ${model}`} className="min-w-0 truncate"> · {model}</span>}{routing && <span className="shrink-0"> · routing…</span>}{currentHeader(state, key)?.completed_workers !== undefined && <span className="shrink-0"> {currentHeader(state, key)?.completed_workers}/{currentHeader(state, key)?.selected_workers}</span>}<span className="shrink-0"> · {quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span></button>
           {job.read_status === 'unavailable' && <p className="px-2 text-xs text-muted">Retained observation is stale; current lifecycle is unconfirmed.</p>}
           {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
           {isFinished(job) && job.read_status !== 'unavailable' && <button className={button} aria-label={`Dismiss from tracker: ${job.goal}`} onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}>Dismiss</button>}

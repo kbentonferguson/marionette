@@ -205,6 +205,12 @@ def test_actual_sustained_polls_no_body_constructor_discovery(host, monkeypatch)
         calls.append(kw)
         return original(**kw)
     monkeypatch.setattr(store, 'list_job_summaries', summary)
+    original_job = store.get_job
+    hydrated = []
+    def job_body(job_id):
+        hydrated.append(job_id)
+        return original_job(job_id)
+    monkeypatch.setattr(store, 'get_job', job_body)
     def forbidden(*a, **kw):
         pytest.fail('metadata poll exceeded its lane')
     monkeypatch.setattr(Session, 'state', forbidden)
@@ -212,7 +218,7 @@ def test_actual_sustained_polls_no_body_constructor_discovery(host, monkeypatch)
     monkeypatch.setattr('harness.job_readmodel.create_store', forbidden)
     monkeypatch.setattr('harness.job_metadata_view.discover_sources', forbidden)
     from puppetmaster.store import SwarmStore
-    for method in ('get_job', 'list_jobs', 'list_tasks', 'list_artifacts'):
+    for method in ('list_jobs', 'list_tasks', 'list_artifacts'):
         monkeypatch.setattr(SwarmStore, method, forbidden)
     before = hashes(host.store.root)
     selections = [dict(job_ref=host.store.job_ref(j.id).as_dict(), source='harness',
@@ -226,9 +232,10 @@ def test_actual_sustained_polls_no_body_constructor_discovery(host, monkeypatch)
         assert status == 200 and size <= 65536
         assert [r['result']['row']['selection'] for r in pinned['results']] == selections
         assert host.reg.metadata_view.reader() is reader
-    assert len(calls) == 30 * 9
+    assert 0 < len(hydrated) <= 30 * 8
+    assert len(calls) == 30 * 17 + len(hydrated)
     assert sum(kw['limit'] == 50 and kw['max_scan'] == 51 and kw['max_bytes'] == 32768 for kw in calls) == 30
-    assert sum(kw['limit'] == 1 and kw['max_scan'] == 2 and kw['max_bytes'] == 8192 for kw in calls) == 240
+    assert sum(kw['limit'] == 1 and kw['max_scan'] == 2 and kw['max_bytes'] == 8192 for kw in calls) == 30 * 8 * 2 + len(hydrated)
     assert hashes(host.store.root) == before
     assert metrics['reads'] and any(table == 'projection_versions' for table, _ in metrics['reads'])
 

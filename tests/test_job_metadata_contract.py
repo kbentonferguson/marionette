@@ -168,11 +168,11 @@ def test_published_completion_receipt_from_bounded_run_page(case):
     assert selected['cancellation_authority'] is False
 
 
-def test_selected_reads_never_hydrate_source_bodies_or_write(case, monkeypatch):
+def test_selected_reads_use_exact_public_bodies_without_scans_or_writes(case, monkeypatch):
     store, job, reader, selection = case
     populate_history(store, job, 2)
     from puppetmaster.store import SwarmStore
-    for name in ('get_job', 'list_jobs', 'list_tasks', 'list_artifacts', 'get_task_by_id', 'ensure_schema', 'init'):
+    for name in ('list_jobs', 'list_tasks', 'list_artifacts', 'ensure_schema', 'init'):
         monkeypatch.setattr(SwarmStore, name, lambda *a, **kw: pytest.fail('body read or schema mutation'), raising=False)
     from puppetmaster.readonly import ReadConnection
     execute = ReadConnection.execute
@@ -254,3 +254,276 @@ def test_cli_previous_membership_never_promotes_foreign_origin(case):
     code, changed = get_job_metadata({k: [str(v)] for k, v in query_values.items()}, reader)
     assert code == 200 and changed['rows'] == []
     assert changed['page']['outcome'] == 'complete'
+
+
+def expert_fixture(case, *, passed=False):
+    store, job, _, _ = case
+    task = Task(job.id, 'Reviewer', 'Inspect the real diff; token=private-value',
+                adapter='codex', payload={'model': 'gpt-6-astra', 'api_key': 'never serialize this'})
+    store.save_task(task)
+    route = Artifact(job.id, task.id, ArtifactType.ROUTING, 'router-escalation',
+        {'model_id': 'codex/gpt-6-astra', 'adapter_model_name': 'gpt-6-astra', 'adapter': 'codex',
+         'policy': 'quality', 'provider': 'openai', 'role': 'Reviewer',
+         'rejected': [{'model': 'smaller-model', 'reason': 'insufficient context'}]}, 1, ['router'])
+    store.save_artifact(route)
+    payload = dict(check='Regression suite', result='passed' if passed else 'failed',
+                   passed=passed, detail='All green' if passed else 'Expected two rows; got one',
+                   model='gpt-6-astra', real_cost_usd=0)
+    payload.update(token_usage(sdk_usage={'inputTokens': 120, 'outputTokens': 0}))
+    check = Artifact(job.id, task.id, ArtifactType.VERIFICATION, 'worker', payload, 1, ['pytest'])
+    store.save_artifact(check)
+    store.save_artifact(Artifact(job.id, task.id, ArtifactType.FINDING, 'worker',
+                                {'claim': 'Exact routing matched the selected worker'}, 1, ['test']))
+    return task, route, check
+
+
+def test_expert_projects_current_identity_routing_failures_and_attested_zero(case):
+    task, route, check = expert_fixture(case)
+    code, selected = detail(case)
+    assert code == 200
+    expert = selected['expert']
+    assert expert['kind'] == 'available'
+    assert expert['coverage'] == {'tasks': 'complete', 'artifacts': 'complete'}
+    assert expert['quality'] == 'degraded'
+    worker = expert['tasks'][0]
+    assert worker['id'] == task.id and worker['role'] == 'Reviewer'
+    assert worker['model'] == 'gpt-6-astra' and worker['adapter'] == 'codex'
+    assert worker['instruction'] == 'Inspect the real diff; token=REDACTED'
+    assert worker['usage'] == dict(tokens_in=120, tokens_out=0, est_cost_usd=0,
+                                  estimated=False, cost_provenance='provider')
+    artifacts = {a['id']: a for a in expert['artifacts']}
+    assert artifacts[route.id]['model'] == 'gpt-6-astra'
+    assert artifacts[route.id]['created_by'] == 'router-escalation'
+    assert artifacts[route.id]['rejected'] == [{'model': 'smaller-model', 'reason': 'insufficient context'}]
+    assert artifacts[check.id]['headline'] == 'Regression suite'
+    assert artifacts[check.id]['detail'] == 'Expected two rows; got one'
+    assert artifacts[check.id]['check_result'] == 'failed'
+    assert 'never serialize this' not in json.dumps(selected)
+
+
+def test_expert_success_requires_complete_check_coverage_and_deduplicates_usage(case):
+    task, _, check = expert_fixture(case, passed=True)
+    store = case[0]
+    store.save_artifact(replace(check, id='artifact_duplicate'))
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['quality'] == 'ok'
+    assert selected['expert']['tasks'][0]['usage']['tokens_in'] == 120
+    assert selected['expert']['header']['created_at'] == case[1].created_at
+
+
+def test_expert_does_not_promote_old_generation_or_invent_usage(case):
+    task, _, _ = expert_fixture(case)
+    case[0].save_task(replace(task, generation=1, payload={'model': 'current-model'}))
+    code, selected = detail(case)
+    expert = selected['expert']
+    assert code == 200 and expert['kind'] == 'partial'
+    assert expert['quality'] == 'unverified' and expert['artifacts'] == []
+    assert expert['tasks'][0]['model'] == 'current-model'
+    assert all(value is None for value in expert['tasks'][0]['usage'].values())
+
+
+def test_expert_rechecks_task_epoch_after_exact_body_reads(case, monkeypatch):
+    task, _, _ = expert_fixture(case)
+    handle = case[2].sources.stores[0].handle
+    original = handle.get_task_by_id
+    def raced(task_id):
+        value = original(task_id)
+        case[0].save_task(replace(task, generation=1, payload={'model': 'new-model'}))
+        return value
+    monkeypatch.setattr(handle, 'get_task_by_id', raced)
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['kind'] == 'unavailable'
+    assert selected['expert']['tasks'] == [] and selected['expert']['artifacts'] == []
+
+
+def test_explicit_header_is_cached_and_lists_stay_body_free(case, monkeypatch):
+    store, job, reader, selection = case
+    handle = reader.sources.stores[0].handle
+    original = handle.get_job
+    reads = []
+    def exact(job_id):
+        reads.append(job_id)
+        assert job_id == job.id
+        return original(job_id)
+    monkeypatch.setattr(handle, 'get_job', exact)
+    list_qs = {k: [str(v)] for k, v in dict(asdict(selection.context), **asdict(selection.store), mode='snapshot').items()}
+    assert get_job_metadata(list_qs, reader)[0] == 200
+    assert reads == []
+    for _ in range(2):
+        code, response = post_job_metadata_pins(dict(asdict(selection.context), selections=[selection.wire()]), reader)
+        assert code == 200
+        assert response['results'][0]['result']['row']['header']['created_at'] == job.created_at
+    assert reads == [job.id]
+
+
+def test_expert_caps_projection_and_marks_coverage(case):
+    store, job, _, _ = case
+    for n in range(50):
+        store.save_task(Task(job.id, 'worker', 'x' * 20000, id=f'task_{n:03d}'))
+    code, selected = detail(case)
+    assert code == 200
+    expert = selected['expert']
+    assert expert['kind'] == 'partial' and expert['coverage']['tasks'] == 'partial'
+    assert expert['quality'] == 'unverified'
+    assert 0 < len(expert['tasks']) < 50
+    assert all(t['instruction_truncated'] for t in expert['tasks'])
+    assert len(json.dumps(selected).encode()) <= 98304
+
+
+def test_expert_normal_claimed_worker_keeps_current_routing_and_usage(case):
+    store, job, _, _ = case
+    task, _, _ = expert_fixture(case, passed=True)
+    claimed = store.claim_next_task(job.id, 'worker')
+    assert claimed.id == task.id and claimed.generation == claimed.attempts == 1
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['kind'] == 'available'
+    assert selected['expert']['tasks'][0]['usage']['est_cost_usd'] == 0
+    assert len(selected['expert']['artifacts']) == 3
+
+
+def test_expert_header_receipt_keeps_selected_zero_and_basis(case, monkeypatch):
+    monkeypatch.setattr('puppetmaster.cost.load_registry', lambda *_args, **_kwargs: [])
+    store, job, _, _ = case
+    _, route, _ = expert_fixture(case, passed=True)
+    store.save_artifact(replace(route, payload={**route.payload, 'billing': 'plan'}))
+    store.update_job_status(job.id, JobStatus.COMPLETE)
+    code, selected = detail(case)
+    assert code == 200
+    cost = selected['expert']['header']['cost']
+    assert cost['source'] == 'terminal_cost_receipt'
+    assert cost['selected_usd'] == 0
+    assert cost['basis'] == 'estimated'  # Plan marginal pricing is not provider billing.
+    assert cost['measured_cost_usd'] is None and cost['estimated_cost_usd'] == 0
+
+
+def test_expert_one_passed_check_does_not_verify_unchecked_workers(case):
+    expert_fixture(case, passed=True)
+    store, job, _, _ = case
+    store.save_task(Task(job.id, 'unchecked', 'Do another task'))
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['coverage']['tasks'] == 'complete'
+    assert selected['expert']['quality'] == 'unverified'
+
+
+def test_expert_unmatched_artifact_details_do_not_degrade_current_workers(case):
+    store, job, _, _ = case
+    expert_fixture(case, passed=True)
+    artifact = Artifact(job.id, 'absent-task', ArtifactType.VERIFICATION, 'worker',
+                        {'check': 'Unmatched check', 'result': 'failed', 'detail': 'Other task failed'}, 1, ['test'])
+    store.save_artifact(artifact)
+    code, selected = detail(case)
+    assert code == 200
+    expert = selected['expert']
+    assert expert['quality'] == 'unverified' and expert['coverage']['artifacts'] == 'partial'
+    unmatched = next(a for a in expert['artifacts'] if a['id'] == artifact.id)
+    assert unmatched['task_id'] == 'absent-task' and unmatched['check_result'] == 'failed'
+    assert unmatched['detail'] == 'Other task failed'
+
+
+def test_expert_rereads_artifact_revisions_before_publishing_details(case, monkeypatch):
+    _, _, check = expert_fixture(case)
+    handle = case[2].sources.stores[0].handle
+    original = handle.get_artifacts_by_ids
+    def changed(job_id, artifact_ids):
+        captured = original(job_id, artifact_ids)
+        case[0].save_artifact(replace(check, payload={**check.payload, 'detail': 'Revised failure reason'}))
+        return captured
+    monkeypatch.setattr(handle, 'get_artifacts_by_ids', changed)
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['kind'] == 'unavailable'
+    assert 'Expected two rows; got one' not in json.dumps(selected)
+    assert selected['expert']['tasks'] == selected['expert']['artifacts'] == []
+
+
+def test_expert_stops_hydrating_when_deadline_expires(case, monkeypatch):
+    from types import SimpleNamespace
+    import harness.job_readmodel as readmodel
+    expert_fixture(case)
+    ticks = iter([0, 3, 3, 3])
+    monkeypatch.setattr(readmodel, 'time', SimpleNamespace(monotonic=lambda: next(ticks, 3)))
+    handle = case[2].sources.stores[0].handle
+    monkeypatch.setattr(handle, 'get_task_by_id', lambda *a: pytest.fail('task read after deadline'))
+    monkeypatch.setattr(handle, 'get_artifacts_by_ids', lambda *a: pytest.fail('artifact read after deadline'))
+    code, selected = detail(case)
+    assert code == 200 and selected['expert']['reason'] == 'deadline'
+    assert selected['tasks']['rows'] and selected['artifacts']['rows']
+
+
+def test_expert_never_opens_foreign_or_wrong_incarnation_bodies(case, monkeypatch):
+    store, job, reader, selection = case
+    expert_fixture(case)
+    handle = reader.sources.stores[0].handle
+    monkeypatch.setattr(handle, 'get_job', lambda *a: pytest.fail('unauthorized job body'))
+    foreign = replace(selection, job_ref=replace(selection.job_ref, incarnation=str(uuid4())))
+    code, selected = get_job_metadata_detail(query(foreign), reader)
+    assert code == 200 and selected['tasks']['rows'] == []
+    store.save_job(replace(job, origin='other', session_id='foreign'))
+    code, selected = detail(case)
+    assert code == 200 and selected['tasks']['rows'] == []
+    assert selected['display']['kind'] == 'unavailable'
+
+
+def test_selected_economics_reads_exact_marionette_compaction_records(case):
+    from harness.tool_output_savings import ToolOutputSavingsLedger
+    store, job, _, _ = case
+    expert_fixture(case, passed=True)
+    ledger = ToolOutputSavingsLedger(str(store.root))
+    assert ledger.record(session_id=job.session_id, job_id=job.id, tool_call_id='selected-call',
+                         original_chars=800, compact_chars=400)
+    assert ledger.record(session_id='foreign-session', job_id=job.id, tool_call_id='foreign-call',
+                         original_chars=8000, compact_chars=400)
+    code, selected = detail(case)
+    assert code == 200
+    economics = selected['expert']['economics']
+    assert economics['compaction']['coverage'] == 'complete'
+    assert economics['header']['savings']['compact_tokens'] == 100
+    assert economics['header']['savings']['compaction_usd'] is None
+    assert 'foreign-call' not in json.dumps(selected)
+    assert economics['tasks'][selected['expert']['tasks'][0]['id']]['tokens'] == 120
+
+
+def test_pin_headers_include_current_model_and_live_usage_without_disclosure(case):
+    task, _, _ = expert_fixture(case)
+    store, job, reader, selection = case
+    code, response = post_job_metadata_pins(dict(asdict(selection.context), selections=[selection.wire()]), reader)
+    assert code == 200
+    header = response['results'][0]['result']['row']['header']
+    assert header['model'] == 'gpt-6-astra'
+    assert header['model_provenance'] == 'task_assignment'
+    assert header['selected_workers'] == 1 and header['completed_workers'] == 0
+    assert header['workers_complete'] is True
+    assert header['usage']['tokens'] == 120 and header['usage']['complete'] is True
+    assert header['cost']['selected_usd'] == 0 and header['cost']['basis'] == 'measured'
+    assert header['quality'] == 'degraded'
+    assert 'instruction' not in json.dumps(header) and 'rejected' not in json.dumps(header)
+    assert task.id not in json.dumps(header)
+
+
+def test_pin_headers_count_complete_workers_without_inheriting_one_model(case):
+    from puppetmaster.models import TaskStatus
+    expert_fixture(case)
+    store, job, reader, selection = case
+    store.save_task(Task(job.id, 'Second worker', 'Private second task', status=TaskStatus.COMPLETE,
+                         adapter='codex', payload={'model': 'different-model'}))
+    code, response = post_job_metadata_pins(dict(asdict(selection.context), selections=[selection.wire()]), reader)
+    header = response['results'][0]['result']['row']['header']
+    assert code == 200 and header['completed_workers'] == 1 and header['selected_workers'] == 2
+    assert header['workers_complete'] is True
+    assert header['model'] is None and header['model_provenance'] == 'unknown'
+    assert header['usage']['complete'] is False and header['cost']['complete'] is False
+    assert header['usage']['tokens_known_workers'] == 1
+
+
+def test_pin_headers_refresh_usage_when_lifecycle_and_task_count_stay_fixed(case):
+    task, _, check = expert_fixture(case)
+    store, _, reader, selection = case
+    body = dict(asdict(selection.context), selections=[selection.wire()])
+    first = post_job_metadata_pins(body, reader)[1]['results'][0]['result']['row']
+    payload = {**check.payload, 'real_cost_usd': 0.25}
+    payload.update(token_usage(sdk_usage={'inputTokens': 240, 'outputTokens': 1}))
+    store.save_artifact(replace(check, id='artifact_new_usage', payload=payload))
+    second = post_job_metadata_pins(body, reader)[1]['results'][0]['result']['row']
+    assert first['lifecycle'] == second['lifecycle'] and first['task_count'] == second['task_count']
+    assert second['header']['usage']['tokens'] == 241
+    assert second['header']['cost']['selected_usd'] == 0.25
+    assert second['revision'] > first['revision']

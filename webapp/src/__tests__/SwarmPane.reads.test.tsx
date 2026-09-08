@@ -1,3 +1,4 @@
+import backend from './expertCurrent.backend.json';
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 
 import { beforeEach, expect, it, vi, afterEach } from "vitest";
@@ -32,7 +33,7 @@ const selection: MetadataSelection = { repo: '/A', session_id: 'A', source: 'har
 
 let metadata: Awaited<ReturnType<typeof expertMetadataFixture>> | undefined;
 
-afterEach(() => { cleanup(); metadata?.dispose(); metadata = undefined; vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); metadata?.dispose(); metadata = undefined; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 async function setup() {
   const fixture = await expertMetadataFixture([expertSummary(selection, 'Inspect A')], { browser: true });
@@ -144,5 +145,27 @@ it("retries unavailable metadata summary and restores identical retained rows", 
   expect(screen.getByRole('button', { name: /^Inspect A · running/ })).toBeVisible();
   expect(f.store.getSnapshot().observations.map(o => o.row)).toEqual(rows);
   expect(f.store.getSnapshot().streams.some(stream => stream.state === 'unavailable')).toBe(false);
+  expect(api.swarmLive).not.toHaveBeenCalled();
+});
+
+it('retries incomplete session summary and restores positive current totals while rows stay identical', async () => {
+  const f = await setup();
+  const original = f.request.getMockImplementation()!;
+  let complete = false, now = Date.now();
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const row = f.store.getSnapshot().observations[0].row;
+  f.request.mockImplementation(async (method, path, body) => {
+    if (!path.endsWith('/pins')) return original(method, path, body);
+    return { version: 1, context: f.context(), results: [{ selection: row.selection,
+      result: { kind: 'present', row: { ...row, header: { ...backend.economics.header, workers_complete: complete } } } }] };
+  });
+  for (let i = 0; i < 64; i++) await act(async () => { await f.store.ownerTick(); });
+  expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('partial coverage');
+  const rows = f.store.getSnapshot().observations;
+  complete = true; now += 120001;
+  for (let i = 0; i < 64; i++) await act(async () => { await f.store.ownerTick(); });
+  expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('complete known-store coverage');
+  expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('120 tokens');
+  expect(f.store.getSnapshot().observations).toEqual(rows);
   expect(api.swarmLive).not.toHaveBeenCalled();
 });

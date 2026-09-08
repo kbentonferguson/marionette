@@ -571,7 +571,7 @@ def get_scoped_artifacts(qs: dict, svc: JobServices) -> tuple[int, Any]:
     from puppetmaster.models import JobRef
     from puppetmaster.state import state_identity
     from ..cli_job_merge import resolve_cli_state_dir
-    from ..job_scoping import job_owned_by_marionette
+    from ..job_scoping import job_owned_by_marionette, parse_job_session_id
     from ..paths import same_workspace_path
     from ..state import DurableState
 

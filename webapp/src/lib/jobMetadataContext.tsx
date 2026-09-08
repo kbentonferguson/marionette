@@ -32,6 +32,26 @@ export function metadataActivity(state: JobMetadataState): { count: number; labe
     + state.local.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle)).length;
   return { count, label: count ? `At least ${count} active jobs; coverage incomplete` : 'Job activity unknown; coverage incomplete' };
 }
+/** Current selected facts are valid only for this exact source and revision. */
+export function currentExpert(state: JobMetadataState, key: string) {
+  const selected = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === key ? state.detail : state.detailCache[key];
+  if (!selected || selected.freshness !== 'observed' || selected.error || !selected.observation) return undefined;
+  const listed = state.observations.find(o => metadataSelectionKey(o.row.selection) === key);
+  if (listed?.freshness === 'stale') return undefined;
+  const latest = Math.max(0, ...[...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision), state.headers[key]?.observation.row.revision ?? 0);
+  return selected.observation.tasks.page.revision >= latest && selected.observation.artifacts.page.revision >= latest ? selected.observation.expert : undefined;
+}
+export function currentHeader(state: JobMetadataState, key: string) {
+  const expert = currentExpert(state, key);
+  const cached = state.headers[key];
+  const stale = state.observations.some(o => metadataSelectionKey(o.row.selection) === key && o.freshness === 'stale');
+  const header = !stale && cached?.observation.freshness === 'observed'
+    ? cached.observation.row.header : undefined;
+  const selected = expert?.kind !== 'unavailable' ? expert?.live_economics ?? expert?.header : undefined;
+  if (selected) return selected.model_provenance === undefined && header?.model_provenance !== undefined
+    ? { ...selected, model: header.model, model_provenance: header.model_provenance } : selected;
+  return header;
+}
 /** Presentation only: missing bodies/economics remain explicitly unavailable. No identity inference. */
 export function metadataJobs(state: JobMetadataState): Job[] {
   if (state.view.kind !== 'view') return [];

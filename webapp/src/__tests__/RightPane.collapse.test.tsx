@@ -90,7 +90,7 @@ function OwnedActivity({ fixture, capture, children }: {
 
 function expectBoundedActivity(fixture: CombinedMetadataFixture) {
   expect(api.swarmLive).not.toHaveBeenCalled();
-  expect(fixture.calls.every(({ method, path }) => method === "GET"
+  expect(fixture.calls.every(({ method, path }) => method === "POST" && path === "/api/jobs/metadata/pins" || method === "GET"
     && ["/api/endpoint", "/api/jobs/metadata/view", "/api/jobs/metadata", "/api/jobs/metadata/local"]
       .includes(new URL(path, "http://fixture").pathname))).toBe(true);
   expect(fixture.maximumActive).toBe(1);
@@ -856,18 +856,18 @@ describe("RightPane and RightDock polling ownership", () => {
     await tick();
     expect(fixture.calls).toHaveLength(before);
     expect(screen.getAllByTitle("At least 1 active jobs; coverage incomplete")).toHaveLength(2);
-    await tick(4000);
-    expect(fixture.calls).toHaveLength(before + 2);
+    await tick(20000);
+    expect(fixture.calls).toHaveLength(before + 10);
     expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
     const observations = store.getSnapshot().observations;
     view.rerender(owned(<>{dock}<RightPane {...baseProps} visible={false} /></>));
     expect(store.getSnapshot().observations).toBe(observations);
     await tick(8000);
-    expect(fixture.calls).toHaveLength(before + 6);
+    expect(fixture.calls).toHaveLength(before + 14);
     view.rerender(owned(<>{dock}<RightPane {...baseProps} /></>));
     expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
     await tick();
-    expect(fixture.calls).toHaveLength(before + 6);
+    expect(fixture.calls).toHaveLength(before + 14);
     expect(readSWRCache(`swarm:${context.repo}`)).toBeUndefined();
     expectBoundedActivity(fixture);
   });
