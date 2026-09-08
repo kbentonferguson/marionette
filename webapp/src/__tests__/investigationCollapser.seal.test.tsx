@@ -28,6 +28,7 @@ function listProps(
     turnOpen: boolean;
     status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
     holdSwarmAwait?: boolean;
+    busyElapsedMs?: number | null;
   },
 ) {
   return {
@@ -39,6 +40,7 @@ function listProps(
     plan: false,
     turnOpen: opts.turnOpen,
     holdSwarmAwait: opts.holdSwarmAwait ?? false,
+    busyElapsedMs: opts.busyElapsedMs ?? null,
     scrollContainerRef: { current: null },
     onEditMessage: vi.fn(),
     onExecuteSend: vi.fn(),
@@ -176,6 +178,51 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     expect(screen.getByText(/Still working/i)).toBeTruthy();
     // Spoken assistant prose stays a top-level Bubble after the fold.
     expect(screen.getByText(/Workers flying — validating when they land/i)).toBeTruthy();
+  });
+
+  it("keeps Worked for on the same busy clock as Still working while a swarm holds", () => {
+    const shortSlice: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "can u pick back up? use astra workers" } },
+      {
+        kind: "thinking",
+        text: "resuming",
+        id: "th-resume",
+        duration_ms: 2_000,
+      },
+      {
+        kind: "card",
+        card: {
+          id: "card-resume",
+          goal: "continue export",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { status: "ok", duration_ms: 5_000 },
+        },
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job_resume",
+        applied: false,
+        files: [],
+        summary: "workers flying",
+        error: null,
+      },
+    ];
+    render(
+      <TranscriptList
+        {...listProps(shortSlice, {
+          turnOpen: false,
+          status: "awaiting_swarm",
+          holdSwarmAwait: true,
+          busyElapsedMs: 11 * 60_000 + 22_000,
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Worked for 11m 22s/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Worked for 7s/i })).toBeNull();
+    expect(screen.getByText(/Still working/i)).toBeTruthy();
   });
 
   it("holdSwarmAwait with active pilot turn keeps mid-turn Investigating, not sealed Worked for", () => {

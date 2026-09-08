@@ -573,6 +573,26 @@ export function activityWorkDurationMs(
   return any ? total : null;
 }
 
+/**
+ * Duration for the Worked for row. A live fold still on the same job uses
+ * the wall-clock busy timer when it is longer than recorded tool slices —
+ * that is the Still working… clock. Prior folds never inherit it.
+ */
+export function foldWorkDurationMs(opts: {
+  fromItems: number | null;
+  busyElapsedMs?: number | null;
+  isLiveFold: boolean;
+}): number | null {
+  const items = opts.fromItems != null && opts.fromItems > 0 ? opts.fromItems : null;
+  const busy =
+    opts.isLiveFold && opts.busyElapsedMs != null && opts.busyElapsedMs > 0
+      ? opts.busyElapsedMs
+      : null;
+  if (busy != null && (items == null || busy > items)) return busy;
+  if (items != null) return items;
+  return null;
+}
+
 export type StackedActivityRow<T> =
   | { kind: "thought"; items: T[]; indexes: number[] }
   | { kind: "commands"; items: T[]; indexes: number[] }

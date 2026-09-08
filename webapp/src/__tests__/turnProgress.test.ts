@@ -4,6 +4,8 @@ import {
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
+  activityWorkDurationMs,
+  foldWorkDurationMs,
   formatBusyElapsed,
   latchWaitingPhaseStartedAt,
   investigatingHeadline,
@@ -1125,5 +1127,35 @@ describe("exploration shelf grouping", () => {
   it("anchors shelf identity on the first card so appends do not remount", () => {
     expect(explorationShelfAnchorId(["r1", "g1"])).toBe("expl-shelf-r1");
     expect(explorationShelfAnchorId(["r1", "g1", "r2"])).toBe("expl-shelf-r1");
+  });
+});
+
+describe("foldWorkDurationMs", () => {
+  it("uses the live busy clock when it outruns recorded tool slices", () => {
+    expect(foldWorkDurationMs({
+      fromItems: 7_000,
+      busyElapsedMs: 11 * 60_000 + 22_000,
+      isLiveFold: true,
+    })).toBe(11 * 60_000 + 22_000);
+  });
+
+  it("keeps prior-fold item sums off the current turn clock", () => {
+    expect(foldWorkDurationMs({
+      fromItems: 7_000,
+      busyElapsedMs: 11 * 60_000,
+      isLiveFold: false,
+    })).toBe(7_000);
+  });
+
+  it("falls back to item sums when the live clock is missing", () => {
+    expect(activityWorkDurationMs([
+      { kind: "thinking", duration_ms: 2_000 },
+      { kind: "card", card: { result: { duration_ms: 5_000 } } },
+    ])).toBe(7_000);
+    expect(foldWorkDurationMs({
+      fromItems: 7_000,
+      busyElapsedMs: null,
+      isLiveFold: true,
+    })).toBe(7_000);
   });
 });
