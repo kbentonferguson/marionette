@@ -24,6 +24,35 @@ COLLAPSED_OPEN_CAP = 5
 COLLAPSED_CLOSED_CONTEXT = 2
 TODO_DESCRIPTION_MIN_OVERLAP = 6
 TODO_LANDING_MIN_TOKEN_OVERLAP = 3
+TODO_VERIFICATION_MIN_TOKEN_OVERLAP = 1
+_VERIFY_SIGNAL_TOKENS = frozenset({
+    "test",
+    "tests",
+    "lint",
+    "typecheck",
+    "build",
+    "ci",
+    "vitest",
+    "pytest",
+    "playwright",
+    "tsc",
+    "eslint",
+    "unit",
+    "integration",
+    "e2e",
+})
+_VERIFY_COMMAND_RE = re.compile(
+    r"(?:"
+    r"\bnpm(?:\s+run)?\s+(?:test|lint|typecheck|build|ci)\b|"
+    r"\b(?:pnpm|yarn|bun)(?:\s+run)?\s+(?:test|lint|typecheck|build|ci)\b|"
+    r"\bnpx\s+(?:tsx\s+--test|vitest|tsc|eslint|playwright)\b|"
+    r"\b(?:pytest|vitest)\b|"
+    r"\btsc\s+--noEmit\b|"
+    r"\bpython(?:\d+(?:\.\d+)*)?\s+-m\s+pytest\b|"
+    r"\bnode\s+scripts/tests/run\.mjs\b"
+    r")",
+    re.IGNORECASE,
+)
 _LANDING_GENERIC_TOKENS = frozenset({
     "implement",
     "explore",
@@ -732,17 +761,74 @@ def landing_token_score(
     return _tokens_overlap(todo_tokens, job_tokens)
 
 
+def distinctive_verify_tokens(value: str) -> set:
+    tokens = set()
+    for raw in normalize_for_todo_match(value).split():
+        stemmed = _stem_todo_token(raw)
+        if raw in _VERIFY_SIGNAL_TOKENS or stemmed in _VERIFY_SIGNAL_TOKENS:
+            tokens.add(stemmed if stemmed in _VERIFY_SIGNAL_TOKENS else raw)
+            continue
+        if raw in _LANDING_GENERIC_TOKENS:
+            continue
+        if len(raw) < 3 and not any(ch.isdigit() for ch in raw):
+            continue
+        tokens.add(stemmed)
+    return tokens
+
+
+def verification_token_score(
+    content: str, phase_name: str, descriptions: Sequence[str]
+) -> int:
+    if not _is_validate_gate(content):
+        return 0
+    todo_tokens = distinctive_verify_tokens(content) | distinctive_verify_tokens(phase_name)
+    if not todo_tokens:
+        return 0
+    job_tokens: set = set()
+    for desc in descriptions:
+        job_tokens |= distinctive_verify_tokens(desc)
+    if not job_tokens:
+        return 0
+    return _tokens_overlap(todo_tokens, job_tokens)
+
+
+def is_verify_command(command: str) -> bool:
+    return bool(_VERIFY_COMMAND_RE.search(command or ""))
+
+
+def should_fold_todo_verification(
+    command: str,
+    exit_code: Any = 0,
+    status: str = "ok",
+) -> bool:
+    run_status = str(status or "").strip().lower()
+    if run_status in ("success", ""):
+        run_status = "ok"
+    try:
+        code = int(exit_code)
+    except (TypeError, ValueError):
+        return False
+    return run_status == "ok" and code == 0 and is_verify_command(command)
+
+
 def best_matching_open_todo(
-    phases: Sequence[TodoPhase], descriptions: Sequence[str]
+    phases: Sequence[TodoPhase],
+    descriptions: Sequence[str],
+    score_fn=None,
+    min_score: Optional[int] = None,
 ) -> Optional[str]:
+    if score_fn is None:
+        score_fn = landing_token_score
+    if min_score is None:
+        min_score = TODO_LANDING_MIN_TOKEN_OVERLAP
     best_score = 0
     winners: List[TodoItem] = []
     for phase in phases:
         for task in phase.tasks:
             if task.status not in ("pending", "in_progress"):
                 continue
-            score = landing_token_score(task.content, phase.name, descriptions)
-            if score < TODO_LANDING_MIN_TOKEN_OVERLAP:
+            score = score_fn(task.content, phase.name, descriptions)
+            if score < min_score:
                 continue
             if score > best_score:
                 best_score = score
@@ -764,6 +850,24 @@ def apply_successful_landing(
 ) -> Tuple[List[TodoPhase], Optional[str]]:
     """Complete one uniquely matching open todo after an applied implement."""
     hit = best_matching_open_todo(phases, descriptions)
+    if not hit:
+        return clone_phases(phases), None
+    nxt, errors, _op = apply_todo_op(phases, {"op": "done", "task": hit})
+    if errors:
+        return clone_phases(phases), None
+    return nxt, hit
+
+
+def apply_successful_verification(
+    phases: Sequence[TodoPhase], descriptions: Sequence[str]
+) -> Tuple[List[TodoPhase], Optional[str]]:
+    """Complete one uniquely matching open validate gate after a verify command."""
+    hit = best_matching_open_todo(
+        phases,
+        descriptions,
+        score_fn=verification_token_score,
+        min_score=TODO_VERIFICATION_MIN_TOKEN_OVERLAP,
+    )
     if not hit:
         return clone_phases(phases), None
     nxt, errors, _op = apply_todo_op(phases, {"op": "done", "task": hit})

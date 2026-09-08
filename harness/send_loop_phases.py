@@ -3690,6 +3690,20 @@ def dispatch_local_action(
         for key in ("hint", "spill_uri", "output_spilled", "output_chars"):
             if val.get(key) not in (None, ""):
                 result[key] = val[key]
+        if run_status == "ok" and exit_code == 0:
+            try:
+                verify_fold = session.apply_todo_verification(
+                    command, exit_code, run_status,
+                )
+            except Exception:
+                verify_fold = None
+            if verify_fold:
+                result["todos"] = verify_fold
+                todo_sid = str(
+                    getattr(session, "harness_session_id", "") or ""
+                ).strip()
+                if todo_sid:
+                    result["session_id"] = todo_sid
         yield ConvEvent("action_result", result)
         if run_status == "ok":
             hist = (

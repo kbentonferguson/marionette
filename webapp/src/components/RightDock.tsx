@@ -278,10 +278,12 @@ export default function RightDock({
             className="relative flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
           >
             {link.icon}
-            {link.id === "swarm" && (
+            {link.id === "swarm" && activity.count > 0 && (
               <span
-                title={activity.label} aria-label={activity.label}
-                className={`absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ${activity.count ? "bg-accent" : "border border-muted"}`}
+                data-testid="swarm-tracker-live-dot"
+                title={activity.label}
+                aria-label={activity.label}
+                className="absolute -top-0.5 -right-0.5 right-pane-live"
               />
             )}
             {link.id === "review" && reviewCount > 0 && (

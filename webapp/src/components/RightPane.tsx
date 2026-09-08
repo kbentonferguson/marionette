@@ -869,7 +869,14 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               >
                 <div className="flex items-center gap-0.5 shrink-0 ml-auto">
                   {tabName === "review" && reviews.length > 0 && <span className="right-pane-badge">{reviews.length}</span>}
-                  {tabName === "swarm" && <span className={activity.count ? "right-pane-live" : "text-muted text-xs"} title={activity.label} aria-label={activity.label} />}
+                  {tabName === "swarm" && activity.count > 0 && (
+                    <span
+                      data-testid="swarm-tab-live-dot"
+                      className="right-pane-live"
+                      title={activity.label}
+                      aria-label={activity.label}
+                    />
+                  )}
                   <button
                     type="button"
                     draggable

@@ -938,6 +938,31 @@ class ToolDispatchMixin:
         except Exception:
             return None
 
+    def apply_todo_verification(self, command: str, exit_code=0, status="ok"):
+        """Best-effort: complete one open validate gate after a passing verify command."""
+        from .todo import (
+            apply_successful_verification,
+            should_fold_todo_verification,
+            snapshot_payload,
+        )
+
+        if not should_fold_todo_verification(command, exit_code, status):
+            return None
+        try:
+            sid = self._todo_session_id()
+            store = self._get_todo_store()
+            current = store.load(session_id=sid) if sid else []
+            if not current:
+                current = getattr(self, "_todo_phases", None) or []
+            nxt, hit = apply_successful_verification(current, [str(command or "")])
+            if not hit:
+                return None
+            self._todo_phases = nxt
+            store.save(nxt, session_id=sid)
+            return snapshot_payload(nxt, "done")
+        except Exception:
+            return None
+
     def _do_todo(self, act: PilotAction) -> tuple[bool, str, Any]:
         from .todo import apply_todo_op, format_todo_tree, snapshot_payload
 

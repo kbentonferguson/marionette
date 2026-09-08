@@ -1817,6 +1817,35 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output(tmp_
     assert session._append_action_result.call_args.kwargs["ok"] is False
 
 
+def test_dispatch_local_action_run_command_folds_validate_gate(tmp_path):
+    session = _durable_command_session(tmp_path)
+    session.harness_session_id = "8cc8a1c2281d"
+    session.reload_session_todos()
+    ok, status, _val = session._do_todo(PilotAction(kind="todo", arguments={
+        "op": "init",
+        "list": [{
+            "phase": "Wave 1 — Station & Stadium Operations",
+            "items": [
+                "Add stadium/station schema (SQLite & Postgres) + migration and station service logic",
+                "Validate Wave 1 with typecheck, lint, unit/integration tests, and build",
+            ],
+        }],
+    }))
+    assert ok and status == "success"
+    session._todo_phases[0].tasks[0].status = "completed"
+    session._todo_phases[0].tasks[1].status = "in_progress"
+    session._do_run_command = MagicMock(return_value=(
+        True, "success", {"output": "ok\n", "exit_code": 0, "status": "ok"},
+    ))
+    act = PilotAction(kind="run_command", command="npm test")
+    events = list(dispatch_local_action(session, act, "a-verify", True, []))
+    data = events[0].data
+    assert data["exit_code"] == 0
+    assert data["command"] == "npm test"
+    assert data["todos"]["phases"][0]["tasks"][1]["status"] == "completed"
+    assert data["session_id"] == "8cc8a1c2281d"
+
+
 def test_dispatch_local_action_run_command_failure_includes_command(tmp_path):
     act = PilotAction(kind="run_command", command="echo boom")
     session = _durable_command_session(tmp_path,
