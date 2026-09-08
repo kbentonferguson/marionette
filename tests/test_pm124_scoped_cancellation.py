@@ -184,10 +184,10 @@ def test_bounded_metadata_no_list_tasks_and_mismatched_render_rejected(case):
 
 def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
     """PM supervises a real subprocess; its cancellation scope records observation."""
-    import os
     import sys
     import threading
     import time
+    from harness.local_model_manager import _pid_alive
     from puppetmaster.cancellation import cancellation_scope, JobCancelled
     from puppetmaster.adapters._streaming import run_streamed_subprocess
     store, task, svc, body = case
@@ -215,12 +215,14 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
             time.sleep(0.01)
         assert pid_file.exists(), errors
         pid = int(pid_file.read_text())
-        os.kill(pid, 0)
+        assert _pid_alive(pid)
         assert post_swarm_cancel(body, svc)[0] == 200
         thread.join(8)
         assert not thread.is_alive() and not errors and stopped
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        dead_deadline = time.monotonic() + 2
+        while _pid_alive(pid) and time.monotonic() < dead_deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(pid)
         code, result = get_cancellation_receipt(query(body), svc)
         assert code == 200 and result['receipt']['outcome'] == 'observed_stop'
         assert result['receipt']['cleanup'] == 'unknown'
