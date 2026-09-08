@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .request_boundary import http_request
 from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
 from .retry import with_retry
+from pmharness.stream_snapshot import absorb_stream_snapshot
 
 
 DEFAULT_CODEX_BASE = "https://chatgpt.com/backend-api/codex"
@@ -926,6 +927,16 @@ def _consume_codex_sse(
             elif channel == "tool":
                 has_tool_calls = True
             else:
+                piece = absorb_stream_snapshot("".join(text_deltas), delta_text)
+                if not piece:
+                    continue
+                delta_text = piece
+                payload = _delta_payload(
+                    delta_text,
+                    stream_id=sid,
+                    output_index=oi_int if oi_int is not None else out_idx,
+                    channel=channel,
+                )
                 text_deltas.append(delta_text)
                 _note_answer_text()
                 if not _begin_post_answer_drain():
