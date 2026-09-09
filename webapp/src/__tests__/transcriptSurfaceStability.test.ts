@@ -651,6 +651,33 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ]);
   });
 
+  it("ensure does not reopen a bubble when a sealed assistant already covers the delta", () => {
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const sealed: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "scrape" } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: finale, stream_id: "msg_1" },
+      },
+    ];
+    const skipped = ensureAssistantStreamingBubble(sealed, {
+      streamId: "msg_1",
+      channel: "answer",
+      chunk: finale,
+    });
+    expect(assistantTexts(skipped)).toEqual([finale]);
+    expect(surfaceKinds(skipped)).toEqual(["msg:user", "msg:assistant"]);
+
+    const opened = ensureAssistantStreamingBubble(sealed, {
+      streamId: "msg_2",
+      channel: "answer",
+      chunk: "I will fix it now.",
+    });
+    expect(assistantTexts(opened)).toEqual([finale, ""]);
+    expect(surfaceKinds(opened)).toEqual(["msg:user", "msg:assistant", "msg:assistant*"]);
+  });
+
   it("prose → tool_prep(call_id) → later prose never resumes the pre-card bubble", () => {
     let items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "investigate" } },

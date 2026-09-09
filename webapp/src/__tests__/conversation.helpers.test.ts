@@ -332,13 +332,100 @@ describe("transcriptItems module", () => {
     }
   });
 
-  it("deduplicateAssistantNarration never collapses streaming bubbles", () => {
+  it("deduplicateAssistantNarration never collapses two open streaming bubbles", () => {
     const items: Item[] = [
       msg("user", "go"),
       msg("assistant", "hello", true),
       msg("assistant", "hello world", true),
     ];
     expect(deduplicateAssistantNarration(items)).toHaveLength(3);
+  });
+
+  it("deduplicateAssistantNarration collapses a sealed finale onto a still-streaming prior", () => {
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const items: Item[] = [
+      msg("user", "scrape the catalog"),
+      msg("assistant", finale, true),
+      msg("assistant", finale),
+    ];
+    const out = deduplicateAssistantNarration(items);
+    const assistants = out.filter((i) => i.kind === "msg" && i.msg.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "msg") {
+      expect(assistants[0].msg.text).toBe(finale);
+      expect(assistants[0].msg.streaming).toBeFalsy();
+    }
+  });
+
+  it("finalizePilotMessage merges a sealed finale while a prior bubble is still streaming", () => {
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const items: Item[] = [
+      msg("user", "scrape the catalog"),
+      msg("assistant", finale, true),
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "catalog.html",
+          cwd: null,
+          kind: "web_fetch",
+          running: false,
+          open: false,
+        },
+      },
+    ];
+    const out = finalizePilotMessage(items, finale, { streamed: true });
+    const assistants = out.filter((i) => i.kind === "msg" && i.msg.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "msg") {
+      expect(assistants[0].msg.text).toBe(finale);
+      expect(assistants[0].msg.streaming).toBeFalsy();
+    }
+  });
+
+  it("hydrate keeps a single assistant finale after a live streaming+sealed pair", () => {
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const items = transcriptResponseToItems({
+      display: [
+        { type: "message", role: "user", text: "scrape the catalog" },
+        { type: "message", role: "assistant", text: finale },
+        {
+          type: "card",
+          id: "c1",
+          kind: "web_fetch",
+          goal: "catalog.html",
+          cwd: null,
+          result: { status: "ok" },
+        },
+        { type: "message", role: "assistant", text: finale },
+      ],
+    });
+    const assistants = items.filter((i) => i.kind === "msg" && i.msg.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "msg") {
+      expect(assistants[0].msg.text).toBe(finale);
+      expect(assistants[0].msg.streaming).toBeFalsy();
+    }
+  });
+
+  it("sealOpenStreamSurfaces dedupes a leftover streaming bubble against a sealed finale", () => {
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const items: Item[] = [
+      msg("user", "scrape the catalog"),
+      msg("assistant", finale, true),
+      msg("assistant", finale),
+    ];
+    const out = sealOpenStreamSurfaces(items);
+    const assistants = out.filter((i) => i.kind === "msg" && i.msg.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "msg") {
+      expect(assistants[0].msg.text).toBe(finale);
+      expect(assistants[0].msg.streaming).toBeFalsy();
+    }
   });
 
   it("transcriptFingerprint distinguishes thinking and tool_prep", () => {

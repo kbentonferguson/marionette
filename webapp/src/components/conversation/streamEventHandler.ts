@@ -394,10 +394,19 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
               }
             }
           }
+          // Cover BEFORE ensure. After stream_item_done the matching bubble
+          // is streaming:false, so ensure would append an empty open row and
+          // appendStreamingTextToItems would fill it (cover is skipped while
+          // any pilot stream is open).
+          if (sealedAssistantCoversDelta(next, chunk)) {
+            itemsRef.current = next;
+            return next;
+          }
           next = ensureAssistantStreamingBubble(next, {
             isPlan: planTurnRef.current,
             streamId,
             channel: channel || undefined,
+            chunk,
           });
           next = appendStreamingTextToItems(next, chunk, {
             isPlan: planTurnRef.current,

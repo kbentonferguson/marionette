@@ -806,6 +806,87 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(assistantText).toContain("draft");
   });
 
+  it("late message_delta with stream_id after stream_item_done does not reopen a covered finale", () => {
+    // Live 8cc8a1c2281d: seal → late identity-bearing delta → ensure saw no
+    // streaming:true match → empty open bubble → absorb filled a second copy.
+    const finale =
+      "Catalog scrape finished. 48 pages indexed, 3 timeouts, no auth failures.";
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "scrape the catalog" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "message_delta",
+      data: { text: finale, stream_id: "msg_1", channel: "answer" },
+    });
+    apply({ kind: "stream_item_done", data: { stream_id: "msg_1" } });
+    const afterSeal = state.items.filter(
+      (it): it is Extract<Item, { kind: "msg" }> =>
+        it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(afterSeal).toHaveLength(1);
+    expect(afterSeal[0].msg.streaming).toBeFalsy();
+    expect(afterSeal[0].msg.text).toBe(finale);
+
+    apply({
+      kind: "message_delta",
+      data: { text: finale, stream_id: "msg_1", channel: "answer" },
+    });
+    apply({
+      kind: "message_delta",
+      data: { text: "no auth failures.", stream_id: "msg_1", channel: "answer" },
+    });
+    const afterLate = state.items.filter(
+      (it): it is Extract<Item, { kind: "msg" }> =>
+        it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(afterLate).toHaveLength(1);
+    expect(afterLate[0].msg.text).toBe(finale);
+    expect(afterLate[0].msg.streaming).toBeFalsy();
+  });
+
+  it("late stream_id delta after seal still opens a distinct post-tool answer", () => {
+    const sealed = "I will inspect the handler carefully.";
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "go" } },
+        { kind: "msg", msg: { role: "assistant", text: sealed, stream_id: "msg_1" } },
+        {
+          kind: "card",
+          card: {
+            id: "a1",
+            goal: "handler.ts",
+            cwd: null,
+            kind: "read_file",
+            running: false,
+            open: false,
+            result: { status: "ok" },
+          },
+        },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "message_delta",
+      data: { text: "I will fix it now.", stream_id: "msg_2", channel: "answer" },
+    });
+    const assistants = state.items.filter(
+      (it): it is Extract<Item, { kind: "msg" }> =>
+        it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(assistants.map((it) => it.msg.text)).toEqual([
+      sealed,
+      "I will fix it now.",
+    ]);
+    expect(assistants[1].msg.streaming).toBe(true);
+  });
+
   it("interleaves progress + reasoning into one surface each", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
