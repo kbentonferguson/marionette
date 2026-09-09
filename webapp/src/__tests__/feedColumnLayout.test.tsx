@@ -94,7 +94,7 @@ describe("chat column feed alignment", () => {
     expect(content.style.paddingBottom).toBe(`${FEED_COMPOSER_CLEARANCE_PX}px`);
   });
 
-  it("drops seating reserve while streaming so stick-to-bottom is not displaced", () => {
+  it("keeps composer clearance while streaming (Cursor-like gap)", () => {
     renderColumn({
       status: "streaming",
       turnOpen: true,
@@ -109,8 +109,8 @@ describe("chat column feed alignment", () => {
     const scrollport = screen.getByTestId("transcript-feed-scrollport");
     const content = screen.getByTestId("transcript-feed-content");
     expect(feedLiveStreamOpen("streaming", false)).toBe(true);
-    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
-    expect(Number.parseFloat(content.style.paddingBottom)).toBe(0);
+    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(FEED_COMPOSER_CLEARANCE_PX);
+    expect(content.style.paddingBottom).toBe(`${FEED_COMPOSER_CLEARANCE_PX}px`);
     expect(scrollport.style.scrollPaddingBottom).toBe(
       `${FEED_COMPOSER_CLEARANCE_PX}px`,
     );

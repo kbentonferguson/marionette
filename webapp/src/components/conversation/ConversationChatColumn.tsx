@@ -89,9 +89,13 @@ export default function ConversationChatColumn({
   onJumpToBottom?: () => void;
   sessionId?: string;
 }) {
+  const paintCount = countPaintableTranscriptItems(items);
   const seatingReservePx = feedSeatingReservePx({
     liveStreamOpen: feedLiveStreamOpen(status, turnOpen),
   });
+  // Dim only when stale rows are on screen (refresh flake). Empty cold-miss
+  // dim was the swap blink — nothing to honesty-dim.
+  const feedDimmed = transcriptStale && paintCount > 0;
   return (
     <div
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
@@ -100,15 +104,15 @@ export default function ConversationChatColumn({
         <div
           ref={feedRef}
           data-testid="transcript-feed-scrollport"
-          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
+          aria-busy={transcriptStale && paintCount === 0 ? true : undefined}
+          className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(false, feedDimmed)}`}
           style={feedScrollportStyle()}
         >
         {/* Locked pair: overflow-anchor:auto + scroll-padding-bottom.
             Content is min-h-full / justify-start so idle short sessions
-            sit mid/upper. Content padding-bottom is the seating reserve
-            and drops to 0 while a live stream is open so scrollTop=max
-            pin follow is not displaced. Composer is a sibling outside
-            this scrollport. */}
+            sit mid/upper. Content padding-bottom always keeps the Cursor-
+            like composer clearance (idle and live). Composer is a sibling
+            outside this scrollport. */}
         <div
           ref={feedContentRef}
           data-testid="transcript-feed-content"
@@ -117,7 +121,7 @@ export default function ConversationChatColumn({
         >
           <TranscriptEmptyState
             transcriptStale={transcriptStale}
-            itemCount={countPaintableTranscriptItems(items)}
+            itemCount={paintCount}
           />
           {/*
             PERF: The transcript is rendered by TranscriptList, a React.memo

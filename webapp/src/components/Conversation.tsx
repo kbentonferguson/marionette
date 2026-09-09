@@ -9,6 +9,7 @@ import { api, type Config, type InputReceipt, type InputDocument, type InputSubm
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import {
+  countPaintableTranscriptItems,
   type Card,
   type CommandApprovalItem,
   type SecretRequestItem,
@@ -668,6 +669,7 @@ export default function Conversation({
   const composerBusy = isPilotMouthBusy(turnOpen, status, sessionSwitchPending);
   const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
+    paintableCount: countPaintableTranscriptItems(items),
     answerChromeIdle: false,
     liveInvestigation,
     turnOpen,
