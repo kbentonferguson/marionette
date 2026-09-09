@@ -669,6 +669,61 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     ]);
   });
 
+  it("never hoists cards before an earlier pre-tool assistant when a trailing finale exists", () => {
+    const preToolText =
+      "**Checking Deployment Status**\n\n"
+      + "I'm currently verifying the deployment status. My immediate focus is on checking Git's status, "
+      + "remote repositories, and the execution of our deployment scripts to confirm if everything is live and operational.";
+    const finalText =
+      "**Yes, the work is finished and merged to `main`.**\n\n"
+      + "### 1. Delivery & Deployment Status\n"
+      + "- All 7 commits from `dev` were pushed to GitHub.\n"
+      + "- Merged PR #20 into `main`.\n\n"
+      + "Everything is live.";
+    const items: Item[] = [
+      msg("user", "sry did u finish? is it deployed?"),
+      { kind: "msg", msg: { role: "assistant", text: preToolText } },
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "git status",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "c2",
+          goal: "gh pr merge",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+    ];
+    const next = hoistCardsBeforeTrailingFinals(items);
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return `card:${it.card.goal}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}:${it.msg.text.slice(0, 15)}`;
+      return it.kind;
+    });
+    // Order MUST remain strictly chronological: pre-tool thought, tools, finale.
+    // It must NOT hoist the cards before preToolText or stack the two assistant msgs.
+    expect(kinds).toEqual([
+      "msg:user:sry did u finis",
+      "msg:assistant:**Checking Depl",
+      "card:git status",
+      "card:gh pr merge",
+      "msg:assistant:**Yes, the work",
+    ]);
+  });
+
   it("upsertStreamingThinking keys late deltas by stream_id after a finale", () => {
     const finalText =
       "Ship it.\n\n"
