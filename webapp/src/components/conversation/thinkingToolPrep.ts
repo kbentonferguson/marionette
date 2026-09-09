@@ -396,25 +396,32 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
     }
   }
 
-  // Rightmost sealed final in the turn that still has later investigation.
+  // Find the last assistant message in the current turn.
+  // Only the trailing finale of a turn can ever have late investigation hoisted
+  // before it. Earlier assistant messages (pre-tool commentary, etc.) must NEVER
+  // have subsequent cards hoisted before them (which would reorder cause/effect
+  // and concatenate intermediate narration with the final answer).
   let finalIdx = -1;
   for (let i = items.length - 1; i >= turnStart; i--) {
-    if (!isSealedFinalAssistant(items[i])) continue;
-    let investigationAfter = false;
-    for (let j = i + 1; j < items.length; j++) {
-      const later = items[j];
-      if (later.kind === "msg" && later.msg.role === "user") break;
-      if (later.kind === "card" || later.kind === "thinking") {
-        investigationAfter = true;
-        break;
-      }
-    }
-    if (investigationAfter) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "assistant") {
       finalIdx = i;
       break;
     }
   }
   if (finalIdx < 0) return items;
+  if (!isSealedFinalAssistant(items[finalIdx])) return items;
+
+  let investigationAfter = false;
+  for (let j = finalIdx + 1; j < items.length; j++) {
+    const later = items[j];
+    if (later.kind === "msg" && later.msg.role === "user") break;
+    if (later.kind === "card" || later.kind === "thinking") {
+      investigationAfter = true;
+      break;
+    }
+  }
+  if (!investigationAfter) return items;
 
   const head = items.slice(0, finalIdx);
   const finalItem = items[finalIdx];
