@@ -132,7 +132,6 @@ export default function JobDashboardHost({
           <p role="status" className="px-2.5 py-2 text-[11px] text-muted">Opening Puppetmaster dashboard…</p>
         )}
         {embedUrl && (isDesktop ? (
-          // @ts-expect-error -- webview is an Electron element
           <webview
             ref={webviewRef}
             src={embedUrl}
