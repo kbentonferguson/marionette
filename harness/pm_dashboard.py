@@ -36,6 +36,19 @@ def is_dashboard_job_id(job_id: str) -> bool:
     return bool(body) and all(ch.isalnum() or ch in "_-" for ch in body)
 
 
+def is_benign_non_durable_job_token(job_id: str) -> bool:
+    """True for Jobs-rail aliases we may ignore (open board, no deep-link).
+
+    Path escapes and other unsafe tokens stay rejected at the API.
+    """
+    token = (job_id or "").strip()
+    if not token or len(token) > _JOB_ID_MAX:
+        return False
+    if is_dashboard_job_id(token):
+        return False
+    return all(ch.isalnum() or ch in "_-" for ch in token)
+
+
 def build_dashboard_url(
     host: str,
     port: int,

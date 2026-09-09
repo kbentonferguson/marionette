@@ -8,6 +8,7 @@ from .jobs import JobServices
 from ..pm_dashboard import (
     build_dashboard_url,
     ensure_local_dashboard,
+    is_benign_non_durable_job_token,
     is_dashboard_job_id,
     resolve_dashboard_state_dir,
 )
@@ -17,8 +18,13 @@ def get_dashboard(qs: dict, svc: JobServices) -> tuple[int, dict[str, Any]]:
     """Resolve or start the project dashboard. Never invents a second runtime."""
     raw_job = (qs.get("job") or qs.get("job_id") or [""])[0]
     job_id = str(raw_job or "").strip()
+    # Durable job_… deep-links. Benign local aliases open the board without
+    # ?job=. Path escapes and other unsafe tokens still 400.
     if job_id and not is_dashboard_job_id(job_id):
-        return 400, {"ok": False, "error": "invalid_job_id"}
+        if is_benign_non_durable_job_token(job_id):
+            job_id = ""
+        else:
+            return 400, {"ok": False, "error": "invalid_job_id"}
     repo = str((qs.get("repo") or [""])[0] or "").strip()
     if not repo:
         repo = str(getattr(svc.cfg, "repo", "") or "").strip()

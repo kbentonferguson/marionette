@@ -28,6 +28,32 @@ def test_get_dashboard_rejects_unsafe_job_id():
     assert payload["ok"] is False
 
 
+def test_get_dashboard_strips_benign_local_alias(monkeypatch):
+    monkeypatch.setattr(
+        "harness.api.dashboard.resolve_dashboard_state_dir",
+        lambda repo, job_id: "/tmp/pm-state",
+    )
+    seen = {}
+
+    def _ensure(**kwargs):
+        seen.update(kwargs)
+        return {
+            "ok": True,
+            "reused": True,
+            "host": "127.0.0.1",
+            "port": 8788,
+            "url": "http://127.0.0.1:8788/?embed=1",
+        }
+
+    monkeypatch.setattr("harness.api.dashboard.ensure_local_dashboard", _ensure)
+    svc = make_job_services(cfg=type("Cfg", (), {"repo": "/work/repo"})())
+    status, payload = get_dashboard({"job": ["local-swarm-call_1799376"]}, svc)
+    assert status == 200
+    assert payload["ok"] is True
+    assert seen.get("job_id") in (None, "")
+    assert "job=" not in payload["embed_url"]
+
+
 def test_get_dashboard_reuses_tracked_runtime(monkeypatch):
     monkeypatch.setattr(
         "harness.api.dashboard.resolve_dashboard_state_dir",
