@@ -201,6 +201,7 @@ describe("feed Motion", () => {
     expect(column).not.toContain("motion.div");
     expect(column).not.toContain('from "motion/react"');
     expect(column).toContain("feedScrollportStyle");
+    expect(column).toContain("feedSeatingReservePx");
     expect(column).toContain("feedContentLayoutClass");
     expect(column).not.toContain("scroll-pb-6");
     expect(column).not.toContain("overflow-anchor:none");

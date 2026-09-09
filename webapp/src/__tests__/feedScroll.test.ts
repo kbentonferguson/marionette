@@ -8,7 +8,9 @@ import {
   FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
   FEED_TAIL_EPSILON_PX,
   feedContentLayoutClass,
+  feedLiveStreamOpen,
   feedScrollportStyle,
+  feedSeatingReservePx,
   chooseFeedFollowFlush,
   feedResizeScrollFollowDecision,
   isAtFeedTail,
@@ -677,6 +679,44 @@ describe("feedScroll layout contracts", () => {
     expect(FEED_COMPOSER_CLEARANCE_PX).toBeGreaterThanOrEqual(48);
     expect(FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX).toBe(FEED_COMPOSER_CLEARANCE_PX);
     expect(FEED_CONTENT_PADDING_BOTTOM_PX).toBe(FEED_COMPOSER_CLEARANCE_PX);
+    expect(feedScrollportStyle()).toEqual({
+      overflowAnchor: "auto",
+      scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,
+    });
+  });
+
+  it("zeros seating reserve while a live stream is open so stick-to-bottom is not displaced", () => {
+    expect(feedLiveStreamOpen("streaming", false)).toBe(true);
+    expect(feedLiveStreamOpen("idle", true)).toBe(true);
+    expect(feedLiveStreamOpen("idle", false)).toBe(false);
+    expect(feedLiveStreamOpen("done", false)).toBe(false);
+
+    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
+    expect(feedScrollportStyle()).toEqual({
+      overflowAnchor: "auto",
+      scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,
+    });
+    expect(chooseFeedFollowFlush()).toBe("before_paint");
+
+    const transcriptHeight = 800;
+    const follow = scrollTopAfterFeedHeightChange({
+      scrollHeight: transcriptHeight,
+      scrollTop: scrollToFeedEnd(transcriptHeight - 80, client),
+      clientHeight: client,
+      pinned: true,
+      settling: false,
+      releasedByGesture: false,
+    });
+    expect(follow).toBe(scrollToFeedEnd(transcriptHeight, client));
+    expect(follow).not.toBe(
+      scrollToFeedEnd(transcriptHeight + FEED_COMPOSER_CLEARANCE_PX, client),
+    );
+  });
+
+  it("keeps idle seating reserve so short transcripts stay off the composer", () => {
+    expect(feedSeatingReservePx({ liveStreamOpen: false })).toBe(
+      FEED_COMPOSER_CLEARANCE_PX,
+    );
     expect(feedScrollportStyle()).toEqual({
       overflowAnchor: "auto",
       scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,

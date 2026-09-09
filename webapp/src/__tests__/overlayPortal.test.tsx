@@ -37,7 +37,7 @@ describe("overlay portal contract (v0.9.322)", () => {
 
   it("keeps feed scrollport overflow-anchor:auto and scroll-padding-bottom", () => {
     expect(column).toContain("feedScrollportStyle");
-    expect(column).toContain("FEED_CONTENT_PADDING_BOTTOM_PX");
+    expect(column).toContain("feedSeatingReservePx");
     expect(column).not.toContain("scroll-pb-6");
     expect(column).not.toContain("overflow-anchor:none");
     expect(column).not.toContain("justify-end");

@@ -3,10 +3,11 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ConversationChatColumn from "../components/conversation/ConversationChatColumn";
 import {
-  FEED_CONTENT_PADDING_BOTTOM_PX,
+  FEED_COMPOSER_CLEARANCE_PX,
   FEED_SCROLLPORT_OVERFLOW_ANCHOR,
-  FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
   feedContentLayoutClass,
+  feedLiveStreamOpen,
+  feedSeatingReservePx,
 } from "../components/conversation/feedScroll";
 import type { Item } from "../components/TranscriptList";
 
@@ -18,6 +19,7 @@ function renderColumn(opts: {
   items?: Item[];
   composerDock?: ReactNode;
   status?: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
+  turnOpen?: boolean;
 } = {}) {
   const feedRef = createRef<HTMLDivElement>();
   const feedContentRef = createRef<HTMLDivElement>();
@@ -34,7 +36,7 @@ function renderColumn(opts: {
         auto={false}
         plan={false}
         busyElapsedMs={null}
-        turnOpen={false}
+        turnOpen={opts.turnOpen ?? false}
         onEditMessage={vi.fn()}
         onExecuteSend={vi.fn()}
         onImageClick={vi.fn()}
@@ -63,10 +65,10 @@ describe("chat column feed alignment", () => {
     expect(scrollport.contains(greeting)).toBe(true);
     expect(composer.contains(greeting)).toBe(false);
     expect(content.className).toBe(feedContentLayoutClass());
-    expect(content.style.paddingBottom).toBe(`${FEED_CONTENT_PADDING_BOTTOM_PX}px`);
+    expect(content.style.paddingBottom).toBe(`${FEED_COMPOSER_CLEARANCE_PX}px`);
     expect(scrollport.style.overflowAnchor).toBe(FEED_SCROLLPORT_OVERFLOW_ANCHOR);
     expect(scrollport.style.scrollPaddingBottom).toBe(
-      `${FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX}px`,
+      `${FEED_COMPOSER_CLEARANCE_PX}px`,
     );
     expect(content.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -89,5 +91,31 @@ describe("chat column feed alignment", () => {
     expect(content.className).toContain("min-h-full");
     expect(content.className).toContain("justify-start");
     expect(content.className).not.toContain("justify-end");
+    expect(content.style.paddingBottom).toBe(`${FEED_COMPOSER_CLEARANCE_PX}px`);
+  });
+
+  it("drops seating reserve while streaming so stick-to-bottom is not displaced", () => {
+    renderColumn({
+      status: "streaming",
+      turnOpen: true,
+      items: [
+        { kind: "msg", msg: { role: "user", text: "hello" } },
+        {
+          kind: "msg",
+          msg: { role: "assistant", text: "a longer live answer that keeps growing", streaming: true },
+        },
+      ],
+    });
+    const scrollport = screen.getByTestId("transcript-feed-scrollport");
+    const content = screen.getByTestId("transcript-feed-content");
+    expect(feedLiveStreamOpen("streaming", false)).toBe(true);
+    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
+    expect(Number.parseFloat(content.style.paddingBottom)).toBe(0);
+    expect(scrollport.style.scrollPaddingBottom).toBe(
+      `${FEED_COMPOSER_CLEARANCE_PX}px`,
+    );
+    expect(scrollport.style.overflowAnchor).toBe(FEED_SCROLLPORT_OVERFLOW_ANCHOR);
+    expect(content.className).toContain("min-h-full");
+    expect(content.className).toContain("justify-start");
   });
 });
