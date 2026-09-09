@@ -381,6 +381,31 @@ body {
   overflow: hidden;
 }
 
+.right-pane-card-dashboard-focus {
+  box-shadow: none;
+}
+
+.right-pane-card-dashboard-focus .right-pane-card-body {
+  background: var(--shell-chat, #0f1113);
+}
+
+.job-dashboard-host {
+  background: var(--shell-chat, #0f1113);
+}
+
+.job-dashboard-chrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--shell-rail-row-height);
+  min-height: var(--shell-rail-row-height);
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--shell-panel-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028) 0%, rgba(255, 255, 255, 0) 100%),
+    var(--shell-panel);
+}
+
 .right-pane-card-resize-handle {
   position: absolute;
   top: 0;
@@ -455,6 +480,11 @@ body.is-row-resizing iframe {
 .right-pane-drag-handle:hover {
   color: var(--text-muted, #b8bec8);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.right-pane-icon-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 .right-pane-drag-handle {

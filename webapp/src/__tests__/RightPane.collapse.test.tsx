@@ -166,6 +166,24 @@ describe("RightPane collapse placement", () => {
     expect(within(card).queryByTestId("swarm-tab-live-dot")).toBeNull();
   });
 
+  it("hides Jobs card chrome while a dashboard hire is focused", () => {
+    seedBoardTabOrder(["swarm"]);
+    render(<RightPane {...baseProps} />);
+    const card = screen.getByRole("region", { name: "Jobs panel" });
+    expect(within(card).getByRole("button", { name: "Close Jobs panel" })).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-jobs-dashboard-chrome", { detail: { focused: true } }));
+    });
+    expect(within(card).queryByRole("button", { name: "Close Jobs panel" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Drag Jobs panel" })).toBeNull();
+    expect(card).toHaveClass("right-pane-card-dashboard-focus");
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-jobs-dashboard-chrome", { detail: { focused: false } }));
+    });
+    expect(within(card).getByRole("button", { name: "Close Jobs panel" })).toBeInTheDocument();
+    expect(card).not.toHaveClass("right-pane-card-dashboard-focus");
+  });
+
   it("keeps the Add panel menu on the opaque overlay token, not glass-mixed --shell-panel", () => {
     const menu = css.match(/\.right-pane-add-menu\s*\{[^}]+\}/)?.[0] ?? "";
     expect(menu).toContain("background: var(--shell-overlay)");

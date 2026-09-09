@@ -548,7 +548,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     return <JobDashboardHost job={selectedJob} onClose={() => setSelectedKey(null)} />;
   }
   return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
-    <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
+    <div className="shrink-0 flex items-center justify-between h-[var(--shell-rail-row-height)] px-2 border-b border-[var(--shell-panel-border)] select-none">
       <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
         <span className="relative inline-flex">
           <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
@@ -569,7 +569,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       <p>Sorting and filters apply only to observed jobs; history coverage is incomplete. Known creation times are ordered within each lifecycle group; undated jobs remain last.</p>
     </div>
     {state.headerError && <p className="px-2 text-xs text-muted">Job headers could not be refreshed. Retry header refresh; list observations remain available.</p>}
-    <div className="shrink-0 grid grid-cols-2 gap-1.5 px-2 py-1.5 border-b border-[var(--shell-panel-border)] bg-panel2/10">
+    <div className="shrink-0 grid grid-cols-2 gap-1 px-2 py-1 border-b border-[var(--shell-panel-border)] bg-panel2/10">
       <select aria-label="Filter jobs" className={compactSelect} value={filter} onChange={e => { const next = e.target.value; setFilter(next); if (next !== 'all' && next !== 'active') setFinishedOpen(true); }}>
         <option value="all">All statuses</option>
         <option value="active">Active</option>

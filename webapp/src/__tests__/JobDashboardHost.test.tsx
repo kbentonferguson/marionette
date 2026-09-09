@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import JobDashboardHost from "../components/JobDashboardHost";
 import { api, type Job } from "../lib/api";
 import { openAgentUrlExternal } from "../lib/agentLinks";
-import { JOBS_DASHBOARD_EXPAND_MIN_PX, REQUEST_RIGHT_MIN_WIDTH_EVENT } from "../lib/jobsDashboard";
+import {
+  JOBS_DASHBOARD_CHROME_EVENT,
+  JOBS_DASHBOARD_EXPAND_MIN_PX,
+  JOBS_DASHBOARD_FOCUS_MIN_PX,
+  REQUEST_RIGHT_MIN_WIDTH_EVENT,
+} from "../lib/jobsDashboard";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -28,7 +33,9 @@ describe("JobDashboardHost", () => {
 
   it("embeds the located dashboard and grows the Jobs pane", async () => {
     const grow = vi.fn();
+    const chrome = vi.fn();
     window.addEventListener(REQUEST_RIGHT_MIN_WIDTH_EVENT, grow);
+    window.addEventListener(JOBS_DASHBOARD_CHROME_EVENT, chrome);
     vi.mocked(api.dashboard).mockResolvedValue({
       ok: true,
       reused: true,
@@ -38,13 +45,21 @@ describe("JobDashboardHost", () => {
       embed_url: "http://127.0.0.1:8787/?job=job_abcdef012345&embed=1",
     });
     const onClose = vi.fn();
-    render(<JobDashboardHost job={job} onClose={onClose} />);
+    const { unmount } = render(<JobDashboardHost job={job} onClose={onClose} />);
     expect(await screen.findByTitle("Puppetmaster dashboard job_abcdef012345")).toHaveAttribute(
       "src",
       "http://127.0.0.1:8787/?job=job_abcdef012345&embed=1",
     );
     expect(screen.getByText("Review auth")).toBeInTheDocument();
+    expect(screen.getByTestId("job-dashboard-host")).toHaveAttribute("data-chrome", "compact");
+    expect(screen.getByTestId("job-dashboard-chrome")).toBeInTheDocument();
+    expect(screen.queryByText("Expand")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pop out")).not.toBeInTheDocument();
     expect(grow).toHaveBeenCalled();
+    const focus = grow.mock.calls.find((call) => (
+      (call[0] as CustomEvent<{ minPx: number }>).detail.minPx === JOBS_DASHBOARD_FOCUS_MIN_PX
+    ));
+    expect(focus).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Expand/ }));
     const expand = grow.mock.calls.find((call) => (
       (call[0] as CustomEvent<{ minPx: number }>).detail.minPx === JOBS_DASHBOARD_EXPAND_MIN_PX
@@ -56,7 +71,15 @@ describe("JobDashboardHost", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Close/ }));
     expect(onClose).toHaveBeenCalled();
+    expect(chrome).toHaveBeenCalled();
+    expect((chrome.mock.calls[0][0] as CustomEvent<{ focused: boolean }>).detail.focused).toBe(true);
+    unmount();
+    const blur = chrome.mock.calls.find((call) => (
+      (call[0] as CustomEvent<{ focused: boolean }>).detail.focused === false
+    ));
+    expect(blur).toBeTruthy();
     window.removeEventListener(REQUEST_RIGHT_MIN_WIDTH_EVENT, grow);
+    window.removeEventListener(JOBS_DASHBOARD_CHROME_EVENT, chrome);
   });
 
   it("resolves a local alias to the durable job_ id before locating", async () => {

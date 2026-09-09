@@ -3,6 +3,7 @@
 export const JOBS_DASHBOARD_FOCUS_MIN_PX = 640;
 export const JOBS_DASHBOARD_EXPAND_MIN_PX = 800;
 export const REQUEST_RIGHT_MIN_WIDTH_EVENT = "harness-request-right-min-width";
+export const JOBS_DASHBOARD_CHROME_EVENT = "harness-jobs-dashboard-chrome";
 
 export type DashboardLocate = {
   ok: boolean;
@@ -29,6 +30,17 @@ export function requestRightMinWidth(minPx: number): void {
   try {
     window.dispatchEvent(
       new CustomEvent(REQUEST_RIGHT_MIN_WIDTH_EVENT, { detail: { minPx } }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Hide the Jobs card drag/close bar so the host chrome is the only Marionette strip. */
+export function notifyJobsDashboardChrome(focused: boolean): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent(JOBS_DASHBOARD_CHROME_EVENT, { detail: { focused } }),
     );
   } catch {
     /* ignore */
