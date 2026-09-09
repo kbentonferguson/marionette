@@ -604,9 +604,9 @@ describe("SwarmPane worker details", () => {
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "local-keys" });
     expect(screen.queryByText("Keyboard disclosure")).not.toBeInTheDocument();
-    expect(metadata.request.mock.calls.some(([, path]) => path.includes('/local/detail'))).toBe(false);
-    const job = await expandJob(/Provider worker/);
-    expect(job).toHaveAttribute("aria-expanded", "true");
+    const job = await screen.findByRole("button", { name: /Provider worker/ });
+    expect(job).not.toHaveAttribute("aria-expanded");
+    expect(job).toHaveAttribute("aria-pressed", "false");
     expect(job.className).toMatch(/focus-visible:outline/);
     expect(job.getAttribute("aria-label") || "").toMatch(/Provider worker/);
     expect(screen.queryByText("Keyboard disclosure")).not.toBeInTheDocument();
@@ -629,7 +629,8 @@ describe("SwarmPane worker details", () => {
     kill.focus();
     fireEvent.keyDown(kill, { key: " " });
     fireEvent.keyDown(kill, { key: "Enter" });
-    expect(job).toHaveAttribute("aria-expanded", "true");
+    expect(job).not.toHaveAttribute("aria-expanded");
+    expect(job).toHaveAttribute("aria-pressed", "false");
     expect(mockSwarmCancel).not.toHaveBeenCalled();
     fireEvent.click(kill);
     await waitFor(() => {
@@ -1036,7 +1037,6 @@ describe("SwarmPane mid-run job-row meters", () => {
     ] });
     outcomeFixture = metadata;
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
-    await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
     await waitFor(() => expect(worker).toHaveTextContent("cheap-model"));
     expect(worker).toHaveTextContent("recorded route forecast");
@@ -1213,7 +1213,6 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmWithInspect /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
     const kill = screen.getByRole('button', { name: 'Cancel this job' });
@@ -1235,7 +1234,6 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmWithInspect /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
     const kill = screen.getByRole('button', { name: 'Cancel this job' });
@@ -1256,7 +1254,6 @@ describe("SwarmPane cancel Kill contract", () => {
     const f = await nativeControlFixture();
     outcomeFixture = f;
     render(<f.Provider><SwarmWithInspect /></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
     const kill = screen.getByRole('button', { name: 'Cancel this job' });
@@ -2775,6 +2772,19 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
     fireEvent.click(row);
     expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_live');
     expect(screen.queryByLabelText('Workers')).not.toBeInTheDocument();
+  });
+
+  it("embeds agentic local aliases through the same Puppetmaster dashboard", async () => {
+    const native = await nativeExpertFixture({ jobId: "local-cedfbf8c" });
+    try {
+      render(<native.Provider><SwarmPane /></native.Provider>);
+      fireEvent.click(await screen.findByRole("button", { name: /Provider worker/ }));
+      const host = await screen.findByTestId("job-dashboard-host");
+      expect(host).toHaveAttribute("data-job-id", "local-cedfbf8c");
+      expect(vi.mocked(api.dashboard).mock.calls[0]?.[0]).toBe("local-cedfbf8c");
+    } finally {
+      native.dispose();
+    }
   });
 
   it("hosts the Puppetmaster dashboard instead of expanding inspection", async () => {

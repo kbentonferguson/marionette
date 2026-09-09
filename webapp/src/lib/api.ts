@@ -245,6 +245,7 @@ export type Task = {
 };
 export type Job = {
   local_ref?: { job_id: string; incarnation: string };
+  parent_ref?: { job_id: string; incarnation: string };
   metadata_key?: string;
   metadata_only?: boolean;
   cancellation_view?: CancellationView;

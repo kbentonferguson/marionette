@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Maximize2, X } from "lucide-react";
 import type { Job } from "../lib/api";
 import { api } from "../lib/api";
+import { dashboardJobId } from "../lib/jobClassification";
 import { openAgentUrlExternal } from "../lib/agentLinks";
 import {
   JOBS_DASHBOARD_EXPAND_MIN_PX,
@@ -25,11 +26,12 @@ export default function JobDashboardHost({
   const [loading, setLoading] = useState(true);
 
   const title = (job.goal || "").trim() || job.id;
+  const embedId = dashboardJobId(job) || job.id;
   const embedUrl = locate?.embed_url || locate?.url || "";
 
   useEffect(() => {
     requestRightMinWidth(JOBS_DASHBOARD_FOCUS_MIN_PX);
-  }, [job.id]);
+  }, [embedId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +45,7 @@ export default function JobDashboardHost({
       setLoading(false);
       return;
     }
-    locateDashboard(job.id, repo)
+    locateDashboard(embedId, repo)
       .then((payload) => {
         if (cancelled) return;
         setLocate(payload);
@@ -59,7 +61,7 @@ export default function JobDashboardHost({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [job.id]);
+  }, [embedId]);
 
   const popOut = () => {
     if (embedUrl) openAgentUrlExternal(embedUrl);
@@ -69,13 +71,14 @@ export default function JobDashboardHost({
     <section
       data-testid="job-dashboard-host"
       data-job-id={job.id}
+      data-dashboard-job-id={embedId}
       aria-label={`Puppetmaster dashboard for ${title}`}
       className="flex flex-col h-full min-h-0 overflow-hidden text-txt bg-[var(--shell-chat,#0f1113)]"
     >
       <header className="shrink-0 flex items-center gap-2 px-2.5 py-1.5 border-b border-[var(--shell-panel-border)]">
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-[12px] font-semibold text-txt">{title}</h2>
-          <p className="truncate font-mono text-[9px] text-faint">{job.id}</p>
+          <p className="truncate font-mono text-[9px] text-faint">{embedId}</p>
         </div>
         <button
           type="button"
@@ -121,7 +124,7 @@ export default function JobDashboardHost({
         ) : (
           <iframe
             src={embedUrl}
-            title={`Puppetmaster dashboard ${job.id}`}
+            title={`Puppetmaster dashboard ${embedId}`}
             data-testid="job-dashboard-frame"
             className="absolute inset-0 w-full h-full border-0 bg-[var(--shell-chat,#0f1113)]"
           />

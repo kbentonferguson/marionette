@@ -59,6 +59,31 @@ describe("JobDashboardHost", () => {
     window.removeEventListener(REQUEST_RIGHT_MIN_WIDTH_EVENT, grow);
   });
 
+  it("resolves a local alias to the durable job_ id before locating", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ok: true,
+      host: "127.0.0.1",
+      port: 8787,
+      url: "http://127.0.0.1:8787/?job=job_abc123def456&embed=1",
+      embed_url: "http://127.0.0.1:8787/?job=job_abc123def456&embed=1",
+    });
+    const alias: Job = {
+      id: "local-impl-1",
+      goal: "Implement auth",
+      status: "running",
+      adapter: "agentic",
+      local_ref: { job_id: "local-impl-1", incarnation: "n1" },
+      job_ref: { job_id: "job_abc123def456", state_id: "store-A" },
+    };
+    render(<JobDashboardHost job={alias} onClose={vi.fn()} />);
+    expect(await screen.findByTitle("Puppetmaster dashboard job_abc123def456")).toHaveAttribute(
+      "src",
+      "http://127.0.0.1:8787/?job=job_abc123def456&embed=1",
+    );
+    expect(api.dashboard).toHaveBeenCalledWith("job_abc123def456", undefined);
+    expect(screen.getByTestId("job-dashboard-host")).toHaveAttribute("data-dashboard-job-id", "job_abc123def456");
+  });
+
   it("keeps Marionette chrome when locate fails", async () => {
     vi.mocked(api.dashboard).mockResolvedValue({
       ok: false,

@@ -13,8 +13,8 @@ export function inspectHarnessJob(source: string, id: string) {
   return root;
 }
 
-/** Compact PM inspection beside the Jobs strip so worker/artifact tests
- *  keep a surface after PM rows embed the dashboard instead of expanding. */
+/** Compact inspection beside the Jobs strip so worker/artifact tests
+ *  keep a surface after every hire row embeds the dashboard. */
 export function JobsInspectHarness({ children }: { children?: React.ReactNode }) {
   const { state } = useSharedJobMetadata();
   const [revealed, setRevealed] = useState<string[]>([]);

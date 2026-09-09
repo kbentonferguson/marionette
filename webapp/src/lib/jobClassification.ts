@@ -26,6 +26,7 @@ export type CommandJobSignals = {
   source?: string | null;
   job_ref?: unknown;
   local_ref?: unknown;
+  parent_ref?: unknown;
 };
 
 function norm(value: unknown): string {
@@ -90,19 +91,25 @@ export function isSwarmTrackerJob(job: CommandJobSignals): boolean {
 /** Alias used by SwarmPane / composer stack. */
 export const isTrackerJob = isSwarmTrackerJob;
 
+function refJobId(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const id = (value as { job_id?: unknown }).job_id;
+  return String(id || "").trim();
+}
+
+/** Durable ``job_…`` token for the PM dashboard, else the row's store alias. */
+export function dashboardJobId(job: CommandJobSignals): string {
+  const candidates = [refJobId(job.job_ref), String(job.id || "").trim(), refJobId(job.local_ref), refJobId(job.parent_ref)];
+  return candidates.find((id) => id.startsWith("job_")) || candidates.find(Boolean) || "";
+}
+
 /**
- * True when the Jobs strip should host the native Puppetmaster dashboard.
- * Durable ``job_…`` / hire rows with real PM state — never native locals.
+ * Every Jobs-rail hire embeds the Puppetmaster dashboard. Adapters
+ * (agentic, cursor, claude-code, …) are transports under that kernel.
+ * ``local_ref`` is a row alias, not a separate non-PM lane.
  */
 export function isPmDashboardJob(job: CommandJobSignals): boolean {
-  if (job.local_ref) return false;
-  const id = String(job.id || "").trim();
-  if (id.startsWith("job_")) return true;
-  const kind = norm(job.job_kind);
-  if (HIRE_JOB_KINDS.has(kind) && job.job_ref) return true;
-  const source = norm(job.source);
-  if (job.job_ref && (source === "harness" || source === "cli")) return true;
-  return false;
+  return isSwarmTrackerJob(job);
 }
 
 export function isRunningJobStatus(status: unknown): boolean {
