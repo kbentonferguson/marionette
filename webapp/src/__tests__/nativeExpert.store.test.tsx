@@ -4,6 +4,7 @@ import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
 import { metadataJobs } from '../lib/jobMetadataContext';
 import { expertSummary } from './metadataExpert.fixtures';
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import { token } from './jobMetadata.fixtures';
 let fixture: Awaited<ReturnType<typeof nativeExpertFixture>> | undefined;
 afterEach(() => { cleanup(); fixture?.dispose(); fixture = undefined; localStorage.clear(); });
@@ -75,8 +76,8 @@ it('keeps separate captured attempt models historical even with partial coverage
       page: { ...detail.history.attempts.page, outcome: 'partial', next_cursor: token(), scanned: 2, captured_count: 3 },
       rows: [attempt, { ...attempt, sequence: attempt.sequence + 1, facts: { ...attempt.facts, model: 'other-recorded-model', attempt_id: 'second-attempt' } }] } } };
   });
-  render(<f.Provider><MetadataJobs /></f.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: /Historical model inspection/ }));
+  // Row click embeds the PM dashboard; inspect beside the strip instead.
+  render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const routing = await screen.findByRole('button', { name: 'Routing', exact: true });
   expect(screen.queryByTitle('Model: grok-4-5')).toBeNull();
