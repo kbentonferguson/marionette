@@ -125,19 +125,23 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const nativeFresh = nativeSummary && (nativeSummary === selectedSummary
     ? native?.summaryFreshness === 'observed'
     : listed?.freshness === 'observed');
+  const initialPMRead = useRef(false);
   const inspect = (lane: LocalDetail['lane'] = 'actions') => {
     revealInspection();
     if (state.working || state.view.kind !== 'view') return;
     if (local) { if (!native || native.lane !== lane) store.selectLocal(local, lane); void store.readLocalDetail(); }
-    else if (selectedPM) { if (state.detail.kind !== 'selected' || metadataSelectionKey(state.detail.selection) !== metadataSelectionKey(selectedPM)) store.select(selectedPM); void store.readDetail(); }
+    else if (selectedPM) {
+      initialPMRead.current = true;
+      if (state.detail.kind !== 'selected' || metadataSelectionKey(state.detail.selection) !== metadataSelectionKey(selectedPM)) store.select(selectedPM);
+      void store.readDetail();
+    }
   };
-  const initialPMRead = useRef(false);
   useEffect(() => {
-    if (initialPMRead.current || local || !selectedPM || selectedPM.job_ref.version !== 2 || detail?.observation || navigation?.artifactId || state.working || state.view.kind !== 'view') return;
+    if (initialPMRead.current || local || !selectedPM || !inspectionOpen || selectedPM.job_ref.version !== 2 || detail?.observation || navigation?.artifactId || state.working || state.view.kind !== 'view') return;
     initialPMRead.current = true;
     store.select(selectedPM);
     void store.readDetail();
-  }, [local, selectedPM, state.working, state.view, store]);
+  }, [inspectionOpen, local, selectedPM, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
   useEffect(() => {
     if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working || state.view.kind !== 'view') return;

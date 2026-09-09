@@ -234,7 +234,7 @@ describe("RightPane collapse placement", () => {
     render(<RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
-    const swarmItem = screen.getByRole("menuitem", { name: "Swarm" });
+    const swarmItem = screen.getByRole("menuitem", { name: "Jobs" });
 
     fireEvent.mouseDown(swarmItem);
     expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
@@ -368,7 +368,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("State", "1", "1");
     expectCardGridPlacement("Terminal", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(2);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
@@ -388,7 +388,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("State", "1", "1");
     expectCardGridPlacement("Terminal", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expectCardGridPlacement("Files", "1", "4");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(3);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
@@ -555,7 +555,7 @@ describe("RightPane Claude-style card packing", () => {
     fireEvent.drop(screen.getByRole("region", { name: "Drop to open a column" }), { dataTransfer });
 
     expectCardGridPlacement("Review", "2", "1");
-    expectCardGridPlacement("Swarm", "2", "2");
+    expectCardGridPlacement("Jobs", "2", "2");
     expectCardGridPlacement("Browser", "1", "1");
     expect(onRequestMinWidth).toHaveBeenCalledWith(420);
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
@@ -577,7 +577,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("Browser", "1", "1");
     expectCardGridPlacement("Review", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
       ["browser", "review", "swarm"],
     ]);

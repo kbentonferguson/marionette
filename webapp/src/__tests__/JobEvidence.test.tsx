@@ -68,7 +68,7 @@ it('opens Evidence from the real expanded job detail', async () => {
   try {
     localStorage.clear(); sessionStorage.clear();
     render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
-    fireEvent.click(await screen.findByRole('button', { name: 'Evidence entry · complete' }));
+    await screen.findByRole('button', { name: 'Evidence entry · complete' });
     fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
     await screen.findByRole('region', { name: 'Selected job inspector' });
     fireEvent.click(screen.getByRole('button', { name: 'Evidence', exact: true }));

@@ -37,7 +37,13 @@ export default function JobDashboardHost({
     setError("");
     setLocate(null);
     const repo = lastSelectedProjectRoot() || undefined;
-    api.dashboard(job.id, repo)
+    const locateDashboard = api.dashboard;
+    if (typeof locateDashboard !== "function") {
+      setError("Dashboard unavailable.");
+      setLoading(false);
+      return;
+    }
+    locateDashboard(job.id, repo)
       .then((payload) => {
         if (cancelled) return;
         setLocate(payload);

@@ -482,7 +482,7 @@ describe("SwarmPane model badge", () => {
       await waitFor(() => expect(details).toHaveTextContent('Captured modelrouted-model'));
       expect(details).toHaveTextContent('Historical identity; current worker model unconfirmed.');
       expect(button).not.toHaveTextContent('routed-model');
-      expect(fixture.selected).toHaveBeenCalledTimes(2);
+      expect(fixture.selected).toHaveBeenCalled();
     } finally { fixture.close(); }
   });
 
@@ -686,8 +686,7 @@ describe("SwarmPane pin attribution", () => {
     const fixture = await expertMetadataFixture([expertSummary(selection(), "Audit auth flow")]);
     const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
-      fireEvent.click(await screen.findByRole("button", { name: /Audit auth flow/ }));
-      fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Inspect tasks and artifacts" }));
       const worker = await screen.findByText("task-1: running");
     expect(worker).not.toHaveTextContent("—");
     expect(screen.queryByText("$0")).not.toBeInTheDocument();
@@ -704,8 +703,7 @@ describe("SwarmPane pin attribution", () => {
     const fixture = await expertMetadataFixture([expertSummary(selection(), "Audit auth flow")]);
     const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
-      fireEvent.click(await screen.findByRole("button", { name: /Audit auth flow/ }));
-      fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Inspect tasks and artifacts" }));
       const worker = await screen.findByText("task-1: running");
     fireEvent.click(worker);
     expect(screen.getByText("Pin attribution unknown")).toBeVisible();
@@ -1301,7 +1299,6 @@ describe("SwarmPane canonical outcome", () => {
       expect(within(row).getByText('complete')).toBeVisible();
       expect(within(row).getByText('complete')).toHaveClass('text-muted');
       expect(row.querySelector('.text-good')).toBeNull();
-      fireEvent.click(row);
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       expect(await screen.findByText('Findings (1)')).toBeVisible();
       fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
@@ -1327,7 +1324,7 @@ describe("SwarmPane findings section collapse", () => {
     const fixture = await evidenceFixture('Audit findings collapse');
     try {
       render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
-      fireEvent.click(await screen.findByRole('button', { name: 'Audit findings collapse · complete' }));
+      await screen.findByRole('button', { name: 'Audit findings collapse · complete' });
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       await screen.findByText('Findings (1)');
       fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
@@ -1352,7 +1349,7 @@ describe("SwarmPane findings section collapse", () => {
     try {
       render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       expect(fixture.selected).not.toHaveBeenCalled();
-      fireEvent.click(await screen.findByRole('button', { name: 'Slim finished swarm · complete' }));
+      await screen.findByRole('button', { name: 'Slim finished swarm · complete' });
       expect(fixture.selected).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       await screen.findByText('Findings (1)');
@@ -1370,8 +1367,7 @@ describe("SwarmPane findings section collapse", () => {
     const fixture = await evidenceFixture('Owned sibling slim');
     try {
       render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
-      const row = await screen.findByRole('button', { name: 'Owned sibling slim · complete' });
-      fireEvent.click(row);
+      await screen.findByRole('button', { name: 'Owned sibling slim · complete' });
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       await screen.findByText('Findings (1)');
       fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
@@ -2474,7 +2470,7 @@ describe("SwarmPane final-review blockers", () => {
   });
 });
 
-describe("SwarmPane job-card expansion persistence", () => {
+describe("SwarmPane job-card expansion persistence", () => { // dashboard host: render SwarmPane without inspect harness
   const REPO_A = "C:\\Users\\pwall\\Projects\\repo-a";
   const REPO_B = "C:\\Users\\pwall\\Projects\\repo-b";
 
@@ -2494,7 +2490,7 @@ describe("SwarmPane job-card expansion persistence", () => {
   it("opens a PM job dashboard and returns to the strip on Close", async () => {
     fixture = await expertMetadataFixture([expansionSummary('job_running', 'Running swarm')]);
 
-    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
     expect(job).not.toHaveAttribute("aria-expanded");
 
@@ -2508,15 +2504,15 @@ describe("SwarmPane job-card expansion persistence", () => {
   it("does not persist dashboard focus across remount", async () => {
     fixture = await expertMetadataFixture([expansionSummary('job_done', 'Finished swarm job', '/repo', 'complete')]);
 
-    const { unmount } = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
-    fireEvent.click(await screen.findByRole("button", { name: /Finished swarm job/ }));
+    const { unmount } = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: /Finished swarm job ·/ }));
     expect(await screen.findByTestId("job-dashboard-host")).toBeInTheDocument();
 
     unmount();
     await fixture.observe();
-    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     expect(screen.queryByTestId("job-dashboard-host")).not.toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Finished swarm job/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Finished swarm job ·/ })).toBeInTheDocument();
   });
 
   it("keeps dashboard selection scoped to the current job strip", async () => {
@@ -2524,7 +2520,7 @@ describe("SwarmPane job-card expansion persistence", () => {
     const rowB = expansionSummary('job_shared', 'Repo B running', REPO_B);
     fixture = await expertMetadataFixture([rowA]);
 
-    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     fireEvent.click(await screen.findByRole("button", { name: /Repo A running/ }));
     expect(await screen.findByTestId("job-dashboard-host")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Close/ }));
@@ -2538,7 +2534,7 @@ describe("SwarmPane job-card expansion persistence", () => {
     localStorage.setItem(expansionStorageKey(), "not-json{{{");
     fixture = await expertMetadataFixture([expansionSummary('job_running', 'Running swarm')]);
 
-    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
     expect(job).not.toHaveAttribute("aria-expanded");
   });

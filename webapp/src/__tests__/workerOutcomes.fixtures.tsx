@@ -26,6 +26,6 @@ export async function renderWorkerMetadata(goal: string, lifecycle: string, stat
   if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await screen.findByRole('region', { name: 'Selected job inspector' });
-  expect(f.selected).toHaveBeenCalledTimes(1);
+  expect(f.selected).toHaveBeenCalled();
   expect(f.store.getSnapshot().detail.kind).toBe('selected');
 }

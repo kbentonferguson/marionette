@@ -51,6 +51,10 @@ beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); clearSWRCache();
   dispatchProjectSelected('/A');
   vi.mocked(api.sessions).mockResolvedValue([{ id: 'A', active: true, title: 'A' }]);
+  vi.mocked(api.dashboard).mockResolvedValue({
+    ok: true, reused: true, host: "127.0.0.1", port: 8787,
+    url: "http://127.0.0.1:8787/?embed=1", embed_url: "http://127.0.0.1:8787/?embed=1",
+  });
   rows([base]);
   vi.mocked(fetchJobArtifacts).mockResolvedValue([]);
 });

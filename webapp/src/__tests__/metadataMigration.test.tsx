@@ -190,12 +190,17 @@ it('cancels only the selected PM store when raw IDs collide and retains ambiguou
   render(<JobMetadataContext.Provider value={store}><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></JobMetadataContext.Provider>);
   const cliInspect = screen.getByTestId('inspect-cli-job_1');
   await act(async () => { fireEvent.click(within(cliInspect).getByText('Inspect tasks and artifacts')); });
-  const cancel = within(cliInspect).getByRole('button', { name: 'Stop selected workers' });
+  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
+  const cancel = await waitFor(() => {
+    const button = within(screen.getByTestId('inspect-cli-job_1')).getByRole('button', { name: 'Stop selected workers' });
+    expect(button).toHaveAttribute('aria-disabled', 'false');
+    return button;
+  });
   await act(async () => { fireEvent.click(cancel); });
   expect(request).toHaveBeenCalledTimes(1);
   expect(request.mock.calls[0][0].selection).toMatchObject({ source: 'cli', repo: context.repo, session_id: context.session_id, job_ref: { job_id: 'job_1', state_id: 'collision_control_cli' } });
   expect(screen.getByText(/Stop unconfirmed/)).toBeInTheDocument();
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Stop selected workers' })); });
+  await act(async () => { fireEvent.click(within(screen.getByTestId('inspect-cli-job_1')).getByRole('button', { name: 'Stop selected workers' })); });
   expect(request.mock.calls[1][0]).toEqual(request.mock.calls[0][0]);
 });
 it('keeps dashboard focus and individual dismissal separate for colliding stores', async () => {
