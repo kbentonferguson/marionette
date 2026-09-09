@@ -294,6 +294,8 @@ export {
   FEED_REPIN_THRESHOLD_PX,
   FEED_SETTLE_TIMEOUT_MS,
   FEED_UNPIN_BUBBLE_EVENT,
+  feedLiveStreamOpen,
+  feedSeatingReservePx,
   feedWheelUnpinListenerOptions,
   feedResizeScrollFollowDecision,
   isPinnedToBottom,

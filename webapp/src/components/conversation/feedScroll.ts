@@ -41,23 +41,46 @@ export function chooseFeedFollowFlush(): "before_paint" {
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
 /**
- * Reserved space above the composer dock. Applied as scroll-padding-bottom on
- * the scrollport (scrollIntoView / snap) and matching padding-bottom on the
- * feed content so stick-to-bottom via scrollTop=max still leaves a gap.
- * Short sessions stay top-aligned — this is not a flex-end spacer.
+ * Idle short-transcript seating reserve above the composer dock.
+ * Applied as scroll-padding-bottom on the scrollport and matching
+ * padding-bottom on feed content. This is not a flex-end spacer.
+ *
+ * Must stay at 0 while a live stream is open: the 64px reserve inflates
+ * scrollHeight, so overflow-anchor (last text line) and stick-to-bottom
+ * (scrollTop=max, including the empty pad) disagree every token — flicker.
  */
 export const FEED_COMPOSER_CLEARANCE_PX = 64;
 export const FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 export const FEED_CONTENT_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 
+/** Tokens landing, or the turn latch still open — no seating reserve. */
+export function feedLiveStreamOpen(
+  status: string,
+  turnOpen = false,
+): boolean {
+  return turnOpen || status === "streaming";
+}
+
+/**
+ * Composer clearance only when idle. Live stream keeps overflow-anchor and
+ * stick-to-bottom on the same bottom line (no reserved whitespace chase).
+ */
+export function feedSeatingReservePx(opts: {
+  liveStreamOpen: boolean;
+}): number {
+  return opts.liveStreamOpen ? 0 : FEED_COMPOSER_CLEARANCE_PX;
+}
+
 /** Scrollport style: overflow-anchor + scroll-padding-bottom only. */
-export function feedScrollportStyle(): {
+export function feedScrollportStyle(
+  seatingReservePx: number = FEED_COMPOSER_CLEARANCE_PX,
+): {
   overflowAnchor: typeof FEED_SCROLLPORT_OVERFLOW_ANCHOR;
   scrollPaddingBottom: number;
 } {
   return {
     overflowAnchor: FEED_SCROLLPORT_OVERFLOW_ANCHOR,
-    scrollPaddingBottom: FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
+    scrollPaddingBottom: seatingReservePx,
   };
 }
 
