@@ -1,4 +1,4 @@
-/** Classify /api/swarm/live rows for Swarm Tracker vs terminal chrome.
+/** Classify /api/swarm/live rows for the Jobs strip vs terminal chrome.
  *
  * 342 hid run_command / local-cmd-* only. Wave parents still leaked
  * (local-wave-* / role+adapter parallel_wave) beside their hired children.
@@ -23,6 +23,9 @@ export type CommandJobSignals = {
   role?: string | null;
   adapter?: string | null;
   status?: string | null;
+  source?: string | null;
+  job_ref?: unknown;
+  local_ref?: unknown;
 };
 
 function norm(value: unknown): string {
@@ -86,6 +89,21 @@ export function isSwarmTrackerJob(job: CommandJobSignals): boolean {
 
 /** Alias used by SwarmPane / composer stack. */
 export const isTrackerJob = isSwarmTrackerJob;
+
+/**
+ * True when the Jobs strip should host the native Puppetmaster dashboard.
+ * Durable ``job_…`` / hire rows with real PM state — never native locals.
+ */
+export function isPmDashboardJob(job: CommandJobSignals): boolean {
+  if (job.local_ref) return false;
+  const id = String(job.id || "").trim();
+  if (id.startsWith("job_")) return true;
+  const kind = norm(job.job_kind);
+  if (HIRE_JOB_KINDS.has(kind) && job.job_ref) return true;
+  const source = norm(job.source);
+  if (job.job_ref && (source === "harness" || source === "cli")) return true;
+  return false;
+}
 
 export function isRunningJobStatus(status: unknown): boolean {
   const s = String(status || "").toLowerCase();

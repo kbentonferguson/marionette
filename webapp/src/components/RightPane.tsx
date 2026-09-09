@@ -133,7 +133,7 @@ const TAB_CONFIG: Record<Tab, { label: string }> = {
   settings: { label: "Settings" },
   checkpoints: { label: "History" },
   review: { label: "Review" },
-  swarm: { label: "Swarm" },
+  swarm: { label: "Jobs" },
   economics: { label: "Economics" },
 };
 
@@ -324,6 +324,14 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const prevBoardWidthRef = useRef(0);
   const [hasBeenVisible, setHasBeenVisible] = useState(visible);
   useEffect(() => { if (visible) setHasBeenVisible(true); }, [visible]);
+  useEffect(() => {
+    const onMinWidth = (event: Event) => {
+      const minPx = (event as CustomEvent<{ minPx?: number }>).detail?.minPx;
+      if (typeof minPx === "number" && minPx > 0) onRequestMinWidth?.(minPx);
+    };
+    window.addEventListener("harness-request-right-min-width", onMinWidth);
+    return () => window.removeEventListener("harness-request-right-min-width", onMinWidth);
+  }, [onRequestMinWidth]);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
   const settingsOpen = useSyncExternalStore(subscribeSettingsOverlay, isSettingsOverlayOpen, isSettingsOverlayOpen);

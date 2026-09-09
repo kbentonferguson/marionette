@@ -7,6 +7,7 @@ import type { MetadataDetail, MetadataSelection } from '../lib/jobMetadata';
 import { parseCancellationResult, selectJobControl } from '../lib/jobControl';
 import { jobArtifactKey } from '../lib/jobArtifacts';
 import { expertDetail, expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import { context, token } from './jobMetadata.fixtures';
 import type { HistoryLane, SelectedEconomics, SelectedHistory, SelectedMetric } from '../lib/selectedMetadataEvidence';
 
@@ -84,7 +85,7 @@ it('opens bounded selected panels with explicit unknowns and pages only the requ
     };
     return result;
   });
-  render(<f.Provider><SwarmPane /></f.Provider>);
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   fireEvent.click(await screen.findByRole('button', { name: /Expert inspection/ }));
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
@@ -115,7 +116,7 @@ it('keeps two colliding selected inspections cached and does not consume a diffe
   fixture = await expertMetadataFixture([expertSummary(selected, 'Harness selection'), expertSummary(cli, 'CLI selection')]);
   const f = fixture;
   f.selected.mockImplementation(async selection => ({ ...selectedDetail(selection), context: f.context() }));
-  render(<f.Provider><SwarmPane /></f.Provider>);
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: /Harness selection/ }));
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
   await screen.findByRole('region', { name: 'Selected job inspector' });
@@ -186,7 +187,7 @@ it('pages captured Routing attempts through the bounded cursor and stops at the 
     };
     return result;
   });
-  render(<f.Provider><SwarmPane /></f.Provider>);
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: /Routing continuation/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
@@ -221,7 +222,7 @@ it('discloses publication digest and exact-task captured usage without aggregati
     ] };
     return result;
   });
-  render(<f.Provider><SwarmPane /></f.Provider>);
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   fireEvent.click(screen.getByRole('button', { name: /Captured disclosures/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });

@@ -4,6 +4,7 @@ import SwarmPane from '../components/SwarmPane';
 import type { MetadataSelection } from '../lib/jobMetadata';
 import { context } from './jobMetadata.fixtures';
 import { expertDetail, expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 
 let fixture: Awaited<ReturnType<typeof expertMetadataFixture>> | undefined;
 afterEach(() => { fixture?.dispose(); fixture = undefined; });
@@ -20,8 +21,9 @@ export async function renderWorkerMetadata(goal: string, lifecycle: string, stat
         id: `t${index + 1}`, status, stamp: 'known', revision: index + 1, binding: null,
       })) }, artifacts: { page: { ...detail.artifacts.page, scanned: 0 }, rows: [] } };
   });
-  render(<f.Provider><SwarmPane /></f.Provider>);
-  fireEvent.click(await screen.findByRole('button', { name: `${goal} · ${lifecycle}` }));
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
+  const row = await screen.findByRole('button', { name: `${goal} · ${lifecycle}` });
+  if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(f.selected).toHaveBeenCalledTimes(1);

@@ -500,8 +500,7 @@ export function openAgentWorkspace(path: string): void {
 }
 
 /**
- * Focus the Swarm Tracker tab and expand/scroll to a job row.
- * Does not invent a Puppetmaster dashboard URL — tracker focus only.
+ * Focus the Jobs tool and select the job (PM rows embed the dashboard).
  *
  * Queues the job id before dispatch so a late-mounted SwarmPane still
  * expands/scrolls (harness-open-swarm-job is easy to miss when the pane

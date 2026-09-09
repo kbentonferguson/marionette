@@ -1548,6 +1548,23 @@ export const api = {
       : "/api/jobs";
     return getJSON<Job[]>(path);
   },
+  dashboard: (jobId?: string, repoRoot?: string) => {
+    const params = new URLSearchParams();
+    if (jobId) params.set("job", jobId);
+    if (repoRoot) params.set("repo", repoRoot);
+    const qs = params.toString();
+    return getJSONSoft<{
+      ok: boolean;
+      reused?: boolean;
+      host?: string;
+      port?: number;
+      url?: string;
+      embed_url?: string;
+      job_id?: string | null;
+      error?: string;
+      detail?: string;
+    }>(withToken(qs ? `/api/dashboard?${qs}` : "/api/dashboard"));
+  },
   swarmLive: (repoRoot?: string) => {
     let path = withToken("/api/swarm/live");
     if (repoRoot) {

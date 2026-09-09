@@ -234,7 +234,7 @@ describe('original positive inspector requirements through parser/store/render',
     render(<f.Provider><MetadataJobs /></f.Provider>);
     const before = () => !!(screen.getByRole('button', { name: 'Job 2 · running' }).compareDocumentPosition(screen.getByRole('button', { name: 'Job 1 · running' })) & Node.DOCUMENT_POSITION_FOLLOWING);
     expect(before()).toBe(true);
-    fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } }); expect(before()).toBe(false);
+    fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } }); expect(before()).toBe(false);
   });
 });
 

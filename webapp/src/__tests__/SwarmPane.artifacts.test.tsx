@@ -15,6 +15,7 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { MetadataInspection } from "../components/MetadataJobs";
+import { JobsInspectHarness } from "./jobsInspectHarness";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
 
@@ -43,6 +44,10 @@ async function expand(name: string) {
   if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
 }
 
+function JobsPane() {
+  return <JobsInspectHarness><SwarmPane /></JobsInspectHarness>;
+}
+
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); clearSWRCache();
   dispatchProjectSelected('/A');
@@ -63,7 +68,7 @@ it('retries locally and treats a successful empty response as loaded', async () 
   const empty = expertDetail(selection, fixture.context());
   empty.artifacts = { page: { ...empty.artifacts.page, scanned: 0 }, rows: [] };
   fixture.selected.mockRejectedValueOnce(new Error('store offline')).mockResolvedValueOnce(empty);
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>); await expand('Inspect A');
+  render(<fixture.Provider><JobsPane /></fixture.Provider>); await expand('Inspect A');
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const retry = await screen.findByRole('button', { name: 'Retry', exact: true });
   expect(screen.queryByText('No artifacts recorded')).not.toBeInTheDocument();
@@ -105,7 +110,7 @@ it('fences an old response when a colliding job is selected in another session',
   old.artifacts.rows[0].id = 'Private A result';
   let release: (value: MetadataDetail) => void = () => {};
   fixture.selected.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>); await expand('Inspect A');
+  render(<fixture.Provider><JobsPane /></fixture.Provider>); await expand('Inspect A');
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(1));
   const next: MetadataSelection = { ...selection, session_id: 'B', job_ref: { job_id: base.id, state_id: 'state_b' } };
@@ -131,7 +136,7 @@ it("hydrates exact artifact identities and hashes independently across colliding
   const cli: MetadataSelection = { ...evidenceSelection, source: 'cli', job_ref: { ...evidenceSelection.job_ref, state_id: 'state-cli' } };
   metadata = await evidenceFixture('Inspect A', [evidenceSelection, cli]);
   const fixture = metadata;
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  render(<fixture.Provider><JobsPane /></fixture.Provider>);
   await expand('^Inspect A · complete$');
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await screen.findByText('Findings (1)');

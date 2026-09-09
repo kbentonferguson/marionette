@@ -4,6 +4,7 @@ import { identityFixture, identityTask, workerDetails } from './frontend52-ident
 import { capturedRoutingFixture, referenceHash, routingReference } from './frontend52-routing.fixtures';
 import { evidenceFixture, evidenceHash, evidenceSelection, qualityFixture, rejectQualityVerdicts } from './frontend52-evidence.fixtures';
 import { MetadataInspection } from '../components/MetadataJobs';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import { parseMetadataDetail } from '../lib/jobMetadata';
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
 import { act, fireEvent, render, screen, waitFor, cleanup, within } from "@testing-library/react";
@@ -66,6 +67,11 @@ vi.mock("../lib/api", async (importOriginal) => {
       swarmLive: vi.fn(),
       swarmCancel: vi.fn(),
       artifacts: vi.fn(),
+      dashboard: vi.fn().mockResolvedValue({
+        ok: true, reused: true, host: "127.0.0.1", port: 8787,
+        url: "http://127.0.0.1:8787/?job=job_live&embed=1",
+        embed_url: "http://127.0.0.1:8787/?job=job_live&embed=1",
+      }),
       sessions: vi.fn().mockResolvedValue([]),
     },
   };
@@ -120,9 +126,13 @@ async function expandJob(name: string | RegExp) {
   return job;
 }
 
+function SwarmWithInspect({ enabled }: { enabled?: boolean }) {
+  return <JobsInspectHarness><SwarmPane enabled={enabled} /></JobsInspectHarness>;
+}
+
 async function expandVisibleJobs() {
   await waitFor(() => {
-    expect(screen.queryByText("Loading swarm jobs...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading jobs...")).not.toBeInTheDocument();
   });
   for (const btn of screen.getAllByRole("button")) {
     if (btn.getAttribute("aria-expanded") === "false" && (btn.getAttribute("aria-label") || "").trim()) {
@@ -164,9 +174,9 @@ describe("SwarmPane sort and filter controls", () => {
   });
 
   it("distributes filter and sort controls evenly across the toolbar", async () => {
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    const filter = await screen.findByLabelText("Filter swarms");
-    const sort = screen.getByLabelText("Sort swarms");
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
+    const filter = await screen.findByLabelText("Filter jobs");
+    const sort = screen.getByLabelText("Sort jobs");
 
     expect(filter.parentElement).toHaveClass("grid", "grid-cols-2");
     expect(filter).toHaveClass("w-full");
@@ -187,15 +197,15 @@ describe("SwarmPane sort and filter controls", () => {
   }
   it("sorts active and finished jobs newest-first by creation time", async () => {
     await hydrateDates();
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     expectBefore(screen.getByRole('button', { name: /^Newest active build/ }), screen.getByRole('button', { name: /^Older active audit/ }));
     expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Active job without timestamp/ }));
     expectBefore(screen.getByRole('button', { name: /^Newest failed review/ }), screen.getByRole('button', { name: /^Older completed review/ }));
   });
   it("reverses both lifecycle groups when Oldest is selected", async () => {
     await hydrateDates();
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
+    fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } });
     expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Newest active build/ }));
     expectBefore(screen.getByRole('button', { name: /^Newest active build/ }), screen.getByRole('button', { name: /^Active job without timestamp/ }));
     expectBefore(screen.getByRole('button', { name: /^Older completed review/ }), screen.getByRole('button', { name: /^Newest failed review/ }));
@@ -206,17 +216,17 @@ describe("SwarmPane sort and filter controls", () => {
     const expert = currentFacts(); expert.quality = 'degraded'; expert.artifacts[0].check_result = 'failed';
     metadata.selected.mockResolvedValue({ ...currentDetail(expert, row.selection), context: metadata.context() });
     await act(async () => { metadata.store.select(row.selection); await metadata.store.readDetail(); });
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'failed' } });
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
+    fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'failed' } });
     expect(screen.getByRole('button', { name: /^Newest failed review ·/ })).toBeVisible();
     expect(screen.queryByRole('button', { name: /^Degraded architecture review ·/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Newest active build ·/ })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'complete' } });
+    fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'complete' } });
     expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /^Older completed review ·/ })).toBeVisible();
     expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
     expect(screen.getByText('Completed lifecycle does not establish successful verification.')).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'untrustworthy' } });
+    fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'untrustworthy' } });
     expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();
     expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
@@ -225,11 +235,11 @@ describe("SwarmPane sort and filter controls", () => {
   });
 
   it("clears a filter with no matching jobs", async () => {
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await screen.findByRole("button", { name: /^Newest active build ·/ });
 
-    fireEvent.change(screen.getByLabelText("Filter swarms"), { target: { value: "cancelled" } });
-    expect(await screen.findByText("No swarm jobs match this filter")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Filter jobs"), { target: { value: "cancelled" } });
+    expect(await screen.findByText("No jobs match this filter")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
     expect(await screen.findByRole("button", { name: /^Newest active build ·/ })).toBeInTheDocument();
   });
@@ -250,7 +260,7 @@ describe("SwarmPane SWR cache first-open", () => {
   it("starts only one request on mount and coalesces a slow first poll", async () => {
     vi.useFakeTimers();
     metadata.hangView();
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await act(async () => {
       metadata.store.startTicks(2000);
       void metadata.store.ownerTick();
@@ -263,7 +273,7 @@ describe("SwarmPane SWR cache first-open", () => {
   it("starts a separate read when the active session changes during a poll", async () => {
     let finish: (value: unknown) => void = () => {};
     metadata.readView.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     let pending: Promise<void>;
     await act(async () => { pending = metadata.store.ownerTick(); });
     expect(metadata.readView).toHaveBeenCalledTimes(1);
@@ -283,7 +293,7 @@ describe("SwarmPane SWR cache first-open", () => {
 
   it("does no hidden-pane polling and refreshes when enabled", async () => {
     vi.useFakeTimers();
-    const rendered = render(<metadata.Provider><SwarmPane enabled={false} /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect enabled={false} /></metadata.Provider>);
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(metadata.fetch).not.toHaveBeenCalled();
     rendered.rerender(<metadata.Provider><SwarmPane enabled /></metadata.Provider>);
@@ -295,7 +305,7 @@ describe("SwarmPane SWR cache first-open", () => {
   });
 
   it("owns initial session cache and rejects a late previous-project reply", async () => {
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await act(async () => { await metadata.store.ownerTick(); });
     expect(screen.getByRole('button', { name: /Initial A/ })).toBeInTheDocument();
     expect(metadata.store.getSnapshot().observations[0].row.selection.session_id).toBe('A');
@@ -324,21 +334,21 @@ describe("SwarmPane SWR cache first-open", () => {
     ]);
   });
 
-  it("renders seeded jobs immediately without Loading swarm jobs...", async () => {
+  it("renders seeded jobs immediately without Loading jobs...", async () => {
     metadata.target(REPO, 'A', 'Pre-warmed swarm job');
     await act(async () => { await metadata.store.ownerTick(); });
     const requests = metadata.fetch.mock.calls.length;
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    expect(screen.queryByText('Loading swarm jobs...')).not.toBeInTheDocument();
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
+    expect(screen.queryByText('Loading jobs...')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Pre-warmed swarm job/ })).toBeInTheDocument();
     expect(metadata.fetch).toHaveBeenCalledTimes(requests);
   });
 
-  it("shows Loading swarm jobs... on cold mount with empty cache", async () => {
+  it("shows Loading jobs... on cold mount with empty cache", async () => {
     metadata.hangView();
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await act(async () => { void metadata.store.ownerTick(); });
-    expect(screen.getByText('Loading swarm jobs...')).toBeInTheDocument();
+    expect(screen.getByText('Loading jobs...')).toBeInTheDocument();
     expect(screen.queryByText(/Pre-warmed swarm job/)).not.toBeInTheDocument();
   });
 });
@@ -370,7 +380,7 @@ describe("SwarmPane model badge", () => {
   it("marks only worker, job, and aggregate running indicators as semantic", async () => {
     const selected = selection();
     const fixture = await expertMetadataFixture([expertSummary(selected, "Audit auth flow")]);
-    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       const job = await expandJob(/Audit auth flow/);
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
@@ -402,7 +412,7 @@ describe("SwarmPane model badge", () => {
       return { ...detail, lifecycle: "complete", tasks: { ...detail.tasks,
         rows: detail.tasks.rows.map(task => ({ ...task, status: "complete" })) } };
     });
-    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       expect(screen.getByRole("button", { name: /^Finished/ })).toHaveAttribute("aria-expanded", "true");
       await expandJob(/^Audit auth flow · complete$/);
@@ -534,7 +544,7 @@ describe("SwarmPane worker details", () => {
   it("lets a terminal worker reveal its source-backed identity", async () => {
     const fixture = await terminalWorkerMetadataFixture();
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       await expandJob(/^Inspect completed worker/);
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
 
@@ -591,7 +601,7 @@ describe("SwarmPane worker details", () => {
     const metadata = await nativeExpertFixture({ jobId: 'local-keys', repo: '/cancel-repo',
       task: { role: 'key-worker', instruction: 'Keyboard disclosure', model: 'routed-model', model_kind: 'assigned' } });
     outcomeFixture = metadata;
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "local-keys" });
     expect(screen.queryByText("Keyboard disclosure")).not.toBeInTheDocument();
     expect(metadata.request.mock.calls.some(([, path]) => path.includes('/local/detail'))).toBe(false);
@@ -674,7 +684,7 @@ describe("SwarmPane pin attribution", () => {
 
   it("does not paint a missing routing estimate as $0", async () => {
     const fixture = await expertMetadataFixture([expertSummary(selection(), "Audit auth flow")]);
-    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       fireEvent.click(await screen.findByRole("button", { name: /Audit auth flow/ }));
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
@@ -692,7 +702,7 @@ describe("SwarmPane pin attribution", () => {
 
   it("fail-closes missing policy as Pin attribution unknown (not Router pick)", async () => {
     const fixture = await expertMetadataFixture([expertSummary(selection(), "Audit auth flow")]);
-    const view = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const view = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       fireEvent.click(await screen.findByRole("button", { name: /Audit auth flow/ }));
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
@@ -828,7 +838,7 @@ describe("SwarmPane routing dedupe", () => {
         presence: 'recorded', check_result: 'unavailable',
       })) },
     });
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       fireEvent.click(await screen.findByRole('button', { name: /^Grouped findings/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -864,7 +874,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     row.economics = { kind: 'estimated', spend_usd: 0.05, estimated: true, cost_provenance: 'static',
       source: 'financial_receipt', estimated_savings_usd: 0.0553, route_forecast_usd: 0.1 };
     const fixture = await economicsNativeFixture([row]);
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-cost ·/);
       expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
@@ -877,7 +887,7 @@ describe("SwarmPane mid-run job-row meters", () => {
   it("keeps compact provider cards free of inspect-lane spend dump after a receipt refresh", async () => {
     const row = nativeEconomicsRow('local-update');
     const fixture = await economicsNativeFixture([row]);
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       await expandJob(/^Provider worker · local-update ·/);
       expect(screen.queryByRole('button', { name: 'Inspect actions' })).not.toBeInTheDocument();
@@ -895,7 +905,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     const detail = expertDetail(selected.selection, fixture.context());
     detail.lifecycle = 'complete';
     fixture.selected.mockResolvedValue(detail);
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       await expandJob(/^Outcome flips ·/);
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -1027,7 +1037,7 @@ describe("SwarmPane mid-run job-row meters", () => {
       { ...route, ordinal: 1, model: 'cheap-model', created_by: 'router-fallback' },
     ] });
     outcomeFixture = metadata;
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await expandVisibleJobs();
     const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
     await waitFor(() => expect(worker).toHaveTextContent("cheap-model"));
@@ -1051,7 +1061,7 @@ describe("SwarmPane mid-run job-row meters", () => {
   it("keeps compact job and worker chrome on expand and drops inspect-lane chrome", async () => {
     const metadata = await nativeExpertFixture({ jobId: 'local-compact' });
     outcomeFixture = metadata;
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await expandJob(/Provider worker/);
     expect(screen.getByLabelText('Job local-compact')).toBeVisible();
     expect(await screen.findByText(/Workers \(1\)/)).toBeVisible();
@@ -1089,7 +1099,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 
   it("paints ordinary worker failure as failed, not cancelled", async () => {
     outcomeFixture = await expertMetadataFixture([outcomeSummary('job-fail', 'Ordinary failure', 'failed')]);
-    render(<outcomeFixture.Provider><SwarmPane /></outcomeFixture.Provider>);
+    render(<outcomeFixture.Provider><SwarmWithInspect /></outcomeFixture.Provider>);
     expect(screen.getByRole('button', { name: /Finished/ })).toBeVisible();
     expect(screen.getByText('1 failed')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Ordinary failure · failed' })).toBeVisible();
@@ -1106,16 +1116,15 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       const result = expertDetail(selected, f.context());
       return { ...result, lifecycle: 'timeout', tasks: { ...result.tasks, rows: [{ ...result.tasks.rows[0], status: 'timeout' }] } };
     });
-    render(<f.Provider><SwarmPane /></f.Provider>);
+    render(<f.Provider><SwarmWithInspect /></f.Provider>);
     expect(screen.getByRole('button', { name: /Finished/ })).toBeVisible();
     expect(screen.getByText('1 failed')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Timed-out command · failed' }));
     fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
     expect(await screen.findByLabelText('Workers')).toHaveTextContent('1/1');
     expect(screen.getByText('task-1: timeout')).toBeVisible();
     expect(screen.getByText('task-1: timeout')).toHaveClass('text-risk');
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Dismiss from tracker: Timed-out command' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Dismiss from Jobs: Timed-out command' })).toBeVisible();
 
     f.selected.mockImplementation(async selected => {
       const result = expertDetail(selected, f.context());
@@ -1137,7 +1146,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
       outcomeSummary('job-truncated', 'Truncated command', 'truncated'),
       outcomeSummary('job-interrupted', 'Interrupted command', 'interrupted'),
     ]);
-    render(<outcomeFixture.Provider><SwarmPane /></outcomeFixture.Provider>);
+    render(<outcomeFixture.Provider><SwarmWithInspect /></outcomeFixture.Provider>);
     expect(screen.getByRole('button', { name: /^Finished/ })).toBeVisible();
     expect(screen.getByText('2 failed')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Truncated command · failed' })).toBeVisible();
@@ -1182,7 +1191,7 @@ describe("SwarmPane truthful failed vs cancelled chrome", () => {
 
   it("paints true user cancel as cancelled and does not tally it as failed", async () => {
     outcomeFixture = await expertMetadataFixture([outcomeSummary('job-cancel', 'User aborted swarm', 'cancelled')]);
-    render(<outcomeFixture.Provider><SwarmPane /></outcomeFixture.Provider>);
+    render(<outcomeFixture.Provider><SwarmWithInspect /></outcomeFixture.Provider>);
     expect(screen.getByRole('button', { name: /Finished/ })).toBeVisible();
     expect(screen.getByText('1 cancelled')).toBeVisible();
     expect(screen.getByRole('button', { name: 'User aborted swarm · cancelled' })).toBeVisible();
@@ -1205,7 +1214,7 @@ describe("SwarmPane cancel Kill contract", () => {
     mockSwarmCancel.mockReturnValue(new Promise(resolve => { accept = resolve; }));
     const f = await nativeControlFixture();
     outcomeFixture = f;
-    render(<f.Provider><SwarmPane /></f.Provider>);
+    render(<f.Provider><SwarmWithInspect /></f.Provider>);
     fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
@@ -1227,7 +1236,7 @@ describe("SwarmPane cancel Kill contract", () => {
     mockSwarmCancel.mockResolvedValue({ ok: false, error: 'not running' });
     const f = await nativeControlFixture();
     outcomeFixture = f;
-    render(<f.Provider><SwarmPane /></f.Provider>);
+    render(<f.Provider><SwarmWithInspect /></f.Provider>);
     fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
@@ -1248,7 +1257,7 @@ describe("SwarmPane cancel Kill contract", () => {
       .mockResolvedValueOnce({ ok: true });
     const f = await nativeControlFixture();
     outcomeFixture = f;
-    render(<f.Provider><SwarmPane /></f.Provider>);
+    render(<f.Provider><SwarmWithInspect /></f.Provider>);
     fireEvent.click(screen.getByRole('button', { name: /Provider worker · running/ }));
     const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
@@ -1286,7 +1295,7 @@ describe("SwarmPane canonical outcome", () => {
   it("keeps completed lifecycle neutral with a positively recorded finding", async () => {
     const fixture = await evidenceFixture('Completed audit');
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       const row = await screen.findByRole('button', { name: 'Completed audit · complete' });
       expect(screen.getByRole('button', { name: /^Finished/ })).toBeVisible();
       expect(within(row).getByText('complete')).toBeVisible();
@@ -1317,7 +1326,7 @@ describe("SwarmPane findings section collapse", () => {
   it("collapses and reopens the recorded finding hash in Artifacts without refetching", async () => {
     const fixture = await evidenceFixture('Audit findings collapse');
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       fireEvent.click(await screen.findByRole('button', { name: 'Audit findings collapse · complete' }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       await screen.findByText('Findings (1)');
@@ -1341,7 +1350,7 @@ describe("SwarmPane findings section collapse", () => {
   it("loads selected artifact metadata only after explicit inspection of a finished job", async () => {
     const fixture = await evidenceFixture('Slim finished swarm');
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       expect(fixture.selected).not.toHaveBeenCalled();
       fireEvent.click(await screen.findByRole('button', { name: 'Slim finished swarm · complete' }));
       expect(fixture.selected).not.toHaveBeenCalled();
@@ -1360,7 +1369,7 @@ describe("SwarmPane findings section collapse", () => {
   it("preserves the owned artifact hash when cross-project inspection is disabled", async () => {
     const fixture = await evidenceFixture('Owned sibling slim');
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       const row = await screen.findByRole('button', { name: 'Owned sibling slim · complete' });
       fireEvent.click(row);
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -1522,7 +1531,7 @@ describe("SwarmPane worker-owned routing surface", () => {
           cache_write_tokens: unknown, api_cost_usd: unknown,
           plan_marginal_cost_usd: planZero, api_equivalent_cost_usd: unknown } },
     });
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       fireEvent.click(await screen.findByRole('button', { name: /^Selected worker cost/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -1562,7 +1571,7 @@ describe("SwarmPane worker-owned routing surface", () => {
           cache_write_tokens: unknown, api_cost_usd: measuredZero,
           plan_marginal_cost_usd: planZero, api_equivalent_cost_usd: unknown } },
     });
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       fireEvent.click(await screen.findByRole('button', { name: /^Selected worker cost/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -1600,7 +1609,7 @@ describe("SwarmPane worker-owned routing surface", () => {
           cache_write_tokens: unknown, api_cost_usd: measuredZero,
           plan_marginal_cost_usd: unknown, api_equivalent_cost_usd: unknown } },
     });
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       fireEvent.click(await screen.findByRole('button', { name: /^Selected worker cost/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -1648,7 +1657,7 @@ describe("SwarmPane worker tokens and cost", () => {
     detail.history.counts.captured_process_outcomes = 2;
     fixture.selected.mockResolvedValue(detail);
     try {
-      render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+      render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
       fireEvent.click(await screen.findByRole('button', { name: 'Multi worker spend · complete' }));
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
       await screen.findByRole('region', { name: 'Selected job inspector' });
@@ -1866,7 +1875,7 @@ let scopePrivacyMetadata: Awaited<ReturnType<typeof expertMetadataFixture>> | un
 async function renderScopePrivacy(row: MetadataSummary) {
   const metadata = await expertMetadataFixture([row]);
   scopePrivacyMetadata = metadata;
-  render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+  render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
   expect(metadata.store.getSnapshot().observations).toHaveLength(1);
   expect(mockSwarmLive).not.toHaveBeenCalled();
   expect(mockArtifacts).not.toHaveBeenCalled();
@@ -2029,7 +2038,7 @@ describe("SwarmPane repo-scoped dismiss", () => {
     localStorage.setItem(preferenceKey(), JSON.stringify({ expanded: [], dismissed: rows.map(r => metadataSelectionKey(r.selection)) }));
   }
   function mount() {
-    return render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    return render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
   }
   function hideFinished() {
     fireEvent.click(screen.getByRole("button", { name: "Hide finished", exact: true }));
@@ -2163,58 +2172,43 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     localStorage.setItem(preferenceKey, JSON.stringify({ expanded: [],
       dismissed: dismissed ? [metadataSelectionKey(selection)] : [] }));
   }
-  function mount() { render(<metadata.Provider><SwarmPane /></metadata.Provider>); }
+  function mount() { render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>); }
   function open(artifactId?: string) {
     act(() => { window.dispatchEvent(new CustomEvent('harness-open-swarm-job', {
       detail: { jobId: selection.job_ref.job_id, artifactId },
     })); });
   }
-  async function expectExpanded(goal: string) {
-    const row = await screen.findByRole('button', { name: `${goal} · complete` });
-    expect(row).toHaveAttribute('aria-expanded', 'true');
-    expect(row).toHaveFocus();
-    expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toContain(row);
-    return row;
+  async function expectEmbedded(goal: string) {
+    const host = await screen.findByTestId('job-dashboard-host');
+    expect(host).toHaveAttribute('data-job-id', selection.job_ref.job_id);
+    expect(screen.getByText(goal)).toBeInTheDocument();
+    return host;
   }
-  it("undismisses, expands, and scrolls to the target job row", async () => {
+  it("undismisses and embeds the target PM job", async () => {
     await fixture('Deep-link target swarm', true);
     mount();
     expect(screen.getByRole('button', { name: 'Show 1 hidden' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Deep-link target swarm/ })).not.toBeInTheDocument();
     open();
-    await expectExpanded('Deep-link target swarm');
-    expect(document.querySelector('[data-job-id="job_abcdef012345"]')).toBeTruthy();
+    await expectEmbedded('Deep-link target swarm');
     expect(JSON.parse(localStorage.getItem(preferenceKey) || '{}').dismissed).not.toContain(metadataSelectionKey(selection));
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
-    await screen.findByRole('region', { name: 'Selected job inspector' });
-    expect(metadata.selected).toHaveBeenCalledWith(selection, expect.objectContaining({ task_cursor: null, artifact_cursor: null }));
   });
-  it("opens and scrolls to an exact artifact target", async () => {
+  it("embeds a PM job when an artifact target is requested", async () => {
     await fixture('Artifact deep-link target');
     mount();
     expect(screen.getByRole('button', { name: /Finished/ })).toBeInTheDocument();
     open('artifact-target');
-    await waitFor(() => {
-      const finding = document.querySelector('[data-artifact-ids~="artifact-target"]');
-      expect(finding).toHaveAttribute('data-finding-id', 'artifact-target');
-      expect(finding).toHaveAttribute('open');
-      expect(finding).toHaveFocus();
-      expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toContain(finding);
-    });
-    expect(screen.getByRole('button', { name: 'Artifacts', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('a'.repeat(64))).toBeInTheDocument();
-    expect(metadata.selected).toHaveBeenCalledWith(selection, expect.objectContaining({ artifact_cursor: null }));
+    await expectEmbedded('Artifact deep-link target');
     expect(peekPendingSwarmNavigation()).toBeNull();
   });
   it("clears filters that hide a deep-link target", async () => {
     await fixture('Deep-link target behind filter');
     mount();
-    fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'active' } });
+    fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'active' } });
     expect(screen.queryByRole('button', { name: /Deep-link target behind filter/ })).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Filter swarms')).toHaveValue('active');
+    expect(screen.getByLabelText('Filter jobs')).toHaveValue('active');
     open();
-    await expectExpanded('Deep-link target behind filter');
-    expect(screen.getByLabelText('Filter swarms')).toHaveValue('all');
+    await expectEmbedded('Deep-link target behind filter');
   });
   it("consumes a pending open-job queued before mount", async () => {
     await fixture('Late-mount deep-link target', true);
@@ -2223,7 +2217,7 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
       context: { repo: REPO, session_id: selection.session_id, contextEpoch: metadata.store.getSnapshot().contextEpoch } });
     expect(peekPendingSwarmNavigation()?.jobId).toBe(selection.job_ref.job_id);
     mount();
-    await expectExpanded('Late-mount deep-link target');
+    await expectEmbedded('Late-mount deep-link target');
     expect(peekPendingSwarmNavigation()).toBeNull();
     expect(JSON.parse(localStorage.getItem(preferenceKey) || '{}').dismissed).not.toContain(metadataSelectionKey(selection));
   });
@@ -2362,7 +2356,7 @@ describe("SwarmPane final-review blockers", () => {
     const metadata = await expertMetadataFixture([{
       ...expertSummary(selection, "Terminal without meters"), lifecycle: "complete", task_count: 0, artifact_count: 0,
     }]);
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       const job = await screen.findByRole("button", { name: /^Terminal without meters/ });
       expect(screen.getByRole("button", { name: /Finished \(1\)/ })).toHaveAttribute("aria-expanded", "true");
@@ -2397,7 +2391,7 @@ describe("SwarmPane final-review blockers", () => {
           cache_write_tokens: unknown, api_cost_usd: providerZero,
           plan_marginal_cost_usd: unknown, api_equivalent_cost_usd: unknown } },
     });
-    const rendered = render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    const rendered = render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     try {
       fireEvent.click(await screen.findByRole("button", { name: /^Terminal with attested zero/ }));
       fireEvent.click(screen.getByRole("button", { name: "Inspect tasks and artifacts" }));
@@ -2419,7 +2413,7 @@ describe("SwarmPane final-review blockers", () => {
   function renderInCompactRail(widthPx: number) {
     const { container } = render(
       <div style={{ width: `${widthPx}px`, overflow: "hidden" }}>
-        <SwarmPane />
+        <SwarmWithInspect />
       </div>,
     );
     return container;
@@ -2497,79 +2491,56 @@ describe("SwarmPane job-card expansion persistence", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("remembers collapsed in_progress job across remount", async () => {
+  it("opens a PM job dashboard and returns to the strip on Close", async () => {
     fixture = await expertMetadataFixture([expansionSummary('job_running', 'Running swarm')]);
 
-    const { unmount } = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
-    expect(job).toHaveAttribute("aria-expanded", "false");
+    expect(job).not.toHaveAttribute("aria-expanded");
 
     fireEvent.click(job);
-    expect(job).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(job);
-    expect(job).toHaveAttribute("aria-expanded", "false");
-
-    unmount();
-    await fixture.observe();
-    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-
-    const remounted = await screen.findByRole("button", { name: /Running swarm/ });
-    expect(remounted).toHaveAttribute("aria-expanded", "false");
+    expect(await screen.findByTestId("job-dashboard-host")).toHaveAttribute("data-job-id", "job_running");
+    fireEvent.click(screen.getByRole("button", { name: /Close/ }));
+    expect(screen.queryByTestId("job-dashboard-host")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Running swarm/ })).toBeInTheDocument();
   });
 
-  it("remembers expanded terminal job across remount", async () => {
+  it("does not persist dashboard focus across remount", async () => {
     fixture = await expertMetadataFixture([expansionSummary('job_done', 'Finished swarm job', '/repo', 'complete')]);
 
-    const { unmount } = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-
-    const job = await screen.findByRole("button", { name: /Finished swarm job/, expanded: false });
-    expect(job).toHaveAttribute("aria-expanded", "false");
-
-    fireEvent.click(job);
-    expect(job).toHaveAttribute("aria-expanded", "true");
+    const { unmount } = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: /Finished swarm job/ }));
+    expect(await screen.findByTestId("job-dashboard-host")).toBeInTheDocument();
 
     unmount();
     await fixture.observe();
-    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-
-
-    const remounted = await screen.findByRole("button", { name: /Finished swarm job/, expanded: true });
-    expect(remounted).toHaveAttribute("aria-expanded", "true");
+    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    expect(screen.queryByTestId("job-dashboard-host")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Finished swarm job/ })).toBeInTheDocument();
   });
 
-  it("scopes collapse preference per repo", async () => {
+  it("keeps dashboard selection scoped to the current job strip", async () => {
     const rowA = expansionSummary('job_shared', 'Repo A running', REPO_A);
     const rowB = expansionSummary('job_shared', 'Repo B running', REPO_B);
     fixture = await expertMetadataFixture([rowA]);
 
-    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-    const jobA = await screen.findByRole("button", { name: /Repo A running/ });
-    expect(jobA).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(jobA);
-    expect(jobA).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(jobA);
-    expect(jobA).toHaveAttribute("aria-expanded", "false");
+    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: /Repo A running/ }));
+    expect(await screen.findByTestId("job-dashboard-host")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Close/ }));
 
     await fixture.replace([rowB]);
-
-    const jobB = await screen.findByRole("button", { name: /Repo B running/ });
-    expect(jobB).toHaveAttribute("aria-expanded", "false");
-
-    expect(JSON.parse(localStorage.getItem(expansionStorageKey(REPO_A)) || '{}').expanded).toEqual([]);
-    fireEvent.click(jobB);
-    expect(jobB).toHaveAttribute('aria-expanded', 'true');
-    expect(JSON.parse(localStorage.getItem(expansionStorageKey(REPO_B)) || '{}').expanded).toEqual([metadataSelectionKey(rowB.selection)]);
-    await fixture.replace([rowA]);
-    expect(await screen.findByRole('button', { name: /Repo A running/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId("job-dashboard-host")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Repo B running/ })).toBeInTheDocument();
   });
 
   it("falls back to defaults when expansion storage is malformed", async () => {
     localStorage.setItem(expansionStorageKey(), "not-json{{{");
     fixture = await expertMetadataFixture([expansionSummary('job_running', 'Running swarm')]);
 
-    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     const job = await screen.findByRole("button", { name: /Running swarm/ });
-    expect(job).toHaveAttribute("aria-expanded", "false");
+    expect(job).not.toHaveAttribute("aria-expanded");
   });
 });
 
@@ -2623,7 +2594,7 @@ describe("swarm tracker usage pills (0.9.300)", () => {
 
   it("discloses selected PM receipt economics only within the expanded inspector", async () => {
     const fixture = await economicsReceiptFixture();
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       expect(screen.queryByRole('region', { name: 'Economics' })).not.toBeInTheDocument();
       await expandJob(/^Selected receipt audit ·/);
@@ -2638,14 +2609,14 @@ describe("swarm tracker usage pills (0.9.300)", () => {
       expect(economics).toHaveTextContent('Source: frozen terminal receipt. Selected records: 1.');
       expect(economics).toHaveTextContent('All-attempt spend: unknown');
       fireEvent.click(screen.getByRole('button', { name: /^Selected receipt audit ·/ }));
-      expect(screen.queryByRole('region', { name: 'Economics' })).not.toBeInTheDocument();
+      expect(await screen.findByTestId('job-dashboard-host')).toBeInTheDocument();
       expect(mockSwarmLive).not.toHaveBeenCalled();
     } finally { mounted.unmount(); fixture.dispose(); }
   });
 
   it("keeps captured task usage hidden until its observation is disclosed", async () => {
     const fixture = await economicsReceiptFixture();
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       await expandJob(/^Selected receipt audit ·/);
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -2683,7 +2654,7 @@ describe("swarm tracker usage pills (0.9.300)", () => {
       presence: 'recorded', check_result: 'unavailable',
     }));
     fixture.selected.mockResolvedValue(detail);
-    const mounted = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    const mounted = render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     try {
       await expandJob('Grouped findings pill chrome · complete');
       fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
@@ -2724,9 +2695,9 @@ describe("SwarmPane command vs swarm split", () => {
 
   it("excludes run_command jobs from tracker count and cards", async () => {
     metadata = await commandSplitFixture(["Audit auth flow"], "run_command");
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     expect(await screen.findByRole("button", { name: "Audit auth flow · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(1)");
+    expect(screen.getByText("Jobs").parentElement).toHaveTextContent("(1)");
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Command · running" })).not.toBeInTheDocument();
     expect(screen.queryByText("Inspect actions")).not.toBeInTheDocument();
@@ -2736,23 +2707,23 @@ describe("SwarmPane command vs swarm split", () => {
 
   it("still shows run_swarm / run_implement / run_parallel cards", async () => {
     metadata = await commandSplitFixture(["run_swarm audit", "run_implement fix", "run_parallel wave"], "run_command_batch");
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     expect(await screen.findByRole("button", { name: "run_swarm audit · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_implement fix · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_parallel wave · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(3)");
+    expect(screen.getByText("Jobs").parentElement).toHaveTextContent("(3)");
     expect(screen.queryByText("echo batch")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Command batch · running" })).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
     expect(mockArtifacts).not.toHaveBeenCalled();
   });
 
-  it("does not count a lone command job as Swarm Tracker (1)", async () => {
+  it("does not count a lone command job as Jobs (1)", async () => {
     metadata = await commandSplitFixture([], "run_command");
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
-    expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(0)");
-    expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
-    expect(screen.getByText("No swarm jobs yet")).toBeInTheDocument();
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
+    expect(screen.getByText("Jobs").parentElement).not.toHaveTextContent("(0)");
+    expect(screen.getByText("Jobs").parentElement).not.toHaveTextContent("(1)");
+    expect(screen.getByText("No jobs yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Active \(/ })).not.toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Command · running" })).not.toBeInTheDocument();
@@ -2762,10 +2733,10 @@ describe("SwarmPane command vs swarm split", () => {
 
   it("hides the wave parent and still shows hired children", async () => {
     metadata = await commandSplitFixture(["run_swarm audit", "run_implement fix"], "parallel_wave");
-    render(<metadata.Provider><SwarmPane /></metadata.Provider>);
+    render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     expect(await screen.findByRole("button", { name: "run_swarm audit · running" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "run_implement fix · running" })).toBeInTheDocument();
-    expect(screen.getByText("Swarm Tracker").parentElement).toHaveTextContent("(2)");
+    expect(screen.getByText("Jobs").parentElement).toHaveTextContent("(2)");
     expect(screen.queryByText("Parallel wave (2 jobs)")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Parallel wave · running" })).not.toBeInTheDocument();
     expect(mockSwarmLive).not.toHaveBeenCalled();
@@ -2799,47 +2770,33 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
     const row = await screen.findByRole('button', { name: /Live audit/ });
     expect(row).toHaveClass('items-center');
     expect(row).not.toHaveClass('flex-col');
-    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(row).not.toHaveAttribute('aria-expanded');
     expect(screen.queryByLabelText('Job job_live')).not.toBeInTheDocument();
     expect(screen.queryByText(/m ago/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Workers')).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Selected job inspector' })).not.toBeInTheDocument();
     expect(fixture.selected).not.toHaveBeenCalled();
     fireEvent.click(row);
-    expect(screen.getByLabelText('Job job_live')).toBeVisible();
-    fireEvent.click(row);
-    expect(screen.queryByLabelText('Job job_live')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_live');
+    expect(screen.queryByLabelText('Workers')).not.toBeInTheDocument();
   });
 
-  it("discloses job identity and selected worker progress after expansion", async () => {
-    const selected = fixture.store.getSnapshot().observations[0].row.selection;
-    const detail = expertDetail(selected, fixture.context());
-    detail.task_count = 2;
-    detail.tasks.rows = [
-      { ...detail.tasks.rows[0], status: 'completed' },
-      { ...detail.tasks.rows[0], id: 'task-2', binding: null, status: 'running' },
-    ];
-    detail.tasks.page.scanned = 2;
-    fixture.selected.mockResolvedValue(detail);
+  it("hosts the Puppetmaster dashboard instead of expanding inspection", async () => {
     render(<fixture.Provider><SwarmPane /></fixture.Provider>);
     expect(screen.queryByLabelText('Workers')).not.toBeInTheDocument();
-    await expandJob(/Live audit/);
-    expect(screen.getByLabelText('Job job_live')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
-    const workers = await screen.findByLabelText('Workers');
-    expect(workers).toHaveTextContent('1/2 observed workers finished');
-    expect(screen.getByText('2 tasks shown of 2. Page: complete.')).toBeVisible();
-    expect(screen.queryByText(/1m ago/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Live audit/ }));
-    expect(screen.queryByLabelText('Workers')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Job job_live')).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Live audit/ }));
+    expect(await screen.findByTestId('job-dashboard-host')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inspect tasks and artifacts' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Close/ }));
+    expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Live audit/ })).toBeInTheDocument();
   });
 
   it("uses hairline separators between job rows, not card borders", async () => {
     await fixture.replace([
       expansionSummary('job_a', 'First job'), expansionSummary('job_b', 'Second job'),
     ]);
-    render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+    render(<fixture.Provider><SwarmWithInspect /></fixture.Provider>);
     await screen.findByText("First job");
     const first = screen.getByText("First job").closest("[data-job-id]");
     const second = screen.getByText("Second job").closest("[data-job-id]");

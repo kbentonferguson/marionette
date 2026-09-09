@@ -3802,7 +3802,7 @@ function ActionCard({
                   : linkKind === "workspace"
                   ? "Open workspace"
                   : linkKind === "job"
-                  ? "Open in Swarm Tracker"
+                  ? "Open in Jobs"
                   : linkKind === "spill"
                   ? "Open spilled output"
                   : "Reveal command output"
@@ -4087,7 +4087,7 @@ const KV = ({
           }
           title={
             linkKind === "job"
-              ? "Open in Swarm Tracker"
+              ? "Open in Jobs"
               : linkKind === "spill"
                 ? "Open spilled output"
                 : undefined
@@ -4128,7 +4128,7 @@ function SwarmJobIdChips({ jobIds }: { jobIds: string[] }) {
             <button
               type="button"
               data-testid="swarm-pending-job-chip"
-              title="Open in Swarm Tracker"
+              title="Open in Jobs"
               className="font-mono text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0"
               onClick={(e) => {
                 e.preventDefault();
@@ -4252,7 +4252,7 @@ function SwarmJobIdButton({
     <button
       type="button"
       data-testid="swarm-result-job-link"
-      title="Open in Swarm Tracker"
+      title="Open in Jobs"
       className={`font-mono text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 ${className || ""}`}
       onClick={(e) => {
         e.preventDefault();
@@ -4476,7 +4476,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                       data-artifact-sha256={artifact.sha256 || ""}
                       onClick={() => primaryJobId && openSwarmJob(primaryJobId, artifact.id)}
                       className="block w-full rounded border border-edge/30 bg-panel/30 px-2 py-1.5 text-left hover:bg-panel2/35 transition-colors"
-                      title={artifact.id ? `Inspect ${artifact.id} in Swarm Tracker` : "Inspect swarm artifacts"}
+                      title={artifact.id ? `Inspect ${artifact.id} in Jobs` : "Inspect job artifacts"}
                     >
                       <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px]">
                         <span className="uppercase text-faint">{artifact.type}</span>

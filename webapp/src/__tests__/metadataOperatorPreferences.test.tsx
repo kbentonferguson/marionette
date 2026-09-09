@@ -11,6 +11,21 @@ import { clearPendingSwarmOpenJob, peekPendingSwarmNavigation, peekPendingSwarmO
 import { context, detail, handshake, list, selection, summary, view } from './jobMetadata.fixtures';
 import { nativeSummary } from './metadataMigration.fixtures';
 
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      dashboard: vi.fn().mockResolvedValue({
+        ok: true, reused: true, host: '127.0.0.1', port: 8787,
+        url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+        embed_url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+      }),
+    },
+  };
+});
+
 let store: JobMetadataStore;
 let pm: MetadataSummary[];
 let pinned: MetadataSummary[];
@@ -70,7 +85,7 @@ afterEach(() => { cleanup(); store.dispose(); clearPendingSwarmOpenJob(); vi.res
 
 it('drops dismissal on observed live reappearance so later completion stays visible', async () => {
   await start(); mount();
-  fireEvent.click(row('job_1').getByRole('button', { name: /Dismiss from tracker/ }));
+  fireEvent.click(row('job_1').getByRole('button', { name: /Dismiss from Jobs/ }));
   expect(preference().dismissed).toHaveLength(1);
   pm[0] = { ...pm[0], lifecycle: 'running' }; await observe();
   expect(row('job_1').getByRole('button', { name: /running/ })).toBeVisible();
@@ -92,17 +107,17 @@ it('keeps interrupted and PM stalled finished, with recoverable and native stall
   pm = [{ ...summary(), lifecycle: 'interrupted' }, { ...summary(2), lifecycle: 'stalled' }];
   native = [{ ...nativeSummary(3), kind: 'provider', lifecycle: 'stalled' }];
   await start(); mount();
-  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'attention' } });
+  fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'attention' } });
   expect(row('job_1').getByRole('button', { name: /interrupted/ })).toBeVisible();
   expect(row('job_2').getByText(/recoverable/i)).toBeVisible();
   expect(row('job_3', 'local').getByText(/may still be active/i)).toBeVisible();
   expect(row('job_3', 'local').queryByRole('button', { name: /Dismiss/ })).toBeNull();
-  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'finished' } });
+  fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'finished' } });
   expect(row('job_1').getByRole('button', { name: /interrupted/ })).toBeVisible();
   expect(row('job_2').getByRole('button', { name: /stalled/ })).toBeVisible();
   expect(document.querySelector('[data-job-source="local"]')).toBeNull();
 });
-it('expands, focuses and scrolls the exact hidden target without resolving a colliding raw ID', async () => {
+it('embeds the exact hidden target without resolving a colliding raw ID', async () => {
   pm.push({ ...summary(), selection: { ...selection(), source: 'cli', job_ref: { job_id: 'job_1', state_id: 'store-B' } } });
   await start(); mount();
   openTarget('job_1');
@@ -110,63 +125,44 @@ it('expands, focuses and scrolls the exact hidden target without resolving a col
   expect(scroll).not.toHaveBeenCalled();
   fireEvent.click(row('job_1').getByRole('button', { name: /Dismiss/ }));
   openTarget('job_1', metadataSelectionKey(selection()));
-  const selected = row('job_1').getByRole('button', { name: /^PM harness job/ });
-  expect(selected).toHaveAttribute('aria-expanded', 'true'); expect(selected).toHaveFocus();
-  expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
-  expect(row('job_1', 'cli').getByRole('button', { name: /^PM CLI job/ })).toHaveAttribute('aria-expanded', 'false');
+  const host = await screen.findByTestId('job-dashboard-host');
+  expect(host).toHaveAttribute('data-job-id', 'job_1');
+  expect(scroll).not.toHaveBeenCalled();
 });
-it('retains artifact navigation and states its unavailability without stealing focus on updates', async () => {
+it('embeds a PM job when artifact navigation is requested', async () => {
   await start();
-  const read = vi.spyOn(store, 'readDetail');
   const queued = queuePendingSwarmNavigation(swarmNavigationTarget('job_1', { ...target, contextEpoch: store.getSnapshot().contextEpoch }, metadataJobs(store.getSnapshot())[0], 'artifact-missing'));
   mount();
-  await screen.findByRole('region', { name: 'Artifacts' });
-  expect(read).toHaveBeenCalledTimes(1);
-  expect(peekPendingSwarmNavigation()).toBe(queued);
-  expect(peekPendingSwarmOpenJob()).toBe('job_1'); expect(peekPendingSwarmOpenArtifact()).toBe('artifact-missing');
-  expect(screen.getByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeVisible();
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveFocus();
-  const otherArtifact = document.querySelector('[data-artifact-ids="artifact-1"]');
-  expect(otherArtifact).not.toHaveAttribute('open');
-  screen.getByLabelText('Filter swarms').focus(); await observe();
-  expect(screen.getByLabelText('Filter swarms')).toHaveFocus();
-  expect(peekPendingSwarmNavigation()).toBe(queued);
-  expect(screen.getByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeVisible();
-  expect(read).toHaveBeenCalledTimes(1);
-  selectedDetail.artifacts.rows.push({ ...selectedDetail.artifacts.rows[0], id: 'artifact-missing' });
-  selectedDetail.artifacts.page.scanned = selectedDetail.artifacts.rows.length;
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
-  const exactArtifact = document.querySelector('[data-artifact-ids="artifact-missing"]');
-  expect(exactArtifact).toHaveAttribute('open'); expect(exactArtifact).toHaveFocus();
-  expect(otherArtifact).not.toHaveAttribute('open');
+  const host = await screen.findByTestId('job-dashboard-host');
+  expect(host).toHaveAttribute('data-job-id', 'job_1');
   expect(peekPendingSwarmNavigation()).toBeNull();
-  expect(screen.queryByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeNull();
-  expect(screen.getAllByText(/Artifact body unavailable/)).toHaveLength(2);
-  screen.getByLabelText('Filter swarms').focus(); await observe();
-  expect(screen.getByLabelText('Filter swarms')).toHaveFocus(); expect(read).toHaveBeenCalledTimes(2);
+  expect(queued.artifactId).toBe('artifact-missing');
 });
 it('holds an unobserved exact target until that exact row appears', async () => {
   await start(); mount(); openTarget('job_2', metadataSelectionKey(selection(2)));
   expect(screen.getByText(/Target job is not observed/)).toBeVisible(); expect(scroll).not.toHaveBeenCalled();
   pm.push(summary(2)); await observe();
-  expect(row('job_2').getByRole('button', { name: /^PM harness job/ })).toHaveFocus();
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_2');
 });
 it('does not consume queued navigation while disabled', async () => {
   await start(); queuePendingSwarmNavigation(swarmNavigationTarget('job_1', { ...target, contextEpoch: store.getSnapshot().contextEpoch }, metadataJobs(store.getSnapshot())[0])); const mounted = mount(false);
   expect(peekPendingSwarmOpenJob()).toBe('job_1'); expect(scroll).not.toHaveBeenCalled();
   mounted.rerender(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveFocus();
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
   expect(peekPendingSwarmOpenJob()).toBeNull();
 });
-it('preserves expansion across remount and isolates source and incarnation dismissal with compact labels', async () => {
+it('does not persist PM dashboard focus and isolates native dismissal with compact labels', async () => {
   native = [{ ...nativeSummary(1), lifecycle: 'completed' }];
   await start(); const mounted = mount();
   const label = row('job_1').getByRole('button', { name: /^PM harness job/ });
-  expect(label).not.toHaveTextContent('job_1'); fireEvent.click(label);
+  expect(label).not.toHaveTextContent('job_1');
   fireEvent.click(row('job_1', 'local').getByRole('button', { name: /Dismiss/ }));
   expect(preference().dismissed).toEqual([localKey(native[0].local_ref)]);
+  fireEvent.click(label);
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
   mounted.unmount(); await start(); mount();
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
   incarnation = 'native_process_2'; await act(async () => { store.setTarget(target); await store.readView(); }); await observe();
   expect(row('job_1', 'local').getByRole('button', { name: /completed/ })).toBeVisible();
 });
@@ -187,9 +183,9 @@ it.each(['attention', 'active'])('keeps Hide finished within the %s filter', asy
   await start();
   pinned = [pm[1]]; store.setPendingSelections(pinned.map(r => r.selection), []); await store.refreshPins();
   mount();
-  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: filter } });
+  fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: filter } });
   fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));
-  fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value: 'all' } });
+  fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'all' } });
   expect(row('job_2', 'cli').getByRole('button', { name: /^PM CLI job/ })).toBeVisible();
   expect(preference().dismissed).toHaveLength(filter === 'active' ? 0 : 1);
 });
@@ -228,33 +224,26 @@ it('bounds stored and user-expanded preferences and keeps native resumed complet
   native = [{ ...nativeSummary(1), lifecycle: 'completed' }];
   await start(); mount();
   expect(preference().expanded).toHaveLength(8); expect(preference().dismissed).toHaveLength(200);
-  for (let i = 1; i <= 10; i++) fireEvent.click(row(`job_${i}`).getByRole('button', { name: /^PM harness job/ }));
+  fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
   expect(preference().expanded).toHaveLength(8);
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(screen.getByRole('button', { name: /Close/ }));
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
   fireEvent.click(row('job_1', 'local').getByRole('button', { name: /Dismiss/ }));
   native[0] = { ...native[0], lifecycle: 'running' }; await observe();
   expect(preference().dismissed).not.toContain(localKey(native[0].local_ref));
   native[0] = { ...native[0], lifecycle: 'completed' }; await observe();
   expect(row('job_1', 'local').getByRole('button', { name: /completed/ })).toBeVisible();
 });
-it('preserves pending artifact IDs supplied directly by an event through remount', async () => {
+it('embeds a PM job from a remounted artifact deep-link', async () => {
   await start();
-  const read = vi.spyOn(store, 'readDetail');
   const mounted = mount(); openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
-  const queued = peekPendingSwarmNavigation();
-  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
-  expect(read).toHaveBeenCalledTimes(1);
-  expect(peekPendingSwarmOpenArtifact()).toBe('artifact-missing');
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
+  expect(peekPendingSwarmNavigation()).toBeNull();
   mounted.unmount(); await start(); mount();
-  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
-  expect(read).toHaveBeenCalledTimes(2);
-  expect(peekPendingSwarmNavigation()).toBe(queued);
-  expect(screen.getByText(/Requested artifact artifact-missing is not in the loaded records/)).toBeVisible();
-  selectedDetail.artifacts.rows.push({ ...selectedDetail.artifacts.rows[0], id: 'artifact-missing' });
-  selectedDetail.artifacts.page.scanned = selectedDetail.artifacts.rows.length;
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
-  const exactArtifact = document.querySelector('[data-artifact-ids="artifact-missing"]');
-  expect(exactArtifact).toHaveAttribute('open'); expect(exactArtifact).toHaveFocus();
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
   expect(peekPendingSwarmNavigation()).toBeNull();
 });
 it('requires both job ID and exact selection key to match and never falls back from a missing exact key', async () => {
@@ -262,16 +251,15 @@ it('requires both job ID and exact selection key to match and never falls back f
   expect(scroll).not.toHaveBeenCalled();
   openTarget('job_1', metadataSelectionKey({ ...selection(), job_ref: { job_id: 'job_1', state_id: 'missing-store' } }));
   expect(scroll).not.toHaveBeenCalled();
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'false');
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
 });
-it('keeps Inspect tasks and receipt-backed Stop reachable through the real row', async () => {
+it('opens the Puppetmaster dashboard from a PM job row', async () => {
   pm = pm.map(row => ({ ...row, selection: { ...row.selection, job_ref: { ...row.selection.job_ref, version: 2, incarnation: '12345678-1234-4234-8234-123456789abc' } } }));
   await start(); mount();
   fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
-  expect(screen.getByText('task-1: running')).toBeVisible();
-  expect(screen.getByText(/finding \/ artifact-1/)).toBeVisible();
-  expect(screen.getByRole('button', { name: /Stop|Cancel/i })).toBeVisible();
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
+  expect(screen.queryByRole('button', { name: 'Inspect tasks and artifacts' })).not.toBeInTheDocument();
 });
 
 it('keeps dismissal on a stale running observation and removes it only after a live observation', async () => {

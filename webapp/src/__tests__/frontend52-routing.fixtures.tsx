@@ -6,6 +6,7 @@ import type { HistoryLane, HistoryRow } from '../lib/selectedMetadataEvidence';
 import { expertDetail, expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 import { selection } from './jobMetadata.fixtures';
 import { identityTask } from './frontend52-identity.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import wire from './expertWire.backend.json';
 export { workerDetails } from './frontend52-identity.fixtures';
 
@@ -52,7 +53,7 @@ export async function capturedRoutingFixture(options: {
         captured_process_outcomes: outcomeRows.length, captured_observations: 0, outcome: 'available', coverage: 'captured', complete_invocation_history: false },
         attempts: lane(attemptRows), runs: lane(runs), process_outcomes: lane(outcomeRows), observations: lane([]) } };
   });
-  const rendered = render(<fixture.Provider><div style={{ width: options.width ? `${options.width}px` : undefined }}><SwarmPane /></div></fixture.Provider>);
+  const rendered = render(<fixture.Provider><JobsInspectHarness><div style={{ width: options.width ? `${options.width}px` : undefined }}><SwarmPane /></div></JobsInspectHarness></fixture.Provider>);
   onTestFinished(() => { rendered.unmount(); fixture.dispose(); });
   const job = await screen.findByRole('button', { name: /^Captured routing evidence/ });
   if (job.getAttribute('aria-expanded') === 'false') fireEvent.click(job);

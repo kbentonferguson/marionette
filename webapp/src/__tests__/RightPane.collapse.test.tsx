@@ -133,7 +133,7 @@ describe("RightPane collapse placement", () => {
 
   it("omits the idle swarm-tracker holder and only paints a live dot", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
-    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    const swarm = screen.getByRole("button", { name: "Jobs" });
     expect(within(swarm).queryByLabelText(/Job activity unknown/)).toBeNull();
     expect(within(swarm).queryByTestId("swarm-tracker-live-dot")).toBeNull();
   });
@@ -150,7 +150,7 @@ describe("RightPane collapse placement", () => {
         <RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />
       </JobMetadataContext.Provider>,
     );
-    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    const swarm = screen.getByRole("button", { name: "Jobs" });
     const live = within(swarm).getByTestId("swarm-tracker-live-dot");
     expect(live).toHaveClass("right-pane-live");
     expect(live).toHaveAttribute("aria-label", "At least 1 active jobs; coverage incomplete");
@@ -161,7 +161,7 @@ describe("RightPane collapse placement", () => {
   it("omits the idle holder on an open Swarm card header", () => {
     seedBoardTabOrder(["swarm"]);
     render(<RightPane {...baseProps} />);
-    const card = screen.getByRole("region", { name: "Swarm panel" });
+    const card = screen.getByRole("region", { name: "Jobs panel" });
     expect(within(card).queryByLabelText(/Job activity unknown/)).toBeNull();
     expect(within(card).queryByTestId("swarm-tab-live-dot")).toBeNull();
   });
@@ -677,8 +677,8 @@ describe("RightPane keeps SwarmPane mounted across tab switches", () => {
   it("keeps SwarmPane mounted when its card is closed", () => {
     render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
-    expect(screen.getByRole("region", { name: "Swarm panel" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Close Swarm panel" }));
+    expect(screen.getByRole("region", { name: "Jobs panel" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Jobs panel" }));
 
     const slot = screen.getByTestId("swarm-pane-slot");
     expect(slot).toBeInTheDocument();
