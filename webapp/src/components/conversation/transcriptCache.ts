@@ -10,8 +10,9 @@ import type { Item } from "../TranscriptList";
  *   session A's Investigated/swarm chunks into a brand-new empty session B.
  * - cleared session id -> empty is correct
  *
- * A brief empty flash on an uncached switch is preferable to cross-session
- * relic paint. Warm-cache hits still hydrate instantly with no flash.
+ * Prefer prefetch (rail hover / idle) so misses are rare. An uncached switch
+ * still blanks rather than painting priorItems (cross-session relic risk);
+ * the feed stays full opacity and silent while loading (no dim / Loading copy).
  */
 export function resolveSwitchTranscript(args: {
   nextId: string | null;

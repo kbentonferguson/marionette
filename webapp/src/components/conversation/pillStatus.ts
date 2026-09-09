@@ -58,6 +58,8 @@ export function derivePillBusyDetail(opts: {
 
 export function derivePillStatus(opts: {
   transcriptStale: boolean;
+  /** When 0 on a cold miss, skip "switching…" chrome (that was part of the blink). */
+  paintableCount?: number;
   /**
    * Legacy pure-chat "answer sealed" signal. Ignored while the agent-loop
    * latch is open so StatusPill cannot go idle ahead of composerBusy.
@@ -86,7 +88,9 @@ export function derivePillStatus(opts: {
     agentLoopOpen,
     turnLifecycle,
   } = opts;
-  if (transcriptStale) return "switching…";
+  // Empty cold-miss: stay off "switching…" so the header does not flash.
+  // Still show it when stale rows are on screen (refresh honesty).
+  if (transcriptStale && (opts.paintableCount ?? 1) > 0) return "switching…";
   // Pause-point wins over sticky liveInvestigation (hold-extended agentLoopOpen).
   if (awaitingSwarm) return "awaiting_swarm";
   const loopOpen = agentLoopOpen ?? isAgentLoopOpen(turnOpen, status);

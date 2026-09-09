@@ -324,5 +324,9 @@ export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
 export { createChatEventsReattach } from "./chatEventsReattach";
 export { gatherSessionArtifacts } from "./sessionArtifacts";
 export { useSessionSwitch } from "./useSessionSwitch";
+export {
+  prefetchSessionTranscript,
+  prefetchSessionTranscripts,
+} from "./transcriptPrefetch";
 export { useRunnersBusyPoll } from "./useRunnersBusyPoll";
 export { default as ConversationChatColumn } from "./ConversationChatColumn";
