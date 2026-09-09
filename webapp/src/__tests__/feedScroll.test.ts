@@ -692,10 +692,11 @@ describe("feedScroll layout contracts", () => {
     expect(feedLiveStreamOpen("done", false)).toBe(false);
 
     expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
-    expect(feedScrollportStyle(0)).toEqual({
+    expect(feedScrollportStyle()).toEqual({
       overflowAnchor: "auto",
-      scrollPaddingBottom: 0,
+      scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,
     });
+    expect(chooseFeedFollowFlush()).toBe("before_paint");
 
     const transcriptHeight = 800;
     const follow = scrollTopAfterFeedHeightChange({
@@ -716,7 +717,7 @@ describe("feedScroll layout contracts", () => {
     expect(feedSeatingReservePx({ liveStreamOpen: false })).toBe(
       FEED_COMPOSER_CLEARANCE_PX,
     );
-    expect(feedScrollportStyle(FEED_COMPOSER_CLEARANCE_PX)).toEqual({
+    expect(feedScrollportStyle()).toEqual({
       overflowAnchor: "auto",
       scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,
     });

@@ -101,13 +101,14 @@ export default function ConversationChatColumn({
           ref={feedRef}
           data-testid="transcript-feed-scrollport"
           className={`flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${panelOpacityClass(transcriptStale)}`}
-          style={feedScrollportStyle(seatingReservePx)}
+          style={feedScrollportStyle()}
         >
-        {/* overflow-anchor:auto + scroll-padding-bottom only. Content is
-            min-h-full / justify-start so idle short sessions sit mid/upper,
-            not flex-end against the dock. Seating reserve is zero while a
-            live stream is open so stick-to-bottom is not displaced by the
-            idle gap. Composer stays a sibling outside this scrollport. */}
+        {/* Locked pair: overflow-anchor:auto + scroll-padding-bottom.
+            Content is min-h-full / justify-start so idle short sessions
+            sit mid/upper. Content padding-bottom is the seating reserve
+            and drops to 0 while a live stream is open so scrollTop=max
+            pin follow is not displaced. Composer is a sibling outside
+            this scrollport. */}
         <div
           ref={feedContentRef}
           data-testid="transcript-feed-content"

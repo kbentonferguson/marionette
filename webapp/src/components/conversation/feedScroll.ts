@@ -41,19 +41,20 @@ export function chooseFeedFollowFlush(): "before_paint" {
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
 /**
- * Idle short-transcript seating reserve above the composer dock.
- * Applied as scroll-padding-bottom on the scrollport and matching
- * padding-bottom on feed content. This is not a flex-end spacer.
+ * Composer clearance. The locked scrollport pair is overflow-anchor +
+ * scroll-padding-bottom (always this value). Matching content
+ * padding-bottom is idle seating only — see feedSeatingReservePx.
  *
- * Must stay at 0 while a live stream is open: the 64px reserve inflates
- * scrollHeight, so overflow-anchor (last text line) and stick-to-bottom
- * (scrollTop=max, including the empty pad) disagree every token — flicker.
+ * Applying the same 64px as content padding while a stream is open
+ * inflates scrollHeight, so overflow-anchor (last text line) and
+ * stick-to-bottom (scrollTop=max, including the empty pad) disagree
+ * every token. That is the live-stream flicker.
  */
 export const FEED_COMPOSER_CLEARANCE_PX = 64;
 export const FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 export const FEED_CONTENT_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 
-/** Tokens landing, or the turn latch still open — no seating reserve. */
+/** Tokens landing, or the turn latch still open — no content seating pad. */
 export function feedLiveStreamOpen(
   status: string,
   turnOpen = false,
@@ -62,8 +63,10 @@ export function feedLiveStreamOpen(
 }
 
 /**
- * Composer clearance only when idle. Live stream keeps overflow-anchor and
- * stick-to-bottom on the same bottom line (no reserved whitespace chase).
+ * Content padding-bottom only. Zero while a live stream is open so
+ * pin follow / scrollTop=max is not displaced by reserved whitespace.
+ * Idle short transcripts keep the 64px gap above the composer.
+ * Does not change the locked scrollport scroll-padding-bottom.
  */
 export function feedSeatingReservePx(opts: {
   liveStreamOpen: boolean;
@@ -72,15 +75,13 @@ export function feedSeatingReservePx(opts: {
 }
 
 /** Scrollport style: overflow-anchor + scroll-padding-bottom only. */
-export function feedScrollportStyle(
-  seatingReservePx: number = FEED_COMPOSER_CLEARANCE_PX,
-): {
+export function feedScrollportStyle(): {
   overflowAnchor: typeof FEED_SCROLLPORT_OVERFLOW_ANCHOR;
   scrollPaddingBottom: number;
 } {
   return {
     overflowAnchor: FEED_SCROLLPORT_OVERFLOW_ANCHOR,
-    scrollPaddingBottom: seatingReservePx,
+    scrollPaddingBottom: FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
   };
 }
 
