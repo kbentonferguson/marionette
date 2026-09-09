@@ -14,6 +14,7 @@ import {
 } from "./thinkingToolPrep";
 import {
   findStreamingBubbleIdx,
+  sealedAssistantCoversDelta,
 } from "./streamBubbles";
 import {
   deduplicateConsecutiveAssistantMessages,
@@ -1123,7 +1124,7 @@ export function shouldPaintThinking(d: {
 /** Ensure an open pilot streaming bubble exists (message_delta path). */
 export function ensureAssistantStreamingBubble(
   items: Item[],
-  opts?: { isPlan?: boolean; streamId?: string; channel?: string },
+  opts?: { isPlan?: boolean; streamId?: string; channel?: string; chunk?: string },
 ): Item[] {
   const streamId = (opts?.streamId || "").trim();
   // Identity-bearing deltas must NOT seal thinking — dual-channel Sol keeps
@@ -1136,6 +1137,13 @@ export function ensureAssistantStreamingBubble(
       excludeWorkerStream: true,
     }) >= 0
   ) {
+    return base;
+  }
+  // Late message_delta after stream_item_done: findStreamingBubbleIdx only
+  // matches streaming:true, so a sealed finale would otherwise mint an empty
+  // open bubble that absorbOpenPilotDelta then fills — a live duplicate.
+  const chunk = (opts?.chunk || "").trim();
+  if (chunk && sealedAssistantCoversDelta(base, chunk)) {
     return base;
   }
   return [
