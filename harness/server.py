@@ -1424,13 +1424,24 @@ def _attach_view_transcript_payload(runner: Any, session_id: str) -> dict[str, l
 
 
 def _save_active_transcript() -> None:
-    """Persist the current active view's transcript (if any)."""
-    if _sessions.active:
-        save_transcript(
-            _sessions_state_dir(),
-            _sessions.active,
-            _pilot.export_transcript_data(),
-        )
+    """Persist the outgoing active session's live transcript (if any).
+
+    Take the swap lock and read the registered runner so a deferred cold
+    attach cannot replace ``_pilot`` with an empty real session between
+    ``export_transcript_data`` and the write. Workspace/open, session
+    switch, and create all flush through this helper.
+    """
+    sid = getattr(_sessions, "active", None)
+    if not sid:
+        return
+    with _pilot_swap_lock:
+        runner = _runners.get(sid)
+        if runner is None:
+            runner = _pilot
+        if runner is None:
+            return
+        payload = runner.export_transcript_data()
+        save_transcript(_sessions_state_dir(), sid, payload)
 
 
 _load_resume_latch()

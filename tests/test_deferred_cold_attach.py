@@ -293,6 +293,34 @@ def test_deferred_build_preserves_post_attach_load_history(tmp_path, monkeypatch
         srv._cfg.state_dir = old_state
 
 
+def test_placeholder_load_history_writes_through_to_real():
+    """Bound load_history on a swapped placeholder must update the real pilot."""
+    turns = [
+        {"role": "user", "content": "late-write-through"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    loaded: list = []
+
+    def capturing_load(messages):
+        loaded.clear()
+        if isinstance(messages, dict):
+            loaded.extend(messages.get("history") or [])
+        else:
+            loaded.extend(list(messages or []))
+
+    real = _idle_runner(sid="sid-a")
+    real.load_history = capturing_load
+    placeholder = DeferredPilotPlaceholder(
+        session_id="sid-a",
+        state_dir="/tmp/fake-runner",
+        transcript={"history": [], "display": [], "job_ids": []},
+    )
+    placeholder.mark_ready(real)
+    placeholder.load_history(turns)
+    assert placeholder.export_history() == turns
+    assert loaded == turns
+
+
 def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
     """ /api/sessions/switch returns state + transcript without waiting on build."""
     import harness.server as srv
