@@ -41,20 +41,19 @@ export function chooseFeedFollowFlush(): "before_paint" {
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
 /**
- * Composer clearance. The locked scrollport pair is overflow-anchor +
- * scroll-padding-bottom (always this value). Matching content
- * padding-bottom is idle seating only — see feedSeatingReservePx.
+ * Composer clearance (Cursor-like). Always keep this gap between the last
+ * transcript paint and the composer dock — idle and live. The locked
+ * scrollport pair remains overflow-anchor + scroll-padding-bottom.
  *
- * Applying the same 64px as content padding while a stream is open
- * inflates scrollHeight, so overflow-anchor (last text line) and
- * stick-to-bottom (scrollTop=max, including the empty pad) disagree
- * every token. That is the live-stream flicker.
+ * 0.9.445 zeroed content pad while streaming to reduce pin/anchor fight;
+ * that glued Investigating/status chrome to the composer. Stick-to-bottom
+ * still uses scrollTop=max including this pad (same as Cursor).
  */
 export const FEED_COMPOSER_CLEARANCE_PX = 64;
 export const FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 export const FEED_CONTENT_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 
-/** Tokens landing, or the turn latch still open — no content seating pad. */
+/** Tokens landing, or the turn latch still open (pin follow path). */
 export function feedLiveStreamOpen(
   status: string,
   turnOpen = false,
@@ -63,15 +62,14 @@ export function feedLiveStreamOpen(
 }
 
 /**
- * Content padding-bottom only. Zero while a live stream is open so
- * pin follow / scrollTop=max is not displaced by reserved whitespace.
- * Idle short transcripts keep the 64px gap above the composer.
- * Does not change the locked scrollport scroll-padding-bottom.
+ * Content padding-bottom — always the composer clearance. ``liveStreamOpen``
+ * is retained for callers/tests but no longer collapses the Cursor gap.
  */
 export function feedSeatingReservePx(opts: {
   liveStreamOpen: boolean;
 }): number {
-  return opts.liveStreamOpen ? 0 : FEED_COMPOSER_CLEARANCE_PX;
+  void opts.liveStreamOpen;
+  return FEED_COMPOSER_CLEARANCE_PX;
 }
 
 /** Scrollport style: overflow-anchor + scroll-padding-bottom only. */
