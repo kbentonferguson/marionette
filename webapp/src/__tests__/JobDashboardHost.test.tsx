@@ -118,4 +118,28 @@ describe("JobDashboardHost", () => {
     expect(screen.queryByTestId("job-dashboard-frame")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pop out/ })).toBeDisabled();
   });
+  it("opens the workspace board without deep-linking a local alias", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ok: true,
+      host: "127.0.0.1",
+      port: 8787,
+      url: "http://127.0.0.1:8787/?embed=1",
+      embed_url: "http://127.0.0.1:8787/?embed=1",
+    });
+    const localOnly = { ...job, id: "local-swarm-call_1799376", goal: "Provider worker `local-swarm-call_1799376`" };
+    delete (localOnly as { job_ref?: unknown }).job_ref;
+    (localOnly as { local_ref?: unknown }).local_ref = { job_id: "local-swarm-call_1799376", incarnation: "n1" };
+    render(<JobDashboardHost job={localOnly} onClose={() => {}} />);
+    expect(await screen.findByTitle("Puppetmaster dashboard local-swarm-call_1799376")).toHaveAttribute(
+      "src",
+      "http://127.0.0.1:8787/?embed=1",
+    );
+    expect(api.dashboard).toHaveBeenCalledWith(undefined, undefined);
+    expect(screen.getByTestId("job-dashboard-host")).toHaveAttribute(
+      "data-dashboard-job-id",
+      "local-swarm-call_1799376",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
 });

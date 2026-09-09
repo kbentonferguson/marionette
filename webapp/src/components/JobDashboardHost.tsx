@@ -13,6 +13,13 @@ import {
 } from "../lib/jobsDashboard";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
+/**
+ * Host the stock Puppetmaster dashboard in the Jobs rail.
+ *
+ * Every hire opens the workspace board. A durable ``job_…`` deep-links via
+ * ``?job=&embed=1``. Local aliases (``local-swarm-call_…``, provider workers)
+ * still open the board — they are never passed as CLI job tokens.
+ */
 export default function JobDashboardHost({
   job,
   onClose,
@@ -27,15 +34,16 @@ export default function JobDashboardHost({
   const [loading, setLoading] = useState(true);
 
   const title = (job.goal || "").trim() || job.id;
-  const embedId = dashboardJobId(job) || job.id;
+  const deepLinkId = dashboardJobId(job);
+  const frameKey = deepLinkId || job.id;
   const embedUrl = locate?.embed_url || locate?.url || "";
-  const showId = embedId && embedId !== title;
+  const showId = Boolean(deepLinkId) && deepLinkId !== title;
 
   useEffect(() => {
     requestRightMinWidth(JOBS_DASHBOARD_FOCUS_MIN_PX);
     notifyJobsDashboardChrome(true);
     return () => notifyJobsDashboardChrome(false);
-  }, [embedId]);
+  }, [job.id, deepLinkId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,12 +57,18 @@ export default function JobDashboardHost({
       setLoading(false);
       return;
     }
-    locateDashboard(embedId, repo)
+    // Durable job_… only for deep-link; omit otherwise so the CLI lands on the list.
+    const locateArg = deepLinkId.startsWith("job_") ? deepLinkId : undefined;
+    locateDashboard(locateArg, repo)
       .then((payload) => {
         if (cancelled) return;
         setLocate(payload);
         if (!payload.ok || !(payload.embed_url || payload.url)) {
-          setError(payload.detail || payload.error || "Dashboard unavailable.");
+          const stderr = typeof (payload as { stderr?: unknown }).stderr === "string"
+            ? String((payload as { stderr?: string }).stderr).trim()
+            : "";
+          const base = payload.detail || payload.error || "Dashboard unavailable.";
+          setError(stderr ? `${base}: ${stderr.slice(0, 280)}` : base);
         }
       })
       .catch((err: unknown) => {
@@ -65,7 +79,7 @@ export default function JobDashboardHost({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [embedId]);
+  }, [deepLinkId, job.id]);
 
   const popOut = () => {
     if (embedUrl) openAgentUrlExternal(embedUrl);
@@ -75,7 +89,7 @@ export default function JobDashboardHost({
     <section
       data-testid="job-dashboard-host"
       data-job-id={job.id}
-      data-dashboard-job-id={embedId}
+      data-dashboard-job-id={frameKey}
       data-chrome="compact"
       aria-label={`Puppetmaster dashboard for ${title}`}
       className="job-dashboard-host flex flex-col h-full min-h-0 overflow-hidden text-txt"
@@ -86,8 +100,8 @@ export default function JobDashboardHost({
             {title}
           </h2>
           {showId && (
-            <span className="truncate font-mono text-[9px] leading-none text-faint" title={embedId}>
-              {embedId}
+            <span className="truncate font-mono text-[9px] leading-none text-faint" title={deepLinkId}>
+              {deepLinkId}
             </span>
           )}
         </div>
@@ -142,7 +156,7 @@ export default function JobDashboardHost({
         ) : (
           <iframe
             src={embedUrl}
-            title={`Puppetmaster dashboard ${embedId}`}
+            title={`Puppetmaster dashboard ${frameKey}`}
             data-testid="job-dashboard-frame"
             className="absolute inset-0 w-full h-full border-0 bg-[var(--shell-chat,#0f1113)]"
           />

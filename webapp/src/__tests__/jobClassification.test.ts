@@ -128,7 +128,11 @@ describe("dashboardJobId", () => {
     expect(dashboardJobId({
       id: "local-cedfbf8c",
       local_ref: { job_id: "local-cedfbf8c", incarnation: "n1" },
-    })).toBe("local-cedfbf8c");
+    })).toBe("");
+    expect(dashboardJobId({
+      id: "local-swarm-call_1799376",
+      adapter: "agentic",
+    })).toBe("");
   });
 });
 

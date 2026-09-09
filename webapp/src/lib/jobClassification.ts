@@ -97,10 +97,10 @@ function refJobId(value: unknown): string {
   return String(id || "").trim();
 }
 
-/** Durable ``job_…`` token for the PM dashboard, else the row's store alias. */
+/** Durable ``job_…`` token for the PM dashboard embed (empty if not ready). */
 export function dashboardJobId(job: CommandJobSignals): string {
   const candidates = [refJobId(job.job_ref), String(job.id || "").trim(), refJobId(job.local_ref), refJobId(job.parent_ref)];
-  return candidates.find((id) => id.startsWith("job_")) || candidates.find(Boolean) || "";
+  return candidates.find((id) => id.startsWith("job_")) || "";
 }
 
 /**

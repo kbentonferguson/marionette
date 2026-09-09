@@ -2781,7 +2781,7 @@ describe("SwarmPane v0.9.350 collapsed chrome", () => {
       fireEvent.click(await screen.findByRole("button", { name: /Provider worker/ }));
       const host = await screen.findByTestId("job-dashboard-host");
       expect(host).toHaveAttribute("data-job-id", "local-cedfbf8c");
-      expect(vi.mocked(api.dashboard).mock.calls[0]?.[0]).toBe("local-cedfbf8c");
+      expect(vi.mocked(api.dashboard).mock.calls[0]?.[0]).toBeUndefined();
     } finally {
       native.dispose();
     }
