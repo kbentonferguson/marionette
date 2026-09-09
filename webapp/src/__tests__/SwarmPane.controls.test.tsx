@@ -19,6 +19,7 @@ import { metadataSelectionKey } from "../lib/jobMetadata";
 import type { MetadataSummary, MetadataSelection } from "../lib/jobMetadata";
 
 import { nativeControlFixture } from "./outcomeControls.fixtures";
+import { JobsInspectHarness } from "./jobsInspectHarness";
 
 vi.mock('../lib/jobArtifacts', async importOriginal => ({
   ...await importOriginal<typeof import('../lib/jobArtifacts')>(), fetchJobArtifacts: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock('../lib/jobArtifacts', async importOriginal => ({
 
 vi.mock('../lib/api', async importOriginal => {
   const actual = await importOriginal<typeof import('../lib/api')>();
-  return { ...actual, api: { ...actual.api, requestCancellation: vi.fn(), cancellationReceipt: vi.fn(), swarmCancel: vi.fn(), swarmLive: vi.fn(), sessions: vi.fn(), artifacts: vi.fn() } };
+  return { ...actual, api: { ...actual.api, requestCancellation: vi.fn(), cancellationReceipt: vi.fn(), swarmCancel: vi.fn(), swarmLive: vi.fn(), sessions: vi.fn(), artifacts: vi.fn(), dashboard: vi.fn().mockResolvedValue({ ok: true, reused: true, host: "127.0.0.1", port: 8787, url: "http://127.0.0.1:8787/?embed=1", embed_url: "http://127.0.0.1:8787/?embed=1" }) } };
 });
 
 const base: Job = { id: 'job_same', job_ref: { job_id: 'job_same', state_id: 'state_a' },
@@ -50,6 +51,10 @@ beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); clearSWRCache();
   dispatchProjectSelected('/A');
   vi.mocked(api.sessions).mockResolvedValue([{ id: 'A', active: true, title: 'A' }]);
+  vi.mocked(api.dashboard).mockResolvedValue({
+    ok: true, reused: true, host: "127.0.0.1", port: 8787,
+    url: "http://127.0.0.1:8787/?embed=1", embed_url: "http://127.0.0.1:8787/?embed=1",
+  });
   rows([base]);
   vi.mocked(fetchJobArtifacts).mockResolvedValue([]);
 });
@@ -81,7 +86,7 @@ function controlRow(goal = 'Inspect A', source: 'harness' | 'cli' = 'harness'): 
 async function mountControls(rows: MetadataSummary[]) {
   const fixture = await expertMetadataFixture(rows);
   metadata = fixture;
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
   return fixture;
 }
 
@@ -93,9 +98,13 @@ function card(name: string) {
 
 async function inspectControl(name: string) {
   await expand(name);
-  fireEvent.click(card(name).getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  const cardEl = card(name).getByRole('button', { name: new RegExp(`^${name} ·`) }).closest('[data-job-id]');
+  const jobId = cardEl?.getAttribute('data-job-id');
+  const source = cardEl?.getAttribute('data-job-source');
+  const inspectRoot = jobId ? screen.getByTestId(`inspect-${source}-${jobId}`) : document.body;
+  fireEvent.click(within(inspectRoot).getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await waitFor(() => expect(metadata?.store.getSnapshot().working).toBe(false));
-  return card(name).getByRole('button', { name: 'Stop selected workers' });
+  return within(inspectRoot).getByRole('button', { name: 'Stop selected workers' });
 }
 
 it('cancels only one of two rows sharing a job id', async () => {
@@ -119,7 +128,7 @@ it('dismisses one colliding terminal row and persists only scoped keys', async (
   const cliRow = { ...controlRow('Inspect CLI', 'cli'), lifecycle: 'failed' };
   localStorage.setItem('swarm.dismissed.v2', JSON.stringify({ '/A': [base.id] }));
   await mountControls([{ ...controlRow(), lifecycle: 'failed' }, cliRow]);
-  fireEvent.click(card('Inspect CLI').getByRole('button', { name: /Dismiss from tracker/ }));
+  fireEvent.click(card('Inspect CLI').getByRole('button', { name: /Dismiss from Jobs/ }));
   expect(screen.queryByRole('button', { name: /^Inspect CLI ·/ })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: /^Inspect A ·/ })).toBeInTheDocument();
   expect(JSON.parse(localStorage.getItem('pmharness.metadata.jobs:["/A","A"]') || 'null')).toEqual({
@@ -157,7 +166,7 @@ it('sends a session-scoped local selection without a durable reference', async (
   metadata = f;
   expect(f.store.getSnapshot().local.observations).toHaveLength(1);
   vi.mocked(api.swarmCancel).mockReturnValue(new Promise(() => {}));
-  render(<f.Provider><SwarmPane /></f.Provider>);
+  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   await expand('Provider worker');
   const worker = await screen.findByRole('button', { name: /implement/ });
   fireEvent.click(worker);
@@ -188,7 +197,7 @@ it.each(['legacy reference', 'cross project', 'foreign session', 'mismatched sel
     if (mode === 'mismatched selected reference') f.selected.mockImplementation(async () => ({
       ...expertDetail(row.selection, f.context()), selection: { ...row.selection, job_ref: { ...row.selection.job_ref, job_id: 'different' } },
     }));
-    render(<f.Provider><SwarmPane /></f.Provider>);
+    render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
     if (mode === 'foreign session') fireEvent.click(screen.getByRole('button', { name: 'All projects' }));
     const cancel = await inspectControl('Inspect A');
     expect(cancel).toHaveAttribute('aria-disabled', 'true');
@@ -203,24 +212,29 @@ it.each(['legacy reference', 'cross project', 'foreign session', 'mismatched sel
     expect(api.swarmLive).not.toHaveBeenCalled();
   });
 
-it('persists expansion separately for each store', async () => {
+it('does not persist PM dashboard focus as row expansion', async () => {
   const fixture = await controlsFixture();
-  const first = render(<fixture.Provider><SwarmPane /></fixture.Provider>); await expand('Inspect A');
-  expect(screen.getByRole('button', { name: /Inspect CLI/ })).toHaveAttribute('aria-expanded', 'false');
+  const first = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  const row = await screen.findByRole('button', { name: /Inspect A/ });
+  expect(row).not.toHaveAttribute('aria-expanded');
+  fireEvent.click(row);
+  expect(await screen.findByTestId('job-dashboard-host')).toBeInTheDocument();
   first.unmount(); clearSWRCache();
   await fixture.observe();
   render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-  await waitFor(() => expect(screen.getByRole('button', { name: /Inspect A/ })).toHaveAttribute('aria-expanded', 'true'));
-  expect(screen.getByRole('button', { name: /Inspect CLI/ })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Inspect A/ })).not.toHaveAttribute('aria-expanded');
+  expect(screen.getByRole('button', { name: /Inspect CLI/ })).not.toHaveAttribute('aria-expanded');
   expect(api.swarmLive).not.toHaveBeenCalled();
 });
 
 it('retains the original request after ambiguous transport failure on the selected row', async () => {
   const fixture = await controlsFixture();
   vi.mocked(api.requestCancellation).mockRejectedValue(new Error('Connection lost'));
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
   await expand('Inspect CLI');
-  const cli = screen.getByRole('button', { name: /Inspect CLI/ }).parentElement!;
+  const cliCard = screen.getByRole('button', { name: /Inspect CLI/ }).closest('[data-job-id]');
+  const cli = screen.getByTestId(`inspect-${cliCard?.getAttribute('data-job-source')}-${cliCard?.getAttribute('data-job-id')}`);
   fireEvent.click(within(cli).getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const cancel = within(cli).getByRole('button', { name: 'Stop selected workers' });
   await waitFor(() => expect(cancel).toHaveAttribute('aria-disabled', 'false'));

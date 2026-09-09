@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countRunningTrackerJobs, isCommandJob, isRunningJobStatus, isSwarmTrackerJob, isTrackerHire, isWaveCoordinator } from "../lib/jobClassification";
+import { countRunningTrackerJobs, dashboardJobId, isCommandJob, isPmDashboardJob, isRunningJobStatus, isSwarmTrackerJob, isTrackerHire, isWaveCoordinator } from "../lib/jobClassification";
 
 describe("isCommandJob", () => {
   it("matches job_kind and local-cmd id prefixes", () => {
@@ -83,6 +83,52 @@ describe("isSwarmTrackerJob allowlist", () => {
     expect(isSwarmTrackerJob({ id: "job-live", goal: "Live audit" } as any)).toBe(true);
     expect(isSwarmTrackerJob({ id: "job_par", goal: "run_parallel wave" })).toBe(true);
     expect(isTrackerHire({ job_kind: "run_swarm" })).toBe(true);
+  });
+});
+
+describe("isPmDashboardJob", () => {
+  it("hosts every Jobs-rail hire, including agentic locals", () => {
+    expect(isPmDashboardJob({ id: "job_abc123def456" })).toBe(true);
+    expect(isPmDashboardJob({
+      id: "local-impl-1",
+      job_kind: "run_implement",
+      job_ref: { job_id: "job_abc123def456" },
+      source: "harness",
+    })).toBe(true);
+    expect(isPmDashboardJob({
+      id: "local-cedfbf8c",
+      adapter: "agentic",
+      local_ref: { job_id: "local-cedfbf8c", incarnation: "n1" },
+    })).toBe(true);
+    expect(isPmDashboardJob({
+      id: "job_abc123def456",
+      local_ref: { job_id: "job_abc123def456", incarnation: "n1" },
+    })).toBe(true);
+    expect(isPmDashboardJob({ job_kind: "run_swarm" })).toBe(true);
+  });
+
+  it("still hides commands and wave coordinators", () => {
+    expect(isPmDashboardJob({ job_kind: "run_command", id: "local-cmd-1" })).toBe(false);
+    expect(isPmDashboardJob({ job_kind: "parallel_wave", id: "local-wave-1" })).toBe(false);
+  });
+});
+
+describe("dashboardJobId", () => {
+  it("prefers a durable job_ token over a local alias", () => {
+    expect(dashboardJobId({
+      id: "local-impl-1",
+      job_ref: { job_id: "job_abc123def456" },
+    })).toBe("job_abc123def456");
+    expect(dashboardJobId({
+      id: "local-cedfbf8c",
+      adapter: "agentic",
+      local_ref: { job_id: "local-cedfbf8c", incarnation: "n1" },
+      parent_ref: { job_id: "job_parenthire01" },
+    })).toBe("job_parenthire01");
+    expect(dashboardJobId({
+      id: "local-cedfbf8c",
+      local_ref: { job_id: "local-cedfbf8c", incarnation: "n1" },
+    })).toBe("local-cedfbf8c");
   });
 });
 

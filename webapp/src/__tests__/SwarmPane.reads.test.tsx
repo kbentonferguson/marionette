@@ -12,6 +12,7 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
+import { JobsInspectHarness } from "./jobsInspectHarness";
 
 import { list } from "./jobMetadata.fixtures";
 
@@ -38,12 +39,13 @@ afterEach(() => { cleanup(); metadata?.dispose(); metadata = undefined; vi.unstu
 async function setup() {
   const fixture = await expertMetadataFixture([expertSummary(selection, 'Inspect A')], { browser: true });
   metadata = fixture;
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
   return fixture;
 }
 
 async function inspect(goal: string) {
-  fireEvent.click(await screen.findByRole('button', { name: new RegExp(goal) }));
+  const row = await screen.findByRole('button', { name: new RegExp(goal) });
+  if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
 }
 
@@ -86,7 +88,7 @@ it('shows transport failure instead of an empty tracker and retries', async () =
     return result;
   });
   fireEvent.click(screen.getByRole('button', { name: 'Retry updates' }));
-  await screen.findByText(/^No swarm jobs yet/);
+  await screen.findByText(/^No jobs yet/);
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
   await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   expect(f.store.getSnapshot().streams.some(s => s.state === 'complete')).toBe(true);

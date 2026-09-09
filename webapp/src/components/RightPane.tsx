@@ -64,6 +64,7 @@ import {
   stackPairKey,
   stackRowTemplateN,
 } from "../lib/stackSplit";
+import { JOBS_DASHBOARD_CHROME_EVENT } from "../lib/jobsDashboard";
 
 function startPointerResize(
   handle: HTMLSpanElement,
@@ -133,7 +134,7 @@ const TAB_CONFIG: Record<Tab, { label: string }> = {
   settings: { label: "Settings" },
   checkpoints: { label: "History" },
   review: { label: "Review" },
-  swarm: { label: "Swarm" },
+  swarm: { label: "Jobs" },
   economics: { label: "Economics" },
 };
 
@@ -324,6 +325,22 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
   const prevBoardWidthRef = useRef(0);
   const [hasBeenVisible, setHasBeenVisible] = useState(visible);
   useEffect(() => { if (visible) setHasBeenVisible(true); }, [visible]);
+  useEffect(() => {
+    const onMinWidth = (event: Event) => {
+      const minPx = (event as CustomEvent<{ minPx?: number }>).detail?.minPx;
+      if (typeof minPx === "number" && minPx > 0) onRequestMinWidth?.(minPx);
+    };
+    window.addEventListener("harness-request-right-min-width", onMinWidth);
+    return () => window.removeEventListener("harness-request-right-min-width", onMinWidth);
+  }, [onRequestMinWidth]);
+  const [jobsDashboardFocused, setJobsDashboardFocused] = useState(false);
+  useEffect(() => {
+    const onChrome = (event: Event) => {
+      setJobsDashboardFocused(!!(event as CustomEvent<{ focused?: boolean }>).detail?.focused);
+    };
+    window.addEventListener(JOBS_DASHBOARD_CHROME_EVENT, onChrome);
+    return () => window.removeEventListener(JOBS_DASHBOARD_CHROME_EVENT, onChrome);
+  }, []);
   const preferredResizeGroupRef = useRef(-1);
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
   const settingsOpen = useSyncExternalStore(subscribeSettingsOverlay, isSettingsOverlayOpen, isSettingsOverlayOpen);
@@ -807,6 +824,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 const config = TAB_CONFIG[tabName];
                 const placement = cardPlacements.get(tabName);
                 if (!placement) return null;
+                const dashboardFocus = tabName === "swarm" && jobsDashboardFocused;
                 return (
             <section
               id={`right-pane-card-${tabName}`}
@@ -814,7 +832,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
               tabIndex={-1}
               role="region"
               aria-label={`${config.label} panel`}
-              className={`right-pane-card pointer-events-auto flex flex-col${Number(placement.gridRow) > 1 ? " right-pane-card-join-top" : ""}${draggedTab === tabName ? " opacity-40" : ""}`}
+              className={`right-pane-card pointer-events-auto flex flex-col${Number(placement.gridRow) > 1 ? " right-pane-card-join-top" : ""}${draggedTab === tabName ? " opacity-40" : ""}${dashboardFocus ? " right-pane-card-dashboard-focus" : ""}`}
               style={{
                 gridColumn: "1",
                 gridRow: placement.gridRow,
@@ -864,6 +882,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                 }}
               />
               )}
+              {!dashboardFocus && (
               <header
                 className="right-pane-card-header"
               >
@@ -909,6 +928,7 @@ export default function RightPane({ visible, artifacts, onOpenWizard, initialTab
                   <button type="button" aria-label={`Close ${config.label} panel`} title={`Close ${config.label}`} onClick={() => removeCard(tabName)} onMouseDown={event => event.stopPropagation()} className="right-pane-icon-btn"><X size={12} /></button>
                 </div>
               </header>
+              )}
               <div className="right-pane-card-body">
                 <Activity mode={visible ? "visible" : "hidden"}>{renderCardBody(tabName)}</Activity>
               </div>

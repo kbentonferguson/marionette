@@ -4,6 +4,7 @@ import type { MetadataTask } from '../lib/jobMetadata';
 import type { HistoryLane, HistoryRow, SelectedHistory } from '../lib/selectedMetadataEvidence';
 import { expertDetail, expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 import { selection } from './jobMetadata.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import wire from './expertWire.backend.json';
 
 export function identityTask(id: string, status = 'running'): MetadataTask {
@@ -46,7 +47,7 @@ export async function identityFixture(options: {
     return { ...detail, lifecycle, task_count: tasks.length, history,
       tasks: { page: { ...detail.tasks.page, scanned: tasks.length }, rows: tasks } };
   });
-  const rendered = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
+  const rendered = render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
   const job = await screen.findByRole('button', { name: /^Identity evidence/ });
   if (job.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
   const inspect = screen.getByRole('button', { name: 'Inspect tasks and artifacts' });

@@ -36,7 +36,7 @@ function row(id: string, source = 'local') {
 function toggle(id: string, source = 'local') {
   return within(row(id, source)).getAllByRole('button')[0];
 }
-function filter(value: string) { fireEvent.change(screen.getByLabelText('Filter swarms'), { target: { value } }); }
+function filter(value: string) { fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value } }); }
 function order() { return [...document.querySelectorAll('[data-job-id]')].filter(e => e instanceof HTMLElement && !e.hidden).map(e => e.getAttribute('data-job-id')); }
 function mount(enabled = true) { return render(<JobMetadataContext.Provider value={store}><MetadataJobs enabled={enabled} /></JobMetadataContext.Provider>); }
 async function observe() {
@@ -90,13 +90,13 @@ afterEach(() => { cleanup(); store.dispose(); vi.restoreAllMocks(); clearPending
 
 it('restores a balanced filter/sort toolbar and newest-first lifecycle groups using only known creation times', async () => {
   await start(); mount();
-  const control = screen.getByLabelText('Filter swarms');
+  const control = screen.getByLabelText('Filter jobs');
   expect(control.parentElement).toHaveClass('grid', 'grid-cols-2');
   expect(control).toHaveClass('w-full');
-  expect(screen.getByLabelText('Sort swarms')).toHaveClass('w-full');
+  expect(screen.getByLabelText('Sort jobs')).toHaveClass('w-full');
   expect(screen.getByRole('button', { name: /^Finished/ })).toHaveAttribute('aria-expanded', 'true');
   expect(order()).toEqual(['newest-active', 'older-active', 'undated-active', 'newest-failed', 'older-complete', 'job_1']);
-  fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
+  fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } });
   expect(order()).toEqual(['older-active', 'newest-active', 'undated-active', 'older-complete', 'newest-failed', 'job_1']);
 });
 it('never presents partial history ordering or quality filtering as complete', async () => {
@@ -108,7 +108,7 @@ it('never presents partial history ordering or quality filtering as complete', a
   expect(order()).toEqual(['newest-failed']);
   filter('untrustworthy');
   expect(screen.getByText(/Showing recorded degraded quality/)).toBeVisible();
-  expect(screen.queryByText('No swarm jobs match this filter')).toBeNull();
+  expect(screen.queryByText('No jobs match this filter')).toBeNull();
   expect(order()).toEqual([]);
 });
 it('separates failed, cancelled, completed lifecycle and unknown quality, with clear filter recovery', async () => {
@@ -130,20 +130,21 @@ it('distinguishes unknown activity from active and terminal observations', async
   expect(within(row('job_2', 'harness')).getByRole('button', { name: /Dismiss/ })).toBeVisible();
   filter('active'); expect(order()).toEqual(['newest-active', 'older-active', 'undated-active']);
 });
-it('keeps the same focused expanded row when chronology and lifecycle change', async () => {
-  await start(); mount(); const selected = toggle('older-active'); fireEvent.click(selected); selected.focus();
+it('embeds a provider hire and keeps that dashboard when lifecycle updates', async () => {
+  await start(); mount();
+  fireEvent.click(toggle('older-active'));
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
   native[0] = { ...native[0], lifecycle: 'completed', created_at: 100 };
   await observe();
-  expect(toggle('older-active')).toBe(selected); expect(selected).toHaveFocus();
-  expect(selected).toHaveAttribute('aria-expanded', 'true');
-  expect(within(row('older-active')).queryByRole('button', { name: 'Inspect actions' })).toBeNull();
+  expect(screen.getByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(screen.queryByRole('button', { name: 'Inspect actions' })).toBeNull();
 });
-it('keeps group collapse independent from expansion and opens exact pending targets', async () => {
-  await start(); mount(); fireEvent.click(toggle('older-complete'));
+it('opens a finished hire from a pending Jobs deep-link even when the group is collapsed', async () => {
+  await start(); mount();
   fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
   expect(row('older-complete')).not.toBeVisible();
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-complete', metadataKey: localKey(native[2].local_ref) } })));
-  expect(toggle('older-complete')).toHaveFocus(); expect(toggle('older-complete')).toHaveAttribute('aria-expanded', 'true');
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-complete');
 });
 it('hides only expanded lifecycle groups that are displayed and preserves other terminal rows', async () => {
   await start(); mount(); fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
@@ -154,15 +155,16 @@ it('hides only expanded lifecycle groups that are displayed and preserves other 
   filter('all'); expect(toggle('older-complete')).toBeVisible();
   expect(document.querySelector('[data-job-id="newest-failed"]')).toBeNull();
 });
-it('dismisses a terminal collision by exact store and restores expansion across remounts', async () => {
+it('dismisses a terminal collision by exact store across remounts', async () => {
   native = [];
   pm.push({ ...pm[0], selection: { ...pm[0].selection, source: 'cli', job_ref: { job_id: 'job_1', state_id: 'store-B' } } });
-  await start(); const ui = mount(); fireEvent.click(toggle('job_1', 'harness'));
+  await start(); const ui = mount();
   fireEvent.click(within(row('job_1', 'cli')).getByRole('button', { name: /Dismiss/ }));
-  expect(toggle('job_1', 'harness')).toHaveAttribute('aria-expanded', 'true');
+  expect(row('job_1', 'harness')).toBeTruthy();
   const preferences = JSON.parse(localStorage.getItem(`pmharness.metadata.jobs:${JSON.stringify([target.repo, target.session_id])}`) || '{}');
   expect(preferences.dismissed).toEqual([metadataSelectionKey(pm[1].selection)]);
-  ui.unmount(); await start(); mount(); expect(toggle('job_1', 'harness')).toHaveAttribute('aria-expanded', 'true');
+  ui.unmount(); await start(); mount();
+  expect(row('job_1', 'harness')).toBeTruthy();
   expect(document.querySelector('[data-job-source="cli"]')).toBeNull();
 });
 it('stays passive while hidden and does not consume navigation or start extra reads', async () => {
@@ -170,31 +172,32 @@ it('stays passive while hidden and does not consume navigation or start extra re
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-active', metadataKey: localKey(native[0].local_ref) } })));
   expect(paths).toHaveLength(baseline); expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   ui.rerender(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
-  expect(toggle('older-active')).toHaveFocus();
-  filter('failed'); fireEvent.change(screen.getByLabelText('Sort swarms'), { target: { value: 'oldest' } });
-  expect(paths).toHaveLength(baseline);
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(paths.filter((path) => path.includes('/metadata') || path.includes('/local'))).toHaveLength(
+    paths.slice(0, baseline).filter((path) => path.includes('/metadata') || path.includes('/local')).length,
+  );
 });
 it('distinguishes cold loading, failed discovery, and a known empty observed window', async () => {
   store.setTarget(target); mount(); expect(screen.getByText(/Waiting for job metadata/)).toBeVisible();
   unavailable = true; await act(async () => { await store.readView(); });
   expect(screen.getByRole('alert')).toBeVisible();
-  expect(screen.queryByText(/No swarm jobs match this filter/)).toBeNull();
+  expect(screen.queryByText(/No jobs match this filter/)).toBeNull();
   unavailable = false; native = []; pm = []; await start();
-  expect(screen.getByText(/No swarm jobs yet/)).toBeVisible();
+  expect(screen.getByText(/No jobs yet/)).toBeVisible();
   expect(screen.getByText(/Every dispatched worker lands here/)).toBeVisible();
 });
 it('clears an empty matching filter without implying the retained window is all history', async () => {
   await start(); mount(); filter('cancelled');
-  expect(screen.getByText(/No swarm jobs match this filter/)).toBeVisible();
+  expect(screen.getByText(/No jobs match this filter/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
   expect(toggle('older-active')).toBeVisible();
 });
-it('reveals a focused row completing into a collapsed group without replacing its inspector', async () => {
+it('keeps an embedded hire when it completes into a collapsed finished group', async () => {
   await start(); mount(); fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
-  const selected = toggle('older-active'); fireEvent.click(selected); selected.focus();
+  fireEvent.click(toggle('older-active'));
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
   native[0] = { ...native[0], lifecycle: 'completed' }; await observe();
-  expect(toggle('older-active')).toBe(selected); expect(selected).toHaveFocus(); expect(selected).toBeVisible();
-  expect(selected).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
 });
 it('does not move focus for navigation while the document is hidden', async () => {
   await start(); mount();
@@ -203,7 +206,7 @@ it('does not move focus for navigation while the document is hidden', async () =
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-active', metadataKey: localKey(native[0].local_ref) } })));
   expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   visibility.mockReturnValue(false); act(() => document.dispatchEvent(new Event('visibilitychange')));
-  expect(toggle('older-active')).toHaveFocus();
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
 });
 
 it('moves stale lifecycle observations into unconfirmed activity without claiming running jobs', async () => {

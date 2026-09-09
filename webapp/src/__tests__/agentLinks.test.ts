@@ -520,7 +520,7 @@ describe("openAgentLink events", () => {
     expect(events.some((event) => event.detail === "terminal")).toBe(false);
   });
 
-  it("awaiting-swarm busy chrome without a job id opens Swarm Tracker, not Terminal", () => {
+  it("awaiting-swarm busy chrome without a job id opens Jobs, not Terminal", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
 
     openAgentBusyDetail("awaiting_swarm", ["nope"]);

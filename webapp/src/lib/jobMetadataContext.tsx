@@ -93,6 +93,8 @@ export function metadataJobs(state: JobMetadataState): Job[] {
     id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local', metadata_only: true,
     metadata_key: localKey(row.local_ref), goal: (row.display ? `${row.display.label}${row.display.model ? ` · ${row.display.model}` : ''}` : row.kind.replaceAll('_', ' ')),
     status: row.lifecycle, session_id: row.session_id, job_kind: row.kind, role: row.kind,
+    adapter: row.display?.adapter,
+    ...(row.parent_ref ? { parent_ref: row.parent_ref } : {}),
     ...(freshness === 'stale' ? { read_status: 'unavailable' } : {}),
     updated_at: row.updated_at, unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
     ...(row.task_count === null ? {} : { task_count: row.task_count }),

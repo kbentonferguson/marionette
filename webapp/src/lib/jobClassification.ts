@@ -1,4 +1,4 @@
-/** Classify /api/swarm/live rows for Swarm Tracker vs terminal chrome.
+/** Classify /api/swarm/live rows for the Jobs strip vs terminal chrome.
  *
  * 342 hid run_command / local-cmd-* only. Wave parents still leaked
  * (local-wave-* / role+adapter parallel_wave) beside their hired children.
@@ -23,6 +23,10 @@ export type CommandJobSignals = {
   role?: string | null;
   adapter?: string | null;
   status?: string | null;
+  source?: string | null;
+  job_ref?: unknown;
+  local_ref?: unknown;
+  parent_ref?: unknown;
 };
 
 function norm(value: unknown): string {
@@ -86,6 +90,27 @@ export function isSwarmTrackerJob(job: CommandJobSignals): boolean {
 
 /** Alias used by SwarmPane / composer stack. */
 export const isTrackerJob = isSwarmTrackerJob;
+
+function refJobId(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const id = (value as { job_id?: unknown }).job_id;
+  return String(id || "").trim();
+}
+
+/** Durable ``job_…`` token for the PM dashboard, else the row's store alias. */
+export function dashboardJobId(job: CommandJobSignals): string {
+  const candidates = [refJobId(job.job_ref), String(job.id || "").trim(), refJobId(job.local_ref), refJobId(job.parent_ref)];
+  return candidates.find((id) => id.startsWith("job_")) || candidates.find(Boolean) || "";
+}
+
+/**
+ * Every Jobs-rail hire embeds the Puppetmaster dashboard. Adapters
+ * (agentic, cursor, claude-code, …) are transports under that kernel.
+ * ``local_ref`` is a row alias, not a separate non-PM lane.
+ */
+export function isPmDashboardJob(job: CommandJobSignals): boolean {
+  return isSwarmTrackerJob(job);
+}
 
 export function isRunningJobStatus(status: unknown): boolean {
   const s = String(status || "").toLowerCase();

@@ -518,6 +518,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import hooks as _hooks_api
     from .api import job_evidence as _job_evidence_api
     from .api import jobs as _jobs_api
+    from .api import dashboard as _dashboard_api
     from .job_metadata_capability import metadata_handler
     from . import job_metadata_view as _metadata_view
     from .api import mcp as _mcp_api
@@ -879,6 +880,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/platform": get_json(
             _plat_api.get_platform, services=svc.platform_services),
         "/api/jobs": _get_jobs,
+        "/api/dashboard": get_json(
+            _dashboard_api.get_dashboard, services=svc.job_services,
+            pass_qs=True, keep_blank_values=True),
         "/api/jobs/evidence": get_json(
             _job_evidence_api.get_job_evidence, services=svc.job_services, pass_qs=True),
         "/api/jobs/events": get_json(
