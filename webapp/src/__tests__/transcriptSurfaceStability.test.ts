@@ -1289,11 +1289,37 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, `${phrase}\n\n${phrase}`);
     expect(assistantTexts(items)).toEqual([phrase]);
-    items = appendStreamingTextToItems(items, "Received");
-    expect(assistantTexts(items)).toEqual([phrase]);
     items = appendStreamingTextToItems(items, `${phrase} Next.`);
     expect(assistantTexts(items)).toEqual([`${phrase} Next.`]);
     items = appendStreamingTextToItems(items, `\n\n${phrase} Next.`);
     expect(assistantTexts(items)).toEqual([`${phrase} Next.`]);
+  });
+
+  it("pilot deltas keep ### and ** spaces so the sealed bubble matches the final", () => {
+    const finalText =
+      "### To-Do List Discrepancy\n\n"
+      + "Wave 2 had not yet been built.\n\n"
+      + "**Wave 4** — Scoped Rankings.";
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "why is the todo list open?" } },
+    ];
+    for (const ch of finalText) {
+      items = appendStreamingTextToItems(items, ch);
+    }
+    expect(assistantTexts(items)).toEqual([finalText]);
+    const sealed = sealOpenStreamSurfaces(items);
+    const after = finalizePilotMessage(sealed, finalText, { streamed: true });
+    expect(assistantTexts(after)).toEqual([finalText]);
+  });
+
+  it("streamed final replaces a trailing sealed bubble that diverged mid-stream", () => {
+    const mangled = "# To-Do List Discrepancy\n\nWave 2 hadnot yet been built.";
+    const clean = "### To-Do List Discrepancy\n\nWave 2 had not yet been built.";
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "why is the todo list open?" } },
+      { kind: "msg", msg: { role: "assistant", text: mangled } },
+    ];
+    const after = finalizePilotMessage(items, clean, { streamed: true });
+    expect(assistantTexts(after)).toEqual([clean]);
   });
 });

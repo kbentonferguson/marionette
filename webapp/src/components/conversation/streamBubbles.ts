@@ -26,38 +26,31 @@ export function assistantProseCovers(existing: string, incoming: string): boolea
 }
 
 /**
- * Open-bubble absorb: live token deltas still append; snapshot / ring replay
- * of the same sentence (or sentence+sentence) does not concatenate.
+ * Open-bubble absorb. Pilot prose accumulates VERBATIM: the final `message`
+ * for this step must equal the streamed bubble byte-for-byte, or the sealed
+ * bubble and the final paint as two answers. No glue sanitizing, no crumb
+ * drops (a lone `**` delta is half of a bold marker), no prefix/suffix
+ * heuristics (a later `###` chunk is not a replay of the opening `###`).
+ *
+ * The only thing absorbed is a Completions cumulative snapshot: the provider
+ * resends everything so far (or everything twice). Both start with the whole
+ * accumulated text, which no real delta can do once `acc` has any length.
  */
 export function absorbOpenPilotDelta(existing: string, incoming: string): string {
   const acc = existing || "";
   const inc = incoming || "";
   if (!inc) return acc;
-  if (isTrivialAssistantCrumb(inc)) return acc;
-  if (!acc || isTrivialAssistantCrumb(acc)) {
-    const incParts = inc.split("\n\n").map((p) => p.trim()).filter(Boolean);
-    if (incParts.length === 2 && incParts[0] === incParts[1]) {
-      return sanitizeThinkingStatusGlue(incParts[0]);
-    }
-    return sanitizeThinkingStatusGlue(inc);
-  }
-  const accTrim = acc.trim();
-  const incTrim = inc.trim();
-  if (!incTrim) return acc;
-  if (accTrim === incTrim) return acc;
-  if (acc.startsWith(inc) || (accTrim && accTrim.startsWith(incTrim))) return acc;
+  if (!acc) return inc;
   if (inc.startsWith(acc)) {
     const rest = inc.slice(acc.length);
-    if (rest.trim() === accTrim || !rest.trim()) return acc;
-    return sanitizeThinkingStatusGlue(inc);
+    if (!rest.trim()) {
+      return acc.length >= PROSE_COVER_MIN_CHUNK ? acc : acc + inc;
+    }
+    if (acc.length >= PROSE_COVER_MIN_CHUNK && rest.trim() === acc.trim()) return acc;
+    return inc;
   }
-  if (incTrim.startsWith(accTrim)) {
-    const rest = incTrim.slice(accTrim.length).trim();
-    if (!rest || rest === accTrim) return acc;
-    return sanitizeThinkingStatusGlue(acc + (inc.startsWith(acc) ? inc.slice(acc.length) : (rest.startsWith("\n") ? rest : ` ${rest}`)));
-  }
-  if (incTrim.length >= PROSE_COVER_MIN_CHUNK && accTrim.endsWith(incTrim)) return acc;
-  return sanitizeThinkingStatusGlue(acc + inc);
+  if (acc.length >= PROSE_COVER_MIN_CHUNK && inc.trim() === acc.trim()) return acc;
+  return acc + inc;
 }
 
 /** Current-turn sealed (non-streaming) assistant texts, newest last. */
@@ -238,7 +231,7 @@ export function appendStreamingTextToItems(
       kind: "msg",
       msg: {
         role: "assistant",
-        text: sanitizeThinkingStatusGlue(chunk),
+        text: workerStream ? sanitizeThinkingStatusGlue(chunk) : chunk,
         streaming: true,
         isPlan: opts?.isPlan,
         ...(workerStream ? { workerStream: true } : {}),
