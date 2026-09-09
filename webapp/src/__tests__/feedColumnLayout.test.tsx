@@ -110,8 +110,8 @@ describe("chat column feed alignment", () => {
     const content = screen.getByTestId("transcript-feed-content");
     expect(feedLiveStreamOpen("streaming", false)).toBe(true);
     expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
-    expect(content.style.paddingBottom).toBe("0px");
-    expect(scrollport.style.scrollPaddingBottom).toBe("0px");
+    expect(Number.parseFloat(content.style.paddingBottom)).toBe(0);
+    expect(Number.parseFloat(scrollport.style.scrollPaddingBottom)).toBe(0);
     expect(scrollport.style.overflowAnchor).toBe(FEED_SCROLLPORT_OVERFLOW_ANCHOR);
     expect(content.className).toContain("min-h-full");
     expect(content.className).toContain("justify-start");
