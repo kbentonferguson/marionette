@@ -685,13 +685,13 @@ describe("feedScroll layout contracts", () => {
     });
   });
 
-  it("zeros seating reserve while a live stream is open so stick-to-bottom is not displaced", () => {
+  it("keeps seating reserve while a live stream is open (Cursor-like gap)", () => {
     expect(feedLiveStreamOpen("streaming", false)).toBe(true);
     expect(feedLiveStreamOpen("idle", true)).toBe(true);
     expect(feedLiveStreamOpen("idle", false)).toBe(false);
     expect(feedLiveStreamOpen("done", false)).toBe(false);
 
-    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(0);
+    expect(feedSeatingReservePx({ liveStreamOpen: true })).toBe(FEED_COMPOSER_CLEARANCE_PX);
     expect(feedScrollportStyle()).toEqual({
       overflowAnchor: "auto",
       scrollPaddingBottom: FEED_COMPOSER_CLEARANCE_PX,

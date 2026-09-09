@@ -341,6 +341,10 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [finishedOpen, setFinishedOpen] = useState(true);
   const [inspected, setInspected] = useState<string[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Keep the last hostable job while metadata soft-refreshes so the PM embed
+  // does not unmount into the list (PM↔swarm snap / blink).
+  const heldSelectedJob = useRef<Job | null>(null);
+
   const [notice, setNotice] = useState('');
   const liveJobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
   const retainedJobs = useRef<Job[]>([]);
@@ -554,7 +558,18 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   }
   const selectedJob = selectedKey ? jobs.find(job => (job.metadata_key ?? '') === selectedKey) : undefined;
   if (selectedJob && isPmDashboardJob(selectedJob)) {
-    return <JobDashboardHost job={selectedJob} onClose={() => setSelectedKey(null)} />;
+    heldSelectedJob.current = selectedJob;
+  } else if (!selectedKey) {
+    heldSelectedJob.current = null;
+  }
+  const hostJob = (selectedJob && isPmDashboardJob(selectedJob))
+    ? selectedJob
+    : (selectedKey && heldSelectedJob.current
+      && (heldSelectedJob.current.metadata_key ?? '') === selectedKey
+      ? heldSelectedJob.current
+      : undefined);
+  if (hostJob) {
+    return <JobDashboardHost job={hostJob} onClose={() => { heldSelectedJob.current = null; setSelectedKey(null); }} />;
   }
   return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
     <div className="shrink-0 flex items-center justify-between h-[var(--shell-rail-row-height)] px-2 border-b border-[var(--shell-panel-border)] select-none">

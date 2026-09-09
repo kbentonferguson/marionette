@@ -110,10 +110,9 @@ export default function ConversationChatColumn({
         >
         {/* Locked pair: overflow-anchor:auto + scroll-padding-bottom.
             Content is min-h-full / justify-start so idle short sessions
-            sit mid/upper. Content padding-bottom is the seating reserve
-            and drops to 0 while a live stream is open so scrollTop=max
-            pin follow is not displaced. Composer is a sibling outside
-            this scrollport. */}
+            sit mid/upper. Content padding-bottom always keeps the Cursor-
+            like composer clearance (idle and live). Composer is a sibling
+            outside this scrollport. */}
         <div
           ref={feedContentRef}
           data-testid="transcript-feed-content"
