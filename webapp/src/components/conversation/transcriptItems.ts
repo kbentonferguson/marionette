@@ -176,8 +176,9 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
     }
 
     if (item.kind === "msg" && item.msg.role === "assistant") {
-      // Never collapse an open stream into a prior bubble -- the typewriter
-      // still owns it; finalize path will re-run this after streaming:false.
+      // Incoming open streams still belong to the typewriter -- a new answer
+      // can start with similar words, so do not collapse them into a prior
+      // sealed bubble. Two live streams stay distinct for the same reason.
       if (item.msg.streaming) {
         result.push(item);
         turnAssistantIdx.push(result.length - 1);
@@ -189,7 +190,11 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
       for (let i = turnAssistantIdx.length - 1; i >= 0; i--) {
         const prev = result[turnAssistantIdx[i]];
         if (!prev || prev.kind !== "msg") continue;
-        if (prev.msg.streaming) continue;
+        // Worker previews are ephemeral and never the spoken finale.
+        if (prev.msg.workerStream) continue;
+        // A sealed finale MUST absorb a still-open prior with the same
+        // (or near-same) text. Skipping streaming priors left both rows
+        // visible until reload hydrated them as sealed and this pass merged.
         if (getSimilarity(prev.msg.text || "", newText) > 0.85) {
           dupIdx = turnAssistantIdx[i];
           break;
@@ -205,6 +210,16 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
             msg: {
               ...item.msg,
               text: newText,
+              streaming: false,
+            },
+          };
+        } else if (prev.msg.streaming) {
+          result[dupIdx] = {
+            ...prev,
+            msg: {
+              ...prev.msg,
+              text: prevText,
+              streaming: false,
             },
           };
         }
