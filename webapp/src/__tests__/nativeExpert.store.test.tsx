@@ -1,8 +1,8 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
 import { metadataJobs } from '../lib/jobMetadataContext';
-import { expertSummary } from './metadataExpert.fixtures';
+import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
 import { JobsInspectHarness } from './jobsInspectHarness';
 import { token } from './jobMetadata.fixtures';
@@ -65,10 +65,11 @@ it('keeps forecast unavailable after an expired selected read', async () => {
   expect(f.store.getSnapshot().localDetail?.laneFreshness).toBe('stale');
 });
 it('keeps separate captured attempt models historical even with partial coverage and a matching task', async () => {
-  const f = await setup();
+  // Pure PM fixture (no nativeExpert local rows) — same path as selectedMetadataExpert.
   const selected = { repo: '/repo', session_id: 'sess-test', source: 'harness' as const,
     job_ref: { job_id: 'job_1', state_id: 'store-A', version: 2 as const, incarnation: '12345678-1234-4234-8234-123456789abc' } };
-  await f.replace([expertSummary(selected, 'Historical model inspection')]);
+  fixture = await expertMetadataFixture([expertSummary(selected, 'Historical model inspection')]);
+  const f = fixture;
   f.selected.mockImplementation(async value => {
     const detail = capturedModelDetail(value, f.context());
     const attempt = detail.history.attempts.rows[0];
@@ -78,16 +79,19 @@ it('keeps separate captured attempt models historical even with partial coverage
   });
   // Row click embeds the PM dashboard; inspect beside the strip instead.
   render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
-  const routing = await screen.findByRole('button', { name: 'Routing', exact: true });
+  await screen.findByRole('button', { name: /Historical model inspection/ });
+  const inspectBtn = within(screen.getByTestId('inspect-harness-job_1')).getByRole('button', { name: 'Inspect tasks and artifacts' });
+  expect(inspectBtn).not.toBeDisabled();
+  await act(async () => { fireEvent.click(inspectBtn); });
+  const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(screen.queryByTitle('Model: grok-4-5')).toBeNull();
-  fireEvent.click(routing);
+  fireEvent.click(within(inspector).getByRole('button', { name: 'Routing', exact: true }));
   expect(await screen.findByTitle('Model: grok-4-5')).toHaveTextContent('Historical model; current job and worker model unconfirmed');
   expect(screen.getByTitle('Model: other-recorded-model').parentElement).toHaveTextContent('second-attempt');
   expect(screen.getByRole('region', { name: 'Routing', exact: true })).toHaveTextContent('2 attempts shown; 3 captured.');
   expect(screen.getByRole('region', { name: 'Routing', exact: true })).toHaveTextContent('Page: partial');
   expect(screen.getByTitle('Model: grok-4-5').parentElement).toHaveTextContent(/Task: .+Run:/);
-  fireEvent.click(screen.getByRole('button', { name: 'Tasks', exact: true }));
+  fireEvent.click(within(inspector).getByRole('button', { name: 'Tasks', exact: true }));
   expect(screen.queryByTitle('Model: grok-4-5')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: /task_.*queued/ }));
   expect(screen.getByText('Model, adapter and live progress unavailable.')).toBeVisible();
