@@ -345,11 +345,13 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const liveJobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
   const retainedJobs = useRef<Job[]>([]);
   if (liveJobs.length > 0) retainedJobs.current = liveJobs;
-  // Keep last non-empty list while metadata polls (working / not-yet-view) so the
-  // empty-state marketing copy does not blink between refresh pages.
+  // Soft refresh only: keep the last page while working with a live view and no
+  // transport error. Never mask a failed read with stale rows.
   const jobs = liveJobs.length > 0
     ? liveJobs
-    : ((state.working || state.view.kind !== 'view') ? retainedJobs.current : liveJobs);
+    : (state.working && !state.error && state.view.kind === 'view'
+      ? retainedJobs.current
+      : liveJobs);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
