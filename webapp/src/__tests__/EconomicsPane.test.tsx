@@ -468,7 +468,7 @@ describe("EconomicsPane", () => {
     expect(screen.getByText("Showing 3 of 381 jobs in this scope")).toBeTruthy();
   });
 
-  it("opens a job receipt in Swarm Tracker", async () => {
+  it("opens a job receipt in Jobs", async () => {
     mockGetEconomics.mockResolvedValue({
       ...durablePayload,
       recent_jobs: [{

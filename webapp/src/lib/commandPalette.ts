@@ -32,7 +32,7 @@ export const COMMAND_PALETTE_ACTIONS: CommandPaletteAction[] = [
   { id: "new-session", label: "New session", keywords: "chat create /new" },
   { id: "clear-transcript", label: "Clear transcript", keywords: "reset visible /clear" },
   { id: "focus-composer", label: "Focus composer", keywords: "input chat prompt" },
-  { id: "open-swarm", label: "Open Swarm", keywords: "jobs workers" },
+  { id: "open-swarm", label: "Open Jobs", keywords: "swarm tracker jobs workers puppetmaster" },
   { id: "open-settings", label: "Open Settings", keywords: "preferences config" },
   { id: "open-terminal", label: "Open Terminal", keywords: "shell console" },
   { id: "open-state", label: "Open State", keywords: "files pane status" },

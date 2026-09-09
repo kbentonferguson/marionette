@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import backend from './localMetadata.backend.json';
 import { parseLocalDetail } from '../lib/localJobMetadata';
-import { act, fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { JobMetadataClient } from '../lib/jobMetadata';
 import { JobMetadataStore } from '../lib/useJobMetadata';
@@ -10,6 +10,7 @@ import { JobMetadataContext, JobMetadataOwner, metadataJobs, useSharedJobMetadat
 import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
 import SwarmPane from '../components/SwarmPane';
 import { CombinedMetadataFixture, nativeSummary } from './metadataMigration.fixtures';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import { context, selection } from './jobMetadata.fixtures';
 import { parseLocalList } from '../lib/localJobMetadata';
 
@@ -180,31 +181,45 @@ it('cancels only the selected PM store when raw IDs collide and retains ambiguou
   fixture.total = 1;
   fixture.sources.push({ source: 'cli', state_id: 'collision_control_cli', cross_project: false, available: true });
   await open(); for (let i = 0; i < 6; i++) await store.advance();
+  vi.spyOn(api, 'dashboard').mockResolvedValue({
+    ok: true, reused: true, host: '127.0.0.1', port: 8787,
+    url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+    embed_url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+  });
   const request = vi.spyOn(api, 'requestCancellation').mockRejectedValue(new Error('Fixture lost acknowledgement'));
-  render(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: /PM CLI job/ }));
-  await act(async () => { fireEvent.click(screen.getByText('Inspect tasks and artifacts')); });
-  const cancel = screen.getByRole('button', { name: 'Stop selected workers' });
+  render(<JobMetadataContext.Provider value={store}><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></JobMetadataContext.Provider>);
+  const cliInspect = screen.getByTestId('inspect-cli-job_1');
+  await act(async () => { fireEvent.click(within(cliInspect).getByText('Inspect tasks and artifacts')); });
+  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
+  const cancel = await waitFor(() => {
+    const button = within(screen.getByTestId('inspect-cli-job_1')).getByRole('button', { name: 'Stop selected workers' });
+    expect(button).toHaveAttribute('aria-disabled', 'false');
+    return button;
+  });
   await act(async () => { fireEvent.click(cancel); });
   expect(request).toHaveBeenCalledTimes(1);
   expect(request.mock.calls[0][0].selection).toMatchObject({ source: 'cli', repo: context.repo, session_id: context.session_id, job_ref: { job_id: 'job_1', state_id: 'collision_control_cli' } });
   expect(screen.getByText(/Stop unconfirmed/)).toBeInTheDocument();
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Stop selected workers' })); });
+  await act(async () => { fireEvent.click(within(screen.getByTestId('inspect-cli-job_1')).getByRole('button', { name: 'Stop selected workers' })); });
   expect(request.mock.calls[1][0]).toEqual(request.mock.calls[0][0]);
 });
-it('keeps expansion and individual dismissal separate for colliding stores', async () => {
+it('keeps dashboard focus and individual dismissal separate for colliding stores', async () => {
+  vi.spyOn(api, 'dashboard').mockResolvedValue({
+    ok: true, reused: true, host: '127.0.0.1', port: 8787,
+    url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+    embed_url: 'http://127.0.0.1:8787/?job=job_1&embed=1',
+  });
   fixture.total = 1; fixture.pmLifecycle = 'failed';
   fixture.sources.push({ source: 'cli', state_id: 'collision_preferences_cli', cross_project: false, available: true });
   await open(); for (let i = 0; i < 6; i++) await store.advance();
   const wrapper = (children: ReactNode) => <JobMetadataContext.Provider value={store}>{children}</JobMetadataContext.Provider>;
   const first = render(wrapper(<MetadataJobs />));
   fireEvent.click(screen.getByRole('button', { name: /^PM CLI job/ }));
-  expect(screen.getByRole('button', { name: /^PM harness/ })).toHaveAttribute('aria-expanded', 'false');
-  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
+  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
   first.unmount(); await open(); for (let i = 0; i < 6; i++) await store.advance();
   render(wrapper(<MetadataJobs />));
-  expect(screen.getByRole('button', { name: /^PM CLI job/ })).toHaveAttribute('aria-expanded', 'true');
-  fireEvent.click(screen.getByRole('button', { name: /^Dismiss from tracker: PM CLI/ }));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /^Dismiss from Jobs: PM CLI/ }));
   expect(screen.queryByRole('button', { name: /^PM CLI job/ })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: /^PM harness/ })).toBeInTheDocument();
 });

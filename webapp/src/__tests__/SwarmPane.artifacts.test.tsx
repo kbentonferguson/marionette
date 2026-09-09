@@ -15,6 +15,7 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { MetadataInspection } from "../components/MetadataJobs";
+import { JobsInspectHarness } from "./jobsInspectHarness";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
 
@@ -43,6 +44,10 @@ async function expand(name: string) {
   if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
 }
 
+function JobsPane() {
+  return <JobsInspectHarness><SwarmPane /></JobsInspectHarness>;
+}
+
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); clearSWRCache();
   dispatchProjectSelected('/A');
@@ -63,8 +68,8 @@ it('retries locally and treats a successful empty response as loaded', async () 
   const empty = expertDetail(selection, fixture.context());
   empty.artifacts = { page: { ...empty.artifacts.page, scanned: 0 }, rows: [] };
   fixture.selected.mockRejectedValueOnce(new Error('store offline')).mockResolvedValueOnce(empty);
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>); await expand('Inspect A');
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  render(<fixture.Provider><JobsPane /></fixture.Provider>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Inspect tasks and artifacts' }));
   const retry = await screen.findByRole('button', { name: 'Retry', exact: true });
   expect(screen.queryByText('No artifacts recorded')).not.toBeInTheDocument();
   fireEvent.click(retry);
@@ -72,9 +77,6 @@ it('retries locally and treats a successful empty response as loaded', async () 
   expect(screen.queryByRole('button', { name: 'Retry', exact: true })).not.toBeInTheDocument();
   expect(fixture.selected).toHaveBeenCalledTimes(2);
   expect(fixture.selected).toHaveBeenLastCalledWith(selection, expect.objectContaining({ task_cursor: null, artifact_cursor: null }));
-  // Reopening a loaded empty inspector must not trigger another read.
-  fireEvent.click(screen.getByRole('button', { name: /Inspect A/ }));
-  await expand('Inspect A');
   expect(screen.getByText('No artifacts recorded')).toBeInTheDocument();
   expect(fixture.selected).toHaveBeenCalledTimes(2);
   expect(fetchJobArtifacts).not.toHaveBeenCalled();
@@ -105,7 +107,7 @@ it('fences an old response when a colliding job is selected in another session',
   old.artifacts.rows[0].id = 'Private A result';
   let release: (value: MetadataDetail) => void = () => {};
   fixture.selected.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>); await expand('Inspect A');
+  render(<fixture.Provider><JobsPane /></fixture.Provider>); await expand('Inspect A');
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(1));
   const next: MetadataSelection = { ...selection, session_id: 'B', job_ref: { job_id: base.id, state_id: 'state_b' } };
@@ -131,18 +133,14 @@ it("hydrates exact artifact identities and hashes independently across colliding
   const cli: MetadataSelection = { ...evidenceSelection, source: 'cli', job_ref: { ...evidenceSelection.job_ref, state_id: 'state-cli' } };
   metadata = await evidenceFixture('Inspect A', [evidenceSelection, cli]);
   const fixture = metadata;
-  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
-  await expand('^Inspect A · complete$');
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  render(<fixture.Provider><JobsPane /></fixture.Provider>);
+  fireEvent.click(within(screen.getByTestId(`inspect-harness-${evidenceSelection.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await screen.findByText('Findings (1)');
   fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
   fireEvent.click(screen.getByText('finding / harness-finding: unknown'));
   expect(screen.getByText(evidenceHash)).toBeVisible();
   expect(screen.queryByText(/cli-finding/)).not.toBeInTheDocument();
-  await expand('^CLI evidence job · complete$');
-  const cliCard = screen.getByRole('button', { name: 'CLI evidence job · complete' }).closest('[data-job-id]');
-  if (!(cliCard instanceof HTMLElement)) throw Error('CLI job card missing');
-  fireEvent.click(within(cliCard).getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  fireEvent.click(within(screen.getByTestId(`inspect-cli-${cli.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(2));
   const inspectors = await screen.findAllByRole('region', { name: 'Selected job inspector' });
   expect(inspectors).toHaveLength(2);

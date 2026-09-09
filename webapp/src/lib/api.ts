@@ -245,6 +245,7 @@ export type Task = {
 };
 export type Job = {
   local_ref?: { job_id: string; incarnation: string };
+  parent_ref?: { job_id: string; incarnation: string };
   metadata_key?: string;
   metadata_only?: boolean;
   cancellation_view?: CancellationView;
@@ -1547,6 +1548,23 @@ export const api = {
       ? `/api/jobs?repo=${encodeURIComponent(repoRoot)}`
       : "/api/jobs";
     return getJSON<Job[]>(path);
+  },
+  dashboard: (jobId?: string, repoRoot?: string) => {
+    const params = new URLSearchParams();
+    if (jobId) params.set("job", jobId);
+    if (repoRoot) params.set("repo", repoRoot);
+    const qs = params.toString();
+    return getJSONSoft<{
+      ok: boolean;
+      reused?: boolean;
+      host?: string;
+      port?: number;
+      url?: string;
+      embed_url?: string;
+      job_id?: string | null;
+      error?: string;
+      detail?: string;
+    }>(withToken(qs ? `/api/dashboard?${qs}` : "/api/dashboard"));
   },
   swarmLive: (repoRoot?: string) => {
     let path = withToken("/api/swarm/live");

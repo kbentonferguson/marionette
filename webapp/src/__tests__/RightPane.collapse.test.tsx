@@ -133,7 +133,7 @@ describe("RightPane collapse placement", () => {
 
   it("omits the idle swarm-tracker holder and only paints a live dot", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
-    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    const swarm = screen.getByRole("button", { name: "Jobs" });
     expect(within(swarm).queryByLabelText(/Job activity unknown/)).toBeNull();
     expect(within(swarm).queryByTestId("swarm-tracker-live-dot")).toBeNull();
   });
@@ -150,7 +150,7 @@ describe("RightPane collapse placement", () => {
         <RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />
       </JobMetadataContext.Provider>,
     );
-    const swarm = screen.getByRole("button", { name: "Swarm tracker" });
+    const swarm = screen.getByRole("button", { name: "Jobs" });
     const live = within(swarm).getByTestId("swarm-tracker-live-dot");
     expect(live).toHaveClass("right-pane-live");
     expect(live).toHaveAttribute("aria-label", "At least 1 active jobs; coverage incomplete");
@@ -161,9 +161,27 @@ describe("RightPane collapse placement", () => {
   it("omits the idle holder on an open Swarm card header", () => {
     seedBoardTabOrder(["swarm"]);
     render(<RightPane {...baseProps} />);
-    const card = screen.getByRole("region", { name: "Swarm panel" });
+    const card = screen.getByRole("region", { name: "Jobs panel" });
     expect(within(card).queryByLabelText(/Job activity unknown/)).toBeNull();
     expect(within(card).queryByTestId("swarm-tab-live-dot")).toBeNull();
+  });
+
+  it("hides Jobs card chrome while a dashboard hire is focused", () => {
+    seedBoardTabOrder(["swarm"]);
+    render(<RightPane {...baseProps} />);
+    const card = screen.getByRole("region", { name: "Jobs panel" });
+    expect(within(card).getByRole("button", { name: "Close Jobs panel" })).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-jobs-dashboard-chrome", { detail: { focused: true } }));
+    });
+    expect(within(card).queryByRole("button", { name: "Close Jobs panel" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Drag Jobs panel" })).toBeNull();
+    expect(card).toHaveClass("right-pane-card-dashboard-focus");
+    act(() => {
+      window.dispatchEvent(new CustomEvent("harness-jobs-dashboard-chrome", { detail: { focused: false } }));
+    });
+    expect(within(card).getByRole("button", { name: "Close Jobs panel" })).toBeInTheDocument();
+    expect(card).not.toHaveClass("right-pane-card-dashboard-focus");
   });
 
   it("keeps the Add panel menu on the opaque overlay token, not glass-mixed --shell-panel", () => {
@@ -234,7 +252,7 @@ describe("RightPane collapse placement", () => {
     render(<RightDock onOpenTab={onOpenTab} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Add panel" }));
-    const swarmItem = screen.getByRole("menuitem", { name: "Swarm" });
+    const swarmItem = screen.getByRole("menuitem", { name: "Jobs" });
 
     fireEvent.mouseDown(swarmItem);
     expect(screen.getByRole("menu", { name: "Add panel" })).toBeInTheDocument();
@@ -368,7 +386,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("State", "1", "1");
     expectCardGridPlacement("Terminal", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(2);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
   });
@@ -388,7 +406,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("State", "1", "1");
     expectCardGridPlacement("Terminal", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expectCardGridPlacement("Files", "1", "4");
     expect(screen.queryAllByRole("separator", { name: "Resize stacked panel height" })).toHaveLength(3);
     expect(screen.queryByTestId("right-pane-toolbar")).toBeNull();
@@ -555,7 +573,7 @@ describe("RightPane Claude-style card packing", () => {
     fireEvent.drop(screen.getByRole("region", { name: "Drop to open a column" }), { dataTransfer });
 
     expectCardGridPlacement("Review", "2", "1");
-    expectCardGridPlacement("Swarm", "2", "2");
+    expectCardGridPlacement("Jobs", "2", "2");
     expectCardGridPlacement("Browser", "1", "1");
     expect(onRequestMinWidth).toHaveBeenCalledWith(420);
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
@@ -577,7 +595,7 @@ describe("RightPane Claude-style card packing", () => {
 
     expectCardGridPlacement("Browser", "1", "1");
     expectCardGridPlacement("Review", "1", "2");
-    expectCardGridPlacement("Swarm", "1", "3");
+    expectCardGridPlacement("Jobs", "1", "3");
     expect(JSON.parse(localStorage.getItem("pmharness.board.columns.v1") || "[]")).toEqual([
       ["browser", "review", "swarm"],
     ]);
@@ -677,8 +695,8 @@ describe("RightPane keeps SwarmPane mounted across tab switches", () => {
   it("keeps SwarmPane mounted when its card is closed", () => {
     render(<><RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} /><RightPane {...baseProps} /></>);
 
-    expect(screen.getByRole("region", { name: "Swarm panel" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Close Swarm panel" }));
+    expect(screen.getByRole("region", { name: "Jobs panel" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Jobs panel" }));
 
     const slot = screen.getByTestId("swarm-pane-slot");
     expect(slot).toBeInTheDocument();

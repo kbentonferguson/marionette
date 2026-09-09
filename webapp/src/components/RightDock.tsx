@@ -27,7 +27,7 @@ const DOCK_LINKS: { id: string; tab: string; icon: ReactNode; title: string }[] 
     id: "swarm",
     tab: "swarm",
     icon: <Network size={15} strokeWidth={1.75} />,
-    title: "Swarm tracker",
+    title: "Jobs",
   },
   {
     id: "economics",
@@ -63,7 +63,7 @@ const DOCK_LINKS: { id: string; tab: string; icon: ReactNode; title: string }[] 
 
 const PANEL_OPTIONS = [
   { tab: "state", label: "State", icon: <Database size={12} /> },
-  { tab: "swarm", label: "Swarm", icon: <Network size={12} /> },
+  { tab: "swarm", label: "Jobs", icon: <Network size={12} /> },
   { tab: "economics", label: "Economics", icon: <Coins size={12} /> },
   { tab: "files", label: "Files", icon: <FolderTree size={12} /> },
   { tab: "git", label: "Git", icon: <GitBranch size={12} /> },

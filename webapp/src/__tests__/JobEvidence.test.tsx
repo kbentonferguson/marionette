@@ -3,6 +3,7 @@ import { currentFacts, currentDetail } from './expertCurrent.fixtures';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import SwarmPane from '../components/SwarmPane';
+import { JobsInspectHarness } from './jobsInspectHarness';
 import { navigationFixture } from './navigationProducer.fixtures';
 import JobEvidence from '../components/JobEvidence';
 import { fetchJobEvidence, type JobEvidenceData, type ConsumptionMetric } from '../lib/jobEvidence';
@@ -66,8 +67,8 @@ it('opens Evidence from the real expanded job detail', async () => {
   f.selected.mockResolvedValue({ ...currentDetail(expert, evidenceSelection), context: f.context() });
   try {
     localStorage.clear(); sessionStorage.clear();
-    render(<f.Provider><SwarmPane /></f.Provider>);
-    fireEvent.click(await screen.findByRole('button', { name: 'Evidence entry · complete' }));
+    render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
+    await screen.findByRole('button', { name: 'Evidence entry · complete' });
     fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
     await screen.findByRole('region', { name: 'Selected job inspector' });
     fireEvent.click(screen.getByRole('button', { name: 'Evidence', exact: true }));

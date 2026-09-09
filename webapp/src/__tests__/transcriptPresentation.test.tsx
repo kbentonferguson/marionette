@@ -792,7 +792,7 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
   });
 });
 
-describe("job_id → Swarm Tracker deep-link chrome", () => {
+describe("job_id → Jobs deep-link chrome", () => {
   it("renders swarm_pending job ids as clickable chips that open the tracker", async () => {
     navigation = await navigationFixture(["job_abcdef012345"]);
     const spy = vi.spyOn(window, "dispatchEvent");
