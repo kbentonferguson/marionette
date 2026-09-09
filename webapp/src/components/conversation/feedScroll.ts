@@ -41,14 +41,38 @@ export function chooseFeedFollowFlush(): "before_paint" {
 export const FEED_SCROLLPORT_OVERFLOW_ANCHOR = "auto" as const;
 
 /**
- * Reserved space above the composer dock. Applied as scroll-padding-bottom on
- * the scrollport (scrollIntoView / snap) and matching padding-bottom on the
- * feed content so stick-to-bottom via scrollTop=max still leaves a gap.
- * Short sessions stay top-aligned — this is not a flex-end spacer.
+ * Composer clearance. The locked scrollport pair is overflow-anchor +
+ * scroll-padding-bottom (always this value). Matching content
+ * padding-bottom is idle seating only — see feedSeatingReservePx.
+ *
+ * Applying the same 64px as content padding while a stream is open
+ * inflates scrollHeight, so overflow-anchor (last text line) and
+ * stick-to-bottom (scrollTop=max, including the empty pad) disagree
+ * every token. That is the live-stream flicker.
  */
 export const FEED_COMPOSER_CLEARANCE_PX = 64;
 export const FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
 export const FEED_CONTENT_PADDING_BOTTOM_PX = FEED_COMPOSER_CLEARANCE_PX;
+
+/** Tokens landing, or the turn latch still open — no content seating pad. */
+export function feedLiveStreamOpen(
+  status: string,
+  turnOpen = false,
+): boolean {
+  return turnOpen || status === "streaming";
+}
+
+/**
+ * Content padding-bottom only. Zero while a live stream is open so
+ * pin follow / scrollTop=max is not displaced by reserved whitespace.
+ * Idle short transcripts keep the 64px gap above the composer.
+ * Does not change the locked scrollport scroll-padding-bottom.
+ */
+export function feedSeatingReservePx(opts: {
+  liveStreamOpen: boolean;
+}): number {
+  return opts.liveStreamOpen ? 0 : FEED_COMPOSER_CLEARANCE_PX;
+}
 
 /** Scrollport style: overflow-anchor + scroll-padding-bottom only. */
 export function feedScrollportStyle(): {
