@@ -1030,11 +1030,26 @@ describe("deduplicateAssistantNarration", () => {
     expect((assistants[0] as { msg: { text: string } }).msg.text).toContain("Also logging");
   });
 
-  it("does not collapse streaming bubbles", () => {
+  it("collapses a sealed finale onto a still-streaming prior with the same text", () => {
     const items: Item[] = [
       msg("user", "hi"),
       msg("assistant", "partial answer", true),
       msg("assistant", "partial answer done"),
+    ];
+    const out = deduplicateAssistantNarration(items);
+    const assistants = out.filter((i) => i.kind === "msg" && i.msg.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "msg") {
+      expect(assistants[0].msg.text).toBe("partial answer done");
+      expect(assistants[0].msg.streaming).toBeFalsy();
+    }
+  });
+
+  it("does not collapse two open streaming bubbles", () => {
+    const items: Item[] = [
+      msg("user", "hi"),
+      msg("assistant", "partial answer", true),
+      msg("assistant", "partial answer done", true),
     ];
     const out = deduplicateAssistantNarration(items);
     expect(out.filter((i) => i.kind === "msg" && i.msg.role === "assistant")).toHaveLength(2);

@@ -82,7 +82,10 @@ export function sealOpenStreamSurfaces(items: Item[]): Item[] {
   }
   // Seal in place only — never reorder. Live streaming is append-only;
   // hoistCardsBeforeTrailingFinals is hydrate/end-of-turn cleanup only.
-  return changed ? next : withThinking;
+  // Dedupe after seal so a leftover streaming:true + sealed finale (or two
+  // newly sealed copies of the same answer) collapse in the live feed the
+  // same way hydrate does after reload.
+  return deduplicateConsecutiveAssistantMessages(changed ? next : withThinking);
 }
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
