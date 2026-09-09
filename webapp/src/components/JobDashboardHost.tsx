@@ -27,7 +27,7 @@ export default function JobDashboardHost({
   const [loading, setLoading] = useState(true);
 
   const title = (job.goal || "").trim() || job.id;
-  const embedId = dashboardJobId(job) || job.id;
+  const embedId = dashboardJobId(job);
   const embedUrl = locate?.embed_url || locate?.url || "";
   const showId = embedId && embedId !== title;
 
@@ -42,6 +42,13 @@ export default function JobDashboardHost({
     setLoading(true);
     setError("");
     setLocate(null);
+    if (!embedId.startsWith("job_")) {
+      setError(
+        "Durable Puppetmaster job id is not ready for this hire yet (need job_…). Close and reopen once the store assigns one.",
+      );
+      setLoading(false);
+      return;
+    }
     const repo = lastSelectedProjectRoot() || undefined;
     const locateDashboard = api.dashboard;
     if (typeof locateDashboard !== "function") {
@@ -54,7 +61,11 @@ export default function JobDashboardHost({
         if (cancelled) return;
         setLocate(payload);
         if (!payload.ok || !(payload.embed_url || payload.url)) {
-          setError(payload.detail || payload.error || "Dashboard unavailable.");
+          const stderr = typeof (payload as { stderr?: unknown }).stderr === "string"
+            ? String((payload as { stderr?: string }).stderr).trim()
+            : "";
+          const base = payload.detail || payload.error || "Dashboard unavailable.";
+          setError(stderr ? `${base}: ${stderr.slice(0, 280)}` : base);
         }
       })
       .catch((err: unknown) => {

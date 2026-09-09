@@ -342,7 +342,14 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [inspected, setInspected] = useState<string[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
-  const jobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
+  const liveJobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
+  const retainedJobs = useRef<Job[]>([]);
+  if (liveJobs.length > 0) retainedJobs.current = liveJobs;
+  // Keep last non-empty list while metadata polls (working / not-yet-view) so the
+  // empty-state marketing copy does not blink between refresh pages.
+  const jobs = liveJobs.length > 0
+    ? liveJobs
+    : ((state.working || state.view.kind !== 'view') ? retainedJobs.current : liveJobs);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
