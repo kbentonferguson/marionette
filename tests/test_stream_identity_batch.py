@@ -22,7 +22,12 @@ def test_absorb_stream_snapshot_skips_replay_and_keeps_true_deltas():
     assert absorb_stream_snapshot(phrase, phrase + phrase) == ""
     assert absorb_stream_snapshot("Received", phrase) == "—single response."
     assert absorb_stream_snapshot("Hello", " world") == " world"
-    assert absorb_stream_snapshot(phrase, "Received") == ""
+    # A later heading marker is a real delta, not a replay of the opening "###".
+    assert absorb_stream_snapshot("#", "#") == "#"
+    assert absorb_stream_snapshot("##", "#") == "#"
+    # Prefix crumbs of a long accumulator are also real deltas (dropping them
+    # ate later "###" / "**" chunks and painted the answer twice).
+    assert absorb_stream_snapshot(phrase, "Received") == "Received"
 
 
 class _CountingGetQueue(queue.Queue):

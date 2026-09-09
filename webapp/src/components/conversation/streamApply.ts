@@ -1243,9 +1243,11 @@ export function finalizePilotMessage(
   const incoming = text.trim();
   if (!incoming) return p;
 
-  // Idempotent finals: exact identity always no-ops. Streamed finals may only
-  // extend a sealed bubble when nothing (card/tool/thinking/msg) follows it —
-  // never rewrite a pre-tool bubble above a later card (that reorders narration).
+  // Idempotent finals: exact identity always no-ops. A streamed final OWNS the
+  // trailing sealed bubble (the backend's `done` seals it via stream_item_done
+  // before `message` lands): replace its text with the authoritative cleaned
+  // final whenever nothing (card/tool/thinking/msg) follows it — never rewrite
+  // a pre-tool bubble above a later card (that reorders narration).
   for (let j = p.length - 1; j >= 0; j--) {
     const it = p[j];
     if (it.kind === "msg" && it.msg.role === "user") break;
@@ -1256,7 +1258,6 @@ export function finalizePilotMessage(
     if (prior === incoming) return p;
 
     if (!opts?.streamed) continue;
-    if (!(incoming.startsWith(prior) && incoming.length > prior.length)) continue;
     const hasLaterSurface = p.slice(j + 1).some((later) => (
       later.kind === "card"
       || later.kind === "tool_prep"
