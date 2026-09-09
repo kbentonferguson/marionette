@@ -1240,12 +1240,23 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(
       derivePillStatus({
         transcriptStale: true,
+        paintableCount: 1,
         answerChromeIdle: false,
         liveInvestigation: false,
         turnOpen: false,
         status: "idle",
       }),
     ).toBe("switching…");
+    expect(
+      derivePillStatus({
+        transcriptStale: true,
+        paintableCount: 0,
+        answerChromeIdle: false,
+        liveInvestigation: false,
+        turnOpen: false,
+        status: "idle",
+      }),
+    ).toBe("idle");
     // answerChromeIdle alone must not idle the pill while composerBusy holds.
     expect(
       derivePillStatus({

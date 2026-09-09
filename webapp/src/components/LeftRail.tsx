@@ -21,6 +21,10 @@ import {
   transcriptIdOf,
 } from "../lib/sessionExport";
 import { writeTranscriptCache } from "./Conversation";
+import {
+  prefetchSessionTranscript,
+  prefetchSessionTranscripts,
+} from "./conversation/transcriptPrefetch";
 import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
@@ -1252,6 +1256,30 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.join("\0")]);
 
+  // Warm transcript cache for visible open sessions so cold→cold swaps hit
+  // resolveSwitchTranscript like a flip-flop visit (no empty-feed paint).
+  useEffect(() => {
+    void sessionsCacheEpoch;
+    const ids: string[] = [];
+    for (const root of projects.filter(Boolean)) {
+      const cached = readSWRCache<Session[]>(`sessions:${root}`);
+      if (!cached) continue;
+      for (const row of cached) {
+        if (row?.id) ids.push(row.id);
+      }
+    }
+    if (ids.length === 0) return;
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      if (!cancelled) void prefetchSessionTranscripts(ids, 8);
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.join("\0"), sessionsCacheEpoch, currentRepo]);
+
   const projectSessionBuckets = (projectPath: string): { open: Session[]; settled: Session[] } => {
     // sessionsCacheEpoch: force re-read after writeSWRCache from delete/refresh.
     void sessionsCacheEpoch;
@@ -1610,6 +1638,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       disabled={!!switchingSessionId || opening}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
@@ -1786,6 +1815,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               </div>
                               <button
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                                 disabled={!!switchingSessionId || opening}
                                 title={s.preview ? `${displaySessionListTitle(s.title)}\n${s.preview}` : displaySessionListTitle(s.title)}
                                 data-session-row="true"
@@ -1892,6 +1922,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 ) : (
                                 <button
                                   onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                                   disabled={!!switchingSessionId || opening}
                                   data-session-row="true"
                                   aria-current={s.active ? "true" : undefined}
@@ -1970,6 +2001,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     <button
                       type="button"
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                       disabled={!!switchingSessionId || opening}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
