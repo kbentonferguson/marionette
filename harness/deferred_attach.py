@@ -127,6 +127,14 @@ class DeferredPilotPlaceholder:
         self._pending_history = messages
         self._transcript = normalize_transcript_payload(messages)
         self._history = list(self._transcript.get("history") or [])
+        # Write through once the real pilot exists so a bound load_history
+        # on this placeholder (``srv._pilot.load_history`` evaluated before
+        # the swap) cannot land on an orphaned shell.
+        real = self._real
+        if real is not None and real is not self:
+            load = getattr(real, "load_history", None)
+            if callable(load):
+                load(self._transcript)
 
     def wait_ready(self, timeout: Optional[float] = None) -> bool:
         return self._ready.wait(timeout)

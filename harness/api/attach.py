@@ -183,22 +183,6 @@ def attach_view(
                 reload_todos = getattr(real, "reload_session_todos", None)
                 if callable(reload_todos):
                     reload_todos()
-                # Prefer the placeholder's live transcript: callers may
-                # load_history() after cold attach (tests + resume paths)
-                # while this build was still in flight. The attach-time
-                # ``history`` closure would otherwise wipe those turns.
-                live = placeholder.export_transcript_data()
-                hydrate = (
-                    live
-                    if (
-                        live.get("history")
-                        or live.get("display")
-                        or live.get("job_ids")
-                    )
-                    else history
-                )
-                if load_transcript_on_create and hydrate:
-                    real.load_history(hydrate)
             except Exception as e:
                 svc.diag("server.deferred_pilot_hydrate", e)
                 placeholder.mark_failed(e)
@@ -208,6 +192,31 @@ def attach_view(
                 if current is not placeholder:
                     # View dropped or replaced while building — abandon swap.
                     placeholder.mark_ready(real)
+                    return
+                # Re-read the placeholder under the swap lock. Callers may
+                # load_history() after cold attach (workspace/open, tests,
+                # resume) while this build was in flight; a snapshot taken
+                # before the lock would wipe those turns and leave
+                # save_active_transcript writing an empty outgoing file.
+                try:
+                    live = placeholder.export_transcript_data()
+                    hydrate = (
+                        live
+                        if (
+                            live.get("history")
+                            or live.get("display")
+                            or live.get("job_ids")
+                        )
+                        else history
+                    )
+                    if load_transcript_on_create and hydrate:
+                        real.load_history(hydrate)
+                    # Enable write-through before replace so an in-flight
+                    # placeholder.load_history still reaches the real pilot.
+                    placeholder._real = real
+                except Exception as e:
+                    svc.diag("server.deferred_pilot_hydrate", e)
+                    placeholder.mark_failed(e)
                     return
                 try:
                     svc.runners.replace(session_id, real, notify=False)
