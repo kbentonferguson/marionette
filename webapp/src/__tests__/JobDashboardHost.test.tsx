@@ -118,4 +118,14 @@ describe("JobDashboardHost", () => {
     expect(screen.queryByTestId("job-dashboard-frame")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pop out/ })).toBeDisabled();
   });
+  it("fails fast when the hire has no durable job_ id yet", async () => {
+    const localOnly = { ...job, id: "local-swarm-call_1799376", goal: "Provider worker `local-swarm-call_1799376`" };
+    delete (localOnly as { job_ref?: unknown }).job_ref;
+    (localOnly as { local_ref?: unknown }).local_ref = { job_id: "local-swarm-call_1799376", incarnation: "n1" };
+    render(<JobDashboardHost job={localOnly} onClose={() => {}} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Durable Puppetmaster job id is not ready/);
+    expect(api.dashboard).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Opening Puppetmaster dashboard/)).toBeNull();
+  });
+
 });

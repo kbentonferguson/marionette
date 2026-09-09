@@ -28,7 +28,7 @@ export default function ConversationHeader({
     // hiddenInset traffic lights itself -- the chrome pad alone lands under them.
     <header
       data-testid="conversation-header"
-      className="flex items-center justify-between border-b border-edge/60 shrink-0"
+      className="flex items-center gap-2 border-b border-edge/60 shrink-0 min-w-0 overflow-hidden"
       style={{
         paddingTop: 8,
         paddingBottom: 7,
@@ -37,14 +37,14 @@ export default function ConversationHeader({
         ...dragRegion,
       }}
     >
-      <span className="flex items-baseline gap-1.5 select-none min-w-0" style={noDrag}>
-        <span className="font-semibold text-[12px] text-txt/90 tracking-tight">Marionette</span>
-        <span className="text-faint/70 text-[9px] font-normal">|</span>
-        <span className="text-muted/80 text-[9px] font-medium tracking-wide uppercase truncate">
+      <span className="flex items-baseline gap-1.5 select-none flex-1 min-w-0 overflow-hidden" style={noDrag}>
+        <span className="font-semibold text-[12px] text-txt/90 tracking-tight shrink-0">Marionette</span>
+        <span className="text-faint/70 text-[9px] font-normal shrink-0 hidden min-[420px]:inline" aria-hidden>|</span>
+        <span className="text-muted/80 text-[9px] font-medium tracking-wide uppercase truncate hidden min-[420px]:inline">
           The Puppetmaster Harness
         </span>
       </span>
-      <div className="shrink-0 flex items-center gap-2" style={noDrag}>
+      <div className="shrink-0 flex items-center gap-2 max-w-[55%] min-w-0" style={noDrag}>
         {recoveryAction ? (
           <button
             type="button"

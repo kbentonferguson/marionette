@@ -21,11 +21,19 @@ _JOB_ID_MAX = 128
 
 
 def is_dashboard_job_id(job_id: str) -> bool:
-    """True for a PM-safe job token (``job_…`` / store ids, no path escapes)."""
+    """True for a durable Puppetmaster ``job_…`` token (no path escapes).
+
+    Local aliases like ``local-swarm-call_…`` are Jobs-rail row ids, not store
+    tokens — rejecting them keeps ``python -m puppetmaster dashboard`` from
+    dying with ``dashboard_failed_to_start``.
+    """
     token = (job_id or "").strip()
     if not token or len(token) > _JOB_ID_MAX:
         return False
-    return all(ch.isalnum() or ch in "_-" for ch in token)
+    if not token.startswith("job_"):
+        return False
+    body = token[4:]
+    return bool(body) and all(ch.isalnum() or ch in "_-" for ch in body)
 
 
 def build_dashboard_url(

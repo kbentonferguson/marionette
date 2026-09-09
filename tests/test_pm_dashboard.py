@@ -18,6 +18,8 @@ def test_build_dashboard_url_keeps_embed_and_job():
     assert is_dashboard_job_id("job_abcdef012345")
     assert not is_dashboard_job_id("../etc/passwd")
     assert not is_dashboard_job_id("")
+    assert not is_dashboard_job_id("local-swarm-call_1799376")
+    assert not is_dashboard_job_id("job_")
 
 
 def test_get_dashboard_rejects_unsafe_job_id():
