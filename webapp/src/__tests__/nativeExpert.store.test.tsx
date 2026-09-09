@@ -6,7 +6,7 @@ import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures'
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
 import { JobsInspectHarness } from './jobsInspectHarness';
 import { token } from './jobMetadata.fixtures';
-let fixture: Awaited<ReturnType<typeof nativeExpertFixture>> | undefined;
+let fixture: Awaited<ReturnType<typeof expertMetadataFixture>> | Awaited<ReturnType<typeof nativeExpertFixture>> | undefined;
 afterEach(() => { cleanup(); fixture?.dispose(); fixture = undefined; localStorage.clear(); });
 async function setup() { fixture = await nativeExpertFixture(); return fixture; }
 it('retains tasks across routing selection and replaces nested instructions on a newer revision', async () => {
