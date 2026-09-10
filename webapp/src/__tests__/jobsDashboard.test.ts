@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildDashboardEmbedUrl,
+  jobsRailIsPuppetmasterViewport,
+  jobsRailViewportUrl,
+  JOBS_RAIL_VIEWPORT,
   JOBS_DASHBOARD_CHROME_EVENT,
   JOBS_DASHBOARD_EXPAND_MIN_PX,
   JOBS_DASHBOARD_FOCUS_MIN_PX,
@@ -15,6 +18,11 @@ describe("jobsDashboard URLs", () => {
       "http://127.0.0.1:8787/?job=job_abcdef012345&embed=1",
     );
     expect(buildDashboardEmbedUrl("127.0.0.1", 8790)).toBe("http://127.0.0.1:8790/?embed=1");
+    expect(jobsRailViewportUrl("127.0.0.1", 8787, "job_abcdef012345")).toBe(
+      buildDashboardEmbedUrl("127.0.0.1", 8787, "job_abcdef012345"),
+    );
+    expect(jobsRailIsPuppetmasterViewport()).toBe(true);
+    expect(JOBS_RAIL_VIEWPORT).toBe("puppetmaster-embed");
   });
 });
 

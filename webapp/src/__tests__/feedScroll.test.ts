@@ -4,6 +4,11 @@ import {
   FEED_CONTENT_PADDING_BOTTOM_PX,
   FEED_GESTURE_IDLE_MS,
   FEED_REPIN_THRESHOLD_PX,
+  FEED_PIN_THRESHOLD_PX,
+  feedForwardFollowTop,
+  isFeedInputInterrupt,
+  nextFeedSpringFollow,
+  shouldUnpinOnKeyboard,
   FEED_SCROLLPORT_OVERFLOW_ANCHOR,
   FEED_SCROLLPORT_SCROLL_PADDING_BOTTOM_PX,
   FEED_TAIL_EPSILON_PX,
@@ -452,6 +457,96 @@ describe("shouldCancelFeedResizeFollowForManualScrollAway", () => {
   });
 });
 
+describe("feedScroll spring follow", () => {
+  it("feed-forwards content growth instead of an independent max snap", () => {
+    expect(FEED_REPIN_THRESHOLD_PX).toBe(70);
+    expect(FEED_REPIN_THRESHOLD_PX).toBeLessThan(FEED_PIN_THRESHOLD_PX);
+    expect(feedForwardFollowTop(1200, 80, 1280)).toBe(1280);
+    const sprung = nextFeedSpringFollow({
+      scrollTop: 1200,
+      maxScrollTop: 1280,
+      contentDeltaPx: 80,
+      velocityPxPerMs: 0,
+    });
+    expect(sprung.scrollTop).toBe(1280);
+    expect(sprung.velocityPxPerMs).toBe(0);
+  });
+
+  it("preserves distance-from-end then springs residual pin error", () => {
+    const sprung = nextFeedSpringFollow({
+      scrollTop: 1198,
+      maxScrollTop: 1280,
+      contentDeltaPx: 80,
+      velocityPxPerMs: 0,
+    });
+    expect(sprung.scrollTop).toBeGreaterThan(1198);
+    expect(sprung.scrollTop).toBeLessThanOrEqual(1280);
+  });
+
+  it("unpins on keyboard input and treats wheel/touch/keyboard as interrupts", () => {
+    expect(shouldUnpinOnKeyboard("PageUp")).toBe(true);
+    expect(shouldUnpinOnKeyboard("ArrowUp")).toBe(true);
+    expect(shouldUnpinOnKeyboard("Home")).toBe(true);
+    expect(shouldUnpinOnKeyboard("ArrowDown")).toBe(false);
+    expect(isFeedInputInterrupt("wheel")).toBe(true);
+    expect(isFeedInputInterrupt("keyboard")).toBe(true);
+    expect(
+      nextFeedPinState({
+        wasPinned: true,
+        releasedByGesture: false,
+        scrollHeight: 2000,
+        scrollTop: 800,
+        clientHeight: 400,
+        prevScrollTop: 1600,
+        settling: false,
+        inputInterrupt: false,
+      }),
+    ).toEqual({ pinned: true, releasedByGesture: false });
+    expect(
+      nextFeedPinState({
+        wasPinned: true,
+        releasedByGesture: false,
+        scrollHeight: 2000,
+        scrollTop: 800,
+        clientHeight: 400,
+        prevScrollTop: 1600,
+        settling: false,
+        inputInterrupt: true,
+      }),
+    ).toEqual({ pinned: false, releasedByGesture: true });
+  });
+
+  it("re-pins after idle when the viewport is inside the 70px restick band", () => {
+    const height = 2000;
+    const client = 400;
+    const fiftyFromEnd = height - client - 50;
+    expect(
+      nextFeedPinState({
+        wasPinned: false,
+        releasedByGesture: true,
+        scrollHeight: height,
+        scrollTop: fiftyFromEnd,
+        clientHeight: client,
+        prevScrollTop: fiftyFromEnd - 20,
+        settling: false,
+        userGestureActive: false,
+      }),
+    ).toEqual({ pinned: true, releasedByGesture: false });
+    expect(
+      nextFeedPinState({
+        wasPinned: false,
+        releasedByGesture: true,
+        scrollHeight: height,
+        scrollTop: height - client - 90,
+        clientHeight: client,
+        prevScrollTop: height - client - 110,
+        settling: false,
+        userGestureActive: false,
+      }),
+    ).toEqual({ pinned: false, releasedByGesture: true });
+  });
+});
+
 describe("chooseFeedFollowFlush", () => {
   it("applies stick-to-bottom before paint (not rAF)", () => {
     expect(chooseFeedFollowFlush()).toBe("before_paint");
@@ -502,7 +597,7 @@ describe("feedScroll user-gesture deferral", () => {
     expect(FEED_GESTURE_IDLE_MS).toBe(150);
   });
 
-  it("does not re-pin into the 28px band while the user gesture is still active", () => {
+  it("does not re-pin into the restick band while the user gesture is still active", () => {
     const lightUpTop = height - client - 40;
     expect(
       nextFeedPinState({

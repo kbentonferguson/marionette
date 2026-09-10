@@ -1,4 +1,5 @@
 import type { Item, Msg } from "../TranscriptList";
+import { stampTranscriptMessageIds } from "./transcriptRowIdentity";
 import {
   mergeSwarmPendingItems,
   normalizeSwarmJobIds,
@@ -211,6 +212,7 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
               ...item.msg,
               text: newText,
               streaming: false,
+              id: prev.msg.id || item.msg.id,
             },
           };
         } else if (prev.msg.streaming) {
@@ -220,6 +222,7 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
               ...prev.msg,
               text: prevText,
               streaming: false,
+              id: prev.msg.id || item.msg.id,
             },
           };
         }
@@ -342,7 +345,9 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
 export function transcriptResponseToItems(res: {
   history?: any[];
   display?: any[];
-}): Item[] {
+  session_id?: string;
+}, sessionId?: string): Item[] {
+  const scope = sessionId || res.session_id;
   let loadedItems: Item[] = [];
   if (res.display && res.display.length > 0) {
     loadedItems = res.display.flatMap((m: any): Item[] => {
@@ -546,11 +551,13 @@ export function transcriptResponseToItems(res: {
       } else {
         const rawText = m.text || "";
         const role = m.role as "user" | "assistant";
+        const persistedId = String(m.id || m.input_id || "").trim();
         return [{
           kind: "msg" as const,
           msg: {
             role,
             text: role === "user" ? stripUserVisibleText(rawText) : rawText,
+            ...(persistedId ? { id: persistedId } : {}),
           }
         }];
       }
@@ -561,19 +568,24 @@ export function transcriptResponseToItems(res: {
       .map((m: any) => {
         const role = m.role as "user" | "assistant";
         const rawText = m.content || "";
+        const persistedId = String(m.id || m.input_id || "").trim();
         return {
           kind: "msg" as const,
           msg: {
             role,
             text: role === "user" ? stripUserVisibleText(rawText) : rawText,
+            ...(persistedId ? { id: persistedId } : {}),
           }
         };
       });
   }
   // Cursor CLI may persist tool cards after a flushed finale; hoist on hydrate
   // so Explored sits above the answer after reload (same as assistant_done).
-  return hoistCardsBeforeTrailingFinals(
-    deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems)),
+  return stampTranscriptMessageIds(
+    hoistCardsBeforeTrailingFinals(
+      deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems)),
+    ),
+    scope,
   );
 }
 

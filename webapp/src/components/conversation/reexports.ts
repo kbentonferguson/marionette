@@ -305,7 +305,10 @@ export {
   shouldStopNestedWheelBubble,
   shouldUnpinInnerOnWheel,
   shouldUnpinOnWheel,
+  shouldUnpinOnKeyboard,
   shouldUnpinOnTouchMove,
+  nextFeedSpringFollow,
+  feedForwardFollowTop,
   settleFrameResult,
   THINKING_INNER_PIN_THRESHOLD_PX,
 } from "./feedScroll";

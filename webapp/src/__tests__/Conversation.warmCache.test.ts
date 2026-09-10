@@ -32,8 +32,8 @@ import type { Item } from "../components/TranscriptList";
  * Mirrors Conversation.tsx session-switch behavior without mounting the full UI.
  */
 
-function makeMsg(role: "user" | "assistant", text: string): Item {
-  return { kind: "msg", msg: { role, text } };
+function makeMsg(role: "user" | "assistant", text: string, id?: string): Item {
+  return { kind: "msg", msg: { role, text, ...(id ? { id } : {}) } };
 }
 
 describe("transcript warm cache", () => {
@@ -61,7 +61,7 @@ describe("transcript warm cache", () => {
       ],
     });
     expect(items).toHaveLength(2);
-    expect(items[0]).toEqual(makeMsg("user", "hi"));
+    expect(items[0]).toEqual(makeMsg("user", "hi", "msg:_draft:user:0"));
     expect(items[1].kind).toBe("msg");
     if (items[1].kind === "msg") {
       expect(items[1].msg.text).toBe("hello there!");
@@ -106,7 +106,7 @@ describe("transcript warm cache", () => {
 
     await switchTo("sess-b");
     expect(sessionTranscript).toHaveBeenCalledWith("sess-b");
-    expect(visible).toEqual([makeMsg("user", "fresh sess-b")]);
+    expect(visible).toEqual([makeMsg("user", "fresh sess-b", "msg:_draft:user:0")]);
     // Outgoing session was saved before hydrate.
     expect(cache.get("sess-a")?.items).toEqual([makeMsg("user", "from A")]);
   });

@@ -98,6 +98,10 @@ import {
   shouldUseVirtualTranscriptWindow,
 } from "./conversation/transcriptVirtualWindow";
 import {
+  messageBlockId,
+  transcriptBlockRowId,
+} from "./conversation/transcriptRowIdentity";
+import {
   assistantTextForMeasure,
   createTranscriptRowHeightCache,
   rowMeasureSignal,
@@ -116,6 +120,8 @@ import {
 export type Msg = {
   role: "user" | "assistant";
   text: string;
+  /** Durable identity — optimistic echo and persist hydrate share this. */
+  id?: string;
   isPlan?: boolean;
   images?: { path: string; name: string; previewUrl: string }[];
   streaming?: boolean;
@@ -1070,7 +1076,7 @@ export function transcriptViewportKeys(items: readonly GroupedItem[]): string[] 
   const occurrences = new Map<string, number>();
   return items.map((item, index) => {
     let key = stableItemKey(item, index);
-    if (item.kind === "msg") {
+    if (item.kind === "msg" && !(item.msg.id || "").trim()) {
       let hash = 2166136261;
       for (let i = 0; i < item.msg.text.length; i++) {
         hash = Math.imul(hash ^ item.msg.text.charCodeAt(i), 16777619);
@@ -1085,8 +1091,10 @@ export function transcriptViewportKeys(items: readonly GroupedItem[]): string[] 
 
 export function stableItemKey(it: GroupedItem, i: number): string {
   switch (it.kind) {
-    case "msg":
-      return `msg-${objKey(it.msg)}`;
+    case "msg": {
+      const msgId = (it.msg.id || "").trim() || `msg-${objKey(it.msg)}`;
+      return transcriptBlockRowId(msgId, messageBlockId(it.msg));
+    }
     case "activity_group":
       // React key keeps the index so duplicate-card corruption cannot collide;
       // ActivityGroup's groupId (open map) stays on the canon alone.
@@ -1128,7 +1136,9 @@ export function stableItemKey(it: GroupedItem, i: number): string {
     case "verification":
       return `verification-${i}-${it.passed ? "ok" : "fail"}`;
     case "thinking":
-      return it.id ? `think-${it.id}` : `think-${i}`;
+      return it.id
+        ? transcriptBlockRowId(it.id, "think")
+        : `think-${i}`;
     default:
       return `item-${i}`;
   }
