@@ -234,7 +234,7 @@ def build_driver(
     spec: str,
     model: str,
     api_key_env: str = API_KEY_ENV,
-    max_tokens: int,
+    max_tokens: Optional[int],
     base_url: Optional[str] = None,
 ):
     """The driver Go's endpoint table demands for *model*, keyed to *spec*.

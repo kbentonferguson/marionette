@@ -99,6 +99,7 @@ export type Settings = {
   hash_edit_enabled?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;
+  maxOutputTokens?: string;
   pilotToolBudget?: string;
   workerTokenBudget?: string;
   reasoning_effort?: ReasoningEffort;

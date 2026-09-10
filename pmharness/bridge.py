@@ -1505,6 +1505,26 @@ def _execute_prewalk(
     )
 
 
+def _enrich_bridge_dispatch_error(exc: BaseException, store: Any) -> None:
+    """Keep the pin/preflight reason after Orchestrator.run raises.
+
+    Scratch stores are deleted after the raise; snapshot the durable facts
+    onto the exception so the swarm card is not just 'incomplete tasks'.
+    """
+    try:
+        from harness.edit_engines import (
+            _agentic_store_failure_snapshot,
+            _format_agentic_engine_error,
+        )
+
+        snap = _agentic_store_failure_snapshot(store)
+        msg = _format_agentic_engine_error(exc, snap)
+        if msg:
+            exc.args = (msg,) + exc.args[1:]
+    except Exception:
+        return
+
+
 def execute_intent(
     intent: DriverIntent,
     *,
@@ -1883,5 +1903,8 @@ def execute_intent(
             auth_failure=auth_note,
             adapter=adapter,
         )
+    except Exception as exc:
+        _enrich_bridge_dispatch_error(exc, store)
+        raise
     finally:
         _clear_delta_sink()

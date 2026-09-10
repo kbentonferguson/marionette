@@ -863,6 +863,12 @@ def test_puppetmaster_cli_detection_positives(command):
         "npm run build",
         "echo hello",
         "git status",
+        'cd ~/Projects/Puppetmaster 2>/dev/null && echo hi',
+        'cd ~/Projects && echo "=== puppetmaster-playbook ===" && find puppetmaster-playbook',
+        "ls puppetmaster",
+        "find puppetmaster-playbook",
+        "echo puppetmaster swarm",
+        "cd /tmp/puppetmaster",
     ],
 )
 def test_puppetmaster_cli_detection_negatives(command):
@@ -1045,6 +1051,116 @@ def test_parse_multiple_puppetmaster_launches_does_not_convert():
 )
 def test_parse_wrapped_status_artifacts_route_does_not_convert(command):
     assert parse_puppetmaster_cli_launch(command) is None
+
+
+_CD_PUPPETMASTER_REDIRECT = "cd ~/Projects/Puppetmaster 2>/dev/null && echo hi"
+_PUPPETMASTER_PLAYBOOK_PROBE = (
+    'cd ~/Projects && echo "=== puppetmaster-playbook ===" && find puppetmaster-playbook'
+)
+
+
+def test_parse_cd_puppetmaster_directory_with_redirect_is_not_cli():
+    """A directory named Puppetmaster plus 2>/dev/null is not a swarm launch."""
+    assert parse_puppetmaster_cli_launch(_CD_PUPPETMASTER_REDIRECT) is None
+
+
+def test_translate_cd_puppetmaster_directory_with_redirect_is_not_cli():
+    """Do not translate a cd into Puppetmaster into run_swarm(goal='2')."""
+    translated = translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command=_CD_PUPPETMASTER_REDIRECT),
+    )
+    assert translated is None
+
+
+def test_hyphenated_puppetmaster_playbook_is_not_cli():
+    """puppetmaster-playbook is a path/name, not the puppetmaster CLI."""
+    assert is_puppetmaster_cli_command(_PUPPETMASTER_PLAYBOOK_PROBE) is False
+    assert parse_puppetmaster_cli_launch(_PUPPETMASTER_PLAYBOOK_PROBE) is None
+    assert translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command=_PUPPETMASTER_PLAYBOOK_PROBE),
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls puppetmaster",
+        "find puppetmaster-playbook",
+        "echo puppetmaster swarm",
+        "cd /tmp/puppetmaster",
+        "cd ~/Projects/Puppetmaster",
+    ],
+)
+def test_puppetmaster_basename_as_command_argument_is_not_cli(command):
+    assert is_puppetmaster_cli_command(command) is False
+    assert parse_puppetmaster_cli_launch(command) is None
+    assert translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command=command),
+    ) is None
+
+
+def test_parse_real_python_module_swarm_cli():
+    assert parse_puppetmaster_cli_launch(
+        'python -m puppetmaster swarm "real goal"',
+    ) == ("swarm", "real goal", "")
+
+
+def test_parse_real_bare_swarm_cli():
+    assert parse_puppetmaster_cli_launch(
+        'puppetmaster swarm "real goal"',
+    ) == ("swarm", "real goal", "")
+
+
+def test_translate_real_swarm_cli_to_run_swarm():
+    translated = translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command='python -m puppetmaster swarm "real goal"'),
+    )
+    assert translated is not None
+    assert translated.kind == "run_swarm"
+    assert translated.goal == "real goal"
+
+
+def test_translate_real_bare_swarm_cli_to_run_swarm():
+    translated = translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command='puppetmaster swarm "real goal"'),
+    )
+    assert translated is not None
+    assert translated.kind == "run_swarm"
+    assert translated.goal == "real goal"
+
+
+def test_parse_wrapped_env_prefixed_python_module_cli_still_works():
+    parsed = parse_puppetmaster_cli_launch(
+        'cd /tmp && FOO=1 python -m puppetmaster agentic "mod goal" --model m | tail',
+    )
+    assert parsed == ("agentic", "mod goal", "m")
+    translated = translate_puppetmaster_cli_action(
+        _Act(
+            kind="run_command",
+            command=(
+                'cd /tmp && FOO=1 python -m puppetmaster agentic "mod goal" '
+                "--model m | tail"
+            ),
+        ),
+    )
+    assert translated is not None
+    assert translated.kind == "run_implement"
+    assert translated.goal == "mod goal"
+    assert translated.model == "m"
+    assert translated.adapter == "agentic"
+
+
+def test_redirect_tokens_are_never_swarm_goals():
+    parsed = parse_puppetmaster_cli_launch("puppetmaster swarm 2>/dev/null")
+    if parsed is not None:
+        _subcmd, goal, _model = parsed
+        assert goal != "2"
+        assert "dev/null" not in goal
+        assert not goal.startswith(">")
+    translated = translate_puppetmaster_cli_action(
+        _Act(kind="run_command", command="puppetmaster swarm 2>/dev/null"),
+    )
+    assert translated is None or translated.goal not in ("2", "2>/dev/null", "/dev/null")
 
 
 @pytest.mark.parametrize(

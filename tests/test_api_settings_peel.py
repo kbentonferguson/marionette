@@ -138,6 +138,7 @@ def test_post_settings_budget_and_flags(monkeypatch):
             "auto_distill": True,
             "commandTimeout": "off",
             "maxPilotSteps": "unlimited",
+            "maxOutputTokens": "off",
             "pilotToolBudget": "50",
             "workerTokenBudget": "50000",
         },
@@ -149,6 +150,7 @@ def test_post_settings_budget_and_flags(monkeypatch):
     env = dict(calls["persist"])
     assert env["HARNESS_COMMAND_TIMEOUT"] == "0"
     assert env["HARNESS_MAX_PILOT_STEPS"] == "0"
+    assert env["HARNESS_MAX_TOKENS"] == "0"
     assert env["HARNESS_PILOT_TOOL_BUDGET"] == "50"
     assert env["HARNESS_WORKER_TOKEN_BUDGET"] == "50000"
 
@@ -161,6 +163,22 @@ def test_post_settings_pilot_tool_budget_unlimited(monkeypatch):
     code, _ = post_settings({"pilotToolBudget": "unlimited"}, svc)
     assert code == 200
     assert dict(calls["persist"])["HARNESS_PILOT_TOOL_BUDGET"] == "0"
+
+
+def test_post_settings_max_output_tokens_positive(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"maxOutputTokens": "16000"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_MAX_TOKENS"] == "16000"
+
+
+def test_post_settings_bad_max_output_tokens():
+    svc, _, _, _ = _svc()
+    assert post_settings({"maxOutputTokens": "nope"}, svc)[0] == 400
+    assert post_settings({"maxOutputTokens": "-5"}, svc)[0] == 400
 
 
 def test_post_settings_bad_pilot_tool_budget():

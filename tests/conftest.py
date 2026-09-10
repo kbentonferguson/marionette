@@ -343,6 +343,7 @@ def _isolate_pilot_env(monkeypatch):
     demo substrate requires HARNESS_ALLOW_DEMO_SWARM=1."""
     for _var in (
         "HARNESS_MAX_PILOT_STEPS",
+        "HARNESS_MAX_TOKENS",
         "HARNESS_PILOT_TOOL_BUDGET",
         "HARNESS_WORKER_TOKEN_BUDGET",
         "HARNESS_AUTO_COMMAND_GUARD",

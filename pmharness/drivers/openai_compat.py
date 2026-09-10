@@ -33,6 +33,12 @@ _TOOL_CHAT_FINISH = frozenset({"tool_calls", "function_call"})
 _LENGTH_CHAT_FINISH = frozenset({"length", "max_tokens", "max_output_tokens"})
 _FILTER_CHAT_FINISH = frozenset({"content_filter"})
 _INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty", "error"})
+_OPENAI_LENGTH_CONTINUE = (
+    "[System: Your previous response was truncated by the output length "
+    "limit. Continue exactly where you left off. Do not restart or repeat "
+    "prior text. Finish the answer directly.]"
+)
+_OPENAI_MAX_LENGTH_CONTINUES = 3
 
 
 def _norm_chat_finish(finish) -> str:
@@ -43,6 +49,19 @@ def _norm_chat_finish(finish) -> str:
         return str(finish).strip().lower()
     except Exception:
         return ""
+
+
+def _length_continue_eligible(resp: DriverResponse) -> bool:
+    """True when a length stop can be continued without truncated tool JSON."""
+    meta = resp.meta or {}
+    if meta.get("incomplete_tool_calls"):
+        return False
+    terminal = _norm_chat_finish(
+        meta.get("stream_terminal") or meta.get("finish_reason")
+    )
+    if terminal not in _LENGTH_CHAT_FINISH:
+        return False
+    return bool((resp.text or "").strip())
 
 
 def _tool_arguments_are_complete(arguments) -> bool:
@@ -433,7 +452,7 @@ class OpenAICompatDriver:
         api_key_env: str,
         *,
         temperature: float = 0.0,
-        max_tokens: int = 1500,
+        max_tokens: int | None = 1500,
         timeout: int = 90,
         extra_headers: dict | None = None,
         extra_body: dict | None = None,
@@ -460,6 +479,18 @@ class OpenAICompatDriver:
         # Set by _key() when a credential-pool entry is selected.
         self._pool_provider: str | None = None
         self._pool_entry_id: str | None = None
+
+    def _stamp_output_token_limit(self, body: dict) -> None:
+        """Omit max_tokens when unset or non-positive so hosts do not see 0."""
+        limit = self.max_tokens
+        if limit is None:
+            return
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            return
+        if n > 0:
+            body[self._output_token_limit_field()] = n
 
     def _key(self) -> str:
         """Resolve API key: credential pool first, then process env."""
@@ -927,8 +958,8 @@ class OpenAICompatDriver:
                 {"role": "system", "content": system},
                 {"role": "user", "content": task_prompt},
             ],
-            self._output_token_limit_field(): self.max_tokens,
         }
+        self._stamp_output_token_limit(body)
         self._apply_temperature(body)
         self._prepare_body(
             body,
@@ -1024,8 +1055,8 @@ class OpenAICompatDriver:
         body = {
             "model": self.model,
             "messages": full_messages,
-            self._output_token_limit_field(): self.max_tokens,
         }
+        self._stamp_output_token_limit(body)
         if stream:
             body['stream'] = True
             body['stream_options'] = {'include_usage': True}
@@ -1236,11 +1267,8 @@ class OpenAICompatDriver:
         on_tool_hint: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
-        body = self._build_chat_body(
-            messages, tools=tools, system=system, session_id=session_id, stream=True,
-        )
-
-        data = json.dumps(body).encode("utf-8")
+        body: dict = {}
+        data = b""
 
         def _response_from_acc(
             acc: _OpenAIChatSseAccumulator,
@@ -1346,5 +1374,71 @@ class OpenAICompatDriver:
 
             return _response_from_acc(acc, t0=t0)
 
-        return with_retry(_call)
+        def _one_stream(msgs: list) -> DriverResponse:
+            nonlocal body, data, messages
+            messages = msgs
+            body = self._build_chat_body(
+                msgs, tools=tools, system=system, session_id=session_id, stream=True,
+            )
+            data = json.dumps(body).encode("utf-8")
+            return with_retry(_call)
+
+        first = _one_stream(list(messages))
+        if not _length_continue_eligible(first):
+            return first
+
+        parts = [first.text]
+        tin = first.tokens_in
+        tout = first.tokens_out
+        last = first
+        working = list(messages)
+        for attempt in range(_OPENAI_MAX_LENGTH_CONTINUES):
+            working = list(working)
+            working.append({"role": "assistant", "content": last.text})
+            working.append({"role": "user", "content": _OPENAI_LENGTH_CONTINUE})
+            nxt = _one_stream(working)
+            tin += nxt.tokens_in
+            tout += nxt.tokens_out
+            if (nxt.meta or {}).get("incomplete_tool_calls"):
+                return nxt
+            if nxt.error and not _length_continue_eligible(nxt):
+                meta = dict(first.meta or {})
+                meta["length_continues"] = attempt
+                return DriverResponse(
+                    text="".join(parts),
+                    tokens_in=tin,
+                    tokens_out=tout,
+                    latency_ms=first.latency_ms + nxt.latency_ms,
+                    model=self.name,
+                    error=first.error,
+                    meta=meta,
+                )
+            parts.append(nxt.text or "")
+            last = nxt
+            if not _length_continue_eligible(nxt):
+                meta = dict(nxt.meta or {})
+                meta["length_continues"] = attempt + 1
+                return DriverResponse(
+                    text="".join(parts),
+                    tokens_in=tin,
+                    tokens_out=tout,
+                    latency_ms=first.latency_ms + nxt.latency_ms,
+                    model=self.name,
+                    error=nxt.error,
+                    meta=meta,
+                )
+        meta = dict(first.meta or {})
+        meta["length_continues"] = _OPENAI_MAX_LENGTH_CONTINUES
+        return DriverResponse(
+            text="".join(parts),
+            tokens_in=tin,
+            tokens_out=tout,
+            latency_ms=first.latency_ms,
+            model=self.name,
+            error=(
+                "response remained incomplete after "
+                f"{_OPENAI_MAX_LENGTH_CONTINUES} continuation attempts"
+            ),
+            meta=meta,
+        )
 

@@ -18,6 +18,7 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     hash_edit_enabled: s.hash_edit_enabled,
     commandTimeout: s.commandTimeout,
     maxPilotSteps: s.maxPilotSteps,
+    maxOutputTokens: s.maxOutputTokens,
     pilotToolBudget: s.pilotToolBudget,
     workerTokenBudget: s.workerTokenBudget,
     reasoning_effort: s.reasoning_effort,

@@ -3182,6 +3182,7 @@ def _get_settings_dict():
         "session_trace_export": session_trace_export_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
+        "maxOutputTokens": (os.environ.get("HARNESS_MAX_TOKENS", "").strip() or "8000"),
         "pilotToolBudget": (
             os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip() or "25"
         ),

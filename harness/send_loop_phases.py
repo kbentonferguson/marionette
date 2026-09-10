@@ -1279,6 +1279,18 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = act.path or (act.arguments or {}).get("chat_id") or ""
     elif act.kind == "session_bank":
         act_goal = (act.arguments or {}).get("session_id") or act.query or "list"
+    elif act.kind == "peek_artifact":
+        _p = act.arguments or {}
+        act_goal = (
+            (act.path or "").strip()
+            or (act.url or "").strip()
+            or str(_p.get("uri") or _p.get("path") or _p.get("url") or "").strip()
+            or (
+                f"{_p.get('job_id') or ''}/{_p.get('artifact_id') or ''}".strip("/")
+                if (_p.get("job_id") or _p.get("artifact_id"))
+                else ""
+            )
+        )
     elif act.kind == "search_tools":
         act_goal = act.query or ",".join(act.arguments.get("activate") or [])
     elif act.kind == "query_wiki":

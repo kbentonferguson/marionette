@@ -189,8 +189,15 @@ _KERNEL_FAILURE_RE = re.compile(
 )
 
 _PUPPETMASTER_CLI_RE = re.compile(
-    r"(?:^|[\s;&|])"
-    r"(?:python(?:\d+(?:\.\d+)*)?\s+-m\s+puppetmaster|puppetmaster(?:\.exe)?)"
+    r"(?:^|(?:&&)|(?:\|\|)|[;&|])"
+    r"\s*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+    r"(?:"
+    r"python(?:\d+(?:\.\d+)*)?\s+-m\s+puppetmaster"
+    r"|"
+    r"puppetmaster(?:\.exe)?"
+    r")"
+    r"(?![\w-])"
     r"(?:\s+"
     r"(swarm|analysis|cursor|agentic|implement|edit|status|artifacts|route|should-delegate)"
     r")?\b",
@@ -1148,20 +1155,38 @@ def _cli_command_basename(token: str) -> str:
     return lead
 
 
+def _cli_is_env_assign(token: str) -> bool:
+    if "=" not in token or token.startswith("-"):
+        return False
+    name, _sep, _val = token.partition("=")
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in name)
+
+
 def _cli_argv_until_operator(tokens: list[str], start: int) -> list[str]:
     out: list[str] = []
-    for tok in tokens[start:]:
+    n = len(tokens)
+    idx = start
+    while idx < n:
+        tok = tokens[idx]
         if tok in _CLI_SHELL_OPERATORS:
             break
+        nxt = tokens[idx + 1] if idx + 1 < n else ""
+        if tok.isdigit() and len(tok) <= 2 and nxt in _CLI_SHELL_OPERATORS:
+            break
         out.append(tok)
+        idx += 1
     return out
 
 
 def _extract_single_puppetmaster_cli_argv(tokens: list[str]) -> Optional[list[str]]:
-    """Rest argv of the sole PM invocation, stopped at the next operator.
+    """Rest argv of the sole PM invocation in command position.
 
-    Locates ``puppetmaster`` or ``python -m puppetmaster`` anywhere, including
-    after env-assign prefixes. None if zero or multiple invocations exist.
+    Only ``puppetmaster`` / ``python -m puppetmaster`` after start, a
+    shell operator, or env-assigns. A path whose basename is Puppetmaster
+    as an argument to cd/ls/find/echo is not the CLI. None if zero or
+    multiple invocations exist.
     """
     found: list[list[str]] = []
     i = 0
@@ -1170,6 +1195,10 @@ def _extract_single_puppetmaster_cli_argv(tokens: list[str]) -> Optional[list[st
         if tokens[i] in _CLI_SHELL_OPERATORS:
             i += 1
             continue
+        while i < n and _cli_is_env_assign(tokens[i]):
+            i += 1
+        if i >= n:
+            break
         name = _cli_command_basename(tokens[i])
         if (
             name.startswith("python")
@@ -1180,13 +1209,18 @@ def _extract_single_puppetmaster_cli_argv(tokens: list[str]) -> Optional[list[st
             rest = _cli_argv_until_operator(tokens, i + 3)
             found.append(rest)
             i = i + 3 + len(rest)
+            while i < n and tokens[i] not in _CLI_SHELL_OPERATORS:
+                i += 1
             continue
         if name == "puppetmaster":
             rest = _cli_argv_until_operator(tokens, i + 1)
             found.append(rest)
             i = i + 1 + len(rest)
+            while i < n and tokens[i] not in _CLI_SHELL_OPERATORS:
+                i += 1
             continue
-        i += 1
+        while i < n and tokens[i] not in _CLI_SHELL_OPERATORS:
+            i += 1
     if len(found) != 1:
         return None
     return found[0]
@@ -1238,6 +1272,12 @@ def _parse_cli_goal_and_model(tokens: list[str]) -> tuple[str, str]:
             i += 1
             if i < n and not tokens[i].startswith("-"):
                 i += 1
+            continue
+        if tok.isdigit() and len(tok) <= 2:
+            i += 1
+            continue
+        if tok in ("/dev/null", "nul") or tok.startswith(">"):
+            i += 1
             continue
         positionals.append(tok)
         i += 1

@@ -463,6 +463,19 @@ def test_stream_swarm_puts_error(monkeypatch):
     assert "swarm failed" in str(val)
 
 
+def test_enrich_bridge_dispatch_error_keeps_pin_reason():
+    from pmharness.bridge import _enrich_bridge_dispatch_error
+
+    class _Store:
+        def list_jobs(self):
+            return []
+
+    exc = RuntimeError("swarm exited with incomplete tasks")
+    _enrich_bridge_dispatch_error(exc, _Store())
+    assert "Agentic engine error" in str(exc)
+    assert "incomplete tasks" in str(exc)
+
+
 def test_read_stdout_thread_captures_job_id():
     class _Stdout:
         def __iter__(self):
@@ -546,6 +559,15 @@ def test_action_display_goal_by_kind():
     assert action_display_goal(
         PilotAction(kind="relocate_session", arguments={"workspace_root": "/w"})
     ) == "/w"
+    assert action_display_goal(
+        PilotAction(kind="peek_artifact", path="artifact://job_1/findings")
+    ) == "artifact://job_1/findings"
+    assert action_display_goal(
+        PilotAction(
+            kind="peek_artifact",
+            arguments={"uri": "artifact://job_2/summary"},
+        )
+    ) == "artifact://job_2/summary"
     # Unknown kinds keep the PilotAction.goal default.
     bare = PilotAction(kind="run_swarm", goal="ship it")
     assert action_display_goal(bare) == "ship it"
