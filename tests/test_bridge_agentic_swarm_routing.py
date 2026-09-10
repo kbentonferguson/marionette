@@ -13,6 +13,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import pytest
+
 import pmharness.bridge as bridge
 from harness.swarm_worker_allowlist import (
     resolve_swarm_worker_allowlist as _real_resolve_swarm_worker_allowlist,
@@ -116,6 +118,31 @@ def test_execute_intent_explicit_subprocess_reaches_orchestrator(monkeypatch, tm
     assert _FakeOrchestrator.last_worker_mode == "subprocess"
 
 
+def test_execute_intent_system_exit_does_not_kill_backend(monkeypatch, tmp_path):
+    class _ExitingOrchestrator:
+        def __init__(self, store):
+            self.store = store
+
+        def run(self, goal, specs=None, worker_mode=None, label=None):
+            raise SystemExit(77)
+
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _ExitingOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    with pytest.raises(RuntimeError, match="without killing the backend"):
+        bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+
+
 def test_execute_intent_omitted_worker_mode_stays_inline(monkeypatch, tmp_path):
     _CapturingWorkerSpec._last_captured = []
     _FakeOrchestrator.last_worker_mode = "unset"
@@ -174,7 +201,7 @@ def test_swarm_allowed_adapters_includes_cursor_when_settings_enable_it(
 def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "12345")
+    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "123456")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
     _pin_agentic_only_allowlist(monkeypatch)
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
@@ -189,7 +216,28 @@ def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
     result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
     assert result is not None
     payload = _CapturingWorkerSpec._last_captured[0].payload
-    assert payload.get("token_budget") == 12345
+    assert payload.get("token_budget") == 123456
+
+
+def test_agentic_swarm_floors_degenerate_token_budget(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "1")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace the live scoring pipeline for a points flicker",
+        roles=["pipeline-mapper"],
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    payload = _CapturingWorkerSpec._last_captured[0].payload
+    assert payload.get("token_budget") == 250000
 
 
 def _capture_agentic_swarm(monkeypatch, tmp_path, intent, **env):

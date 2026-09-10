@@ -68,8 +68,8 @@ it('opens Evidence from the real expanded job detail', async () => {
   try {
     localStorage.clear(); sessionStorage.clear();
     render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
-    await screen.findByRole('button', { name: 'Evidence entry · complete' });
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Evidence entry · complete' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Inspect tasks and artifacts' }));
     await screen.findByRole('region', { name: 'Selected job inspector' });
     fireEvent.click(screen.getByRole('button', { name: 'Evidence', exact: true }));
     expect(within(screen.getByRole('region', { name: 'Job evidence' })).getByText('Recorded checks failed: 1')).toBeVisible();

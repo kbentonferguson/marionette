@@ -125,30 +125,32 @@ it('embeds the exact hidden target without resolving a colliding raw ID', async 
   expect(scroll).not.toHaveBeenCalled();
   fireEvent.click(row('job_1').getByRole('button', { name: /Dismiss/ }));
   openTarget('job_1', metadataSelectionKey(selection()));
-  const host = await screen.findByTestId('job-dashboard-host');
-  expect(host).toHaveAttribute('data-job-id', 'job_1');
-  expect(scroll).not.toHaveBeenCalled();
+  await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(scroll).toHaveBeenCalled();
 });
 it('embeds a PM job when artifact navigation is requested', async () => {
   await start();
   const queued = queuePendingSwarmNavigation(swarmNavigationTarget('job_1', { ...target, contextEpoch: store.getSnapshot().contextEpoch }, metadataJobs(store.getSnapshot())[0], 'artifact-missing'));
   mount();
-  const host = await screen.findByTestId('job-dashboard-host');
-  expect(host).toHaveAttribute('data-job-id', 'job_1');
-  expect(peekPendingSwarmNavigation()).toBeNull();
+  await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
   expect(queued.artifactId).toBe('artifact-missing');
 });
 it('holds an unobserved exact target until that exact row appears', async () => {
   await start(); mount(); openTarget('job_2', metadataSelectionKey(selection(2)));
   expect(screen.getByText(/Target job is not observed/)).toBeVisible(); expect(scroll).not.toHaveBeenCalled();
   pm.push(summary(2)); await observe();
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_2');
+  await waitFor(() => expect(row('job_2').getByRole('button', { name: /^PM/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
 });
 it('does not consume queued navigation while disabled', async () => {
   await start(); queuePendingSwarmNavigation(swarmNavigationTarget('job_1', { ...target, contextEpoch: store.getSnapshot().contextEpoch }, metadataJobs(store.getSnapshot())[0])); const mounted = mount(false);
   expect(peekPendingSwarmOpenJob()).toBe('job_1'); expect(scroll).not.toHaveBeenCalled();
   mounted.rerender(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
+  await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   expect(peekPendingSwarmOpenJob()).toBeNull();
 });
 it('does not persist PM dashboard focus and isolates native dismissal with compact labels', async () => {
@@ -159,10 +161,11 @@ it('does not persist PM dashboard focus and isolates native dismissal with compa
   fireEvent.click(row('job_1', 'local').getByRole('button', { name: /Dismiss/ }));
   expect(preference().dismissed).toEqual([localKey(native[0].local_ref)]);
   fireEvent.click(label);
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
+  expect(label).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   mounted.unmount(); await start(); mount();
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
   incarnation = 'native_process_2'; await act(async () => { store.setTarget(target); await store.readView(); }); await observe();
   expect(row('job_1', 'local').getByRole('button', { name: /completed/ })).toBeVisible();
 });
@@ -225,10 +228,11 @@ it('bounds stored and user-expanded preferences and keeps native resumed complet
   await start(); mount();
   expect(preference().expanded).toHaveLength(8); expect(preference().dismissed).toHaveLength(200);
   fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   expect(preference().expanded).toHaveLength(8);
-  fireEvent.click(screen.getByRole('button', { name: /Close/ }));
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
+  fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'false');
   fireEvent.click(row('job_1', 'local').getByRole('button', { name: /Dismiss/ }));
   native[0] = { ...native[0], lifecycle: 'running' }; await observe();
   expect(preference().dismissed).not.toContain(localKey(native[0].local_ref));
@@ -238,28 +242,31 @@ it('bounds stored and user-expanded preferences and keeps native resumed complet
 it('embeds a PM job from a remounted artifact deep-link', async () => {
   await start();
   const mounted = mount(); openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
-  expect(peekPendingSwarmNavigation()).toBeNull();
+  await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
   mounted.unmount(); await start(); mount();
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
-  expect(peekPendingSwarmNavigation()).toBeNull();
+  await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
+  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
 });
 it('requires both job ID and exact selection key to match and never falls back from a missing exact key', async () => {
   await start(); mount(); openTarget('job_2', metadataSelectionKey(selection()));
   expect(scroll).not.toHaveBeenCalled();
   openTarget('job_1', metadataSelectionKey({ ...selection(), job_ref: { job_id: 'job_1', state_id: 'missing-store' } }));
   expect(scroll).not.toHaveBeenCalled();
-  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).not.toHaveAttribute('aria-expanded');
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
 });
 it('opens the Puppetmaster dashboard from a PM job row', async () => {
   pm = pm.map(row => ({ ...row, selection: { ...row.selection, job_ref: { ...row.selection.job_ref, version: 2, incarnation: '12345678-1234-4234-8234-123456789abc' } } }));
   await start(); mount();
   fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'job_1');
-  expect(screen.queryByRole('button', { name: 'Inspect tasks and artifacts' })).not.toBeInTheDocument();
+  expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Open Puppetmaster board' })).toBeInTheDocument();
 });
 
 it('keeps dismissal on a stale running observation and removes it only after a live observation', async () => {

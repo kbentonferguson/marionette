@@ -24,8 +24,8 @@ describe("jobsDashboard URLs", () => {
     expect(jobsRailViewportUrl("127.0.0.1", 8787, "job_abcdef012345")).toBe(
       buildDashboardEmbedUrl("127.0.0.1", 8787, "job_abcdef012345"),
     );
-    expect(jobsRailIsPuppetmasterViewport()).toBe(true);
-    expect(JOBS_RAIL_VIEWPORT).toBe("puppetmaster-embed");
+    expect(jobsRailIsPuppetmasterViewport()).toBe(false);
+    expect(JOBS_RAIL_VIEWPORT).toBe("native-strip");
   });
 });
 

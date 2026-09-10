@@ -500,7 +500,7 @@ export function openAgentWorkspace(path: string): void {
 }
 
 /**
- * Focus the Jobs tool and select the job (PM rows embed the dashboard).
+ * Focus the Jobs tool and expand the job in the compact native strip.
  *
  * Queues the job id before dispatch so a late-mounted SwarmPane still
  * expands/scrolls (harness-open-swarm-job is easy to miss when the pane

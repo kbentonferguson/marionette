@@ -133,10 +133,12 @@ it('distinguishes unknown activity from active and terminal observations', async
 it('embeds a provider hire and keeps that dashboard when lifecycle updates', async () => {
   await start(); mount();
   fireEvent.click(toggle('older-active'));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   native[0] = { ...native[0], lifecycle: 'completed', created_at: 100 };
   await observe();
-  expect(screen.getByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Inspect actions' })).toBeNull();
 });
 it('opens a finished hire from a pending Jobs deep-link even when the group is collapsed', async () => {
@@ -144,7 +146,9 @@ it('opens a finished hire from a pending Jobs deep-link even when the group is c
   fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
   expect(row('older-complete')).not.toBeVisible();
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-complete', metadataKey: localKey(native[2].local_ref) } })));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-complete');
+  await waitFor(() => expect(toggle('older-complete')).toHaveAttribute('aria-expanded', 'true'));
+  expect(row('older-complete')).toBeVisible();
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
 });
 it('hides only expanded lifecycle groups that are displayed and preserves other terminal rows', async () => {
   await start(); mount(); fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
@@ -172,10 +176,10 @@ it('stays passive while hidden and does not consume navigation or start extra re
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-active', metadataKey: localKey(native[0].local_ref) } })));
   expect(paths).toHaveLength(baseline); expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   ui.rerender(<JobMetadataContext.Provider value={store}><MetadataJobs /></JobMetadataContext.Provider>);
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
-  expect(paths.filter((path) => path.includes('/metadata') || path.includes('/local'))).toHaveLength(
-    paths.slice(0, baseline).filter((path) => path.includes('/metadata') || path.includes('/local')).length,
-  );
+  await waitFor(() => expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
+  const discovery = (path: string) => (path.includes('/metadata') || path.includes('/local')) && !path.includes('/detail');
+  expect(paths.filter(discovery)).toHaveLength(paths.slice(0, baseline).filter(discovery).length);
 });
 it('distinguishes cold loading, failed discovery, and a known empty observed window', async () => {
   store.setTarget(target); mount(); expect(screen.getByText(/Waiting for job metadata/)).toBeVisible();
@@ -195,9 +199,11 @@ it('clears an empty matching filter without implying the retained window is all 
 it('keeps an embedded hire when it completes into a collapsed finished group', async () => {
   await start(); mount(); fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
   fireEvent.click(toggle('older-active'));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   native[0] = { ...native[0], lifecycle: 'completed' }; await observe();
-  expect(screen.getByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true');
+  expect(row('older-active')).toBeVisible();
 });
 it('does not move focus for navigation while the document is hidden', async () => {
   await start(); mount();
@@ -206,7 +212,8 @@ it('does not move focus for navigation while the document is hidden', async () =
   act(() => window.dispatchEvent(new CustomEvent('harness-open-swarm-job', { detail: { jobId: 'older-active', metadataKey: localKey(native[0].local_ref) } })));
   expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   visibility.mockReturnValue(false); act(() => document.dispatchEvent(new Event('visibilitychange')));
-  expect(await screen.findByTestId('job-dashboard-host')).toHaveAttribute('data-job-id', 'older-active');
+  await waitFor(() => expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true'));
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
 });
 
 it('moves stale lifecycle observations into unconfirmed activity without claiming running jobs', async () => {

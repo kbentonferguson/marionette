@@ -3153,6 +3153,7 @@ def _get_settings_dict():
         current_swarm_reasoning_effort,
     )
     from harness.session_trace import session_trace_export_enabled
+    from pmharness.bridge import worker_token_budget
 
     reach = _cfg.reach
     status = get_api_key_status(reach)
@@ -3186,9 +3187,7 @@ def _get_settings_dict():
         "pilotToolBudget": (
             os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip() or "25"
         ),
-        "workerTokenBudget": (
-            os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
-        ),
+        "workerTokenBudget": str(worker_token_budget()),
         "reasoning_effort": current_reasoning_effort(),
         "swarm_reasoning_effort": current_swarm_reasoning_effort(),
         "reasoning_support": reasoning_support,

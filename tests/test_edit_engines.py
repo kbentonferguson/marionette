@@ -772,7 +772,7 @@ def test_agentic_payload_token_budget_from_env(monkeypatch):
         cfg = _cfg(repo_dir)
         captured: list[dict] = []
         _install_agentic_mocks(monkeypatch, capture_payload=captured)
-        monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "7777")
+        monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "77777")
         monkeypatch.delenv("HARNESS_IMPLEMENT_PROVIDER", raising=False)
         monkeypatch.delenv("HARNESS_IMPLEMENT_MODEL", raising=False)
 
@@ -783,7 +783,7 @@ def test_agentic_payload_token_budget_from_env(monkeypatch):
 
         result = run_agentic_edit(cfg, "make a change")
         assert result.ok is True
-        assert captured[0]["token_budget"] == 7777
+        assert captured[0]["token_budget"] == 77777
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 

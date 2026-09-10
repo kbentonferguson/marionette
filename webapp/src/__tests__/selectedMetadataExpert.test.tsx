@@ -7,7 +7,7 @@ import type { MetadataDetail, MetadataSelection } from '../lib/jobMetadata';
 import { parseCancellationResult, selectJobControl } from '../lib/jobControl';
 import { jobArtifactKey } from '../lib/jobArtifacts';
 import { expertDetail, expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
-import { JobsInspectHarness } from './jobsInspectHarness';
+import { inspectHarnessJob, JobsInspectHarness } from './jobsInspectHarness';
 import { context, token } from './jobMetadata.fixtures';
 import type { HistoryLane, SelectedEconomics, SelectedHistory, SelectedMetric } from '../lib/selectedMetadataEvidence';
 
@@ -87,7 +87,7 @@ it('opens bounded selected panels with explicit unknowns and pages only the requ
   });
   render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   await screen.findByRole('button', { name: /Expert inspection/ });
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })); });
+  inspectHarnessJob('harness', selected.job_ref.job_id);
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(within(inspector).getByText('task-1: running')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Stop selected workers' })).toHaveAttribute('aria-disabled', 'false');
@@ -118,9 +118,9 @@ it('keeps two colliding selected inspections cached and does not consume a diffe
   f.selected.mockImplementation(async selection => ({ ...selectedDetail(selection), context: f.context() }));
   render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   await screen.findByRole('button', { name: /Harness selection/ });
-  await act(async () => { fireEvent.click(within(screen.getByTestId(`inspect-harness-${selected.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' })); });
+  inspectHarnessJob('harness', selected.job_ref.job_id);
   await screen.findByRole('region', { name: 'Selected job inspector' });
-  await act(async () => { fireEvent.click(within(screen.getByTestId(`inspect-cli-${cli.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' })); });
+  inspectHarnessJob('cli', cli.job_ref.job_id);
   await waitFor(() => expect(screen.getAllByRole('region', { name: 'Selected job inspector' })).toHaveLength(2));
   expect(Object.keys(f.store.getSnapshot().detailCache)).toHaveLength(2);
   const first = within(screen.getByTestId(`inspect-harness-${selected.job_ref.job_id}`)).getByRole('region', { name: 'Selected job inspector' });
@@ -184,7 +184,7 @@ it('pages captured Routing attempts through the bounded cursor and stops at the 
   });
   render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   await screen.findByRole('button', { name: /Routing continuation/ });
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  inspectHarnessJob('harness', selected.job_ref.job_id);
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   fireEvent.click(within(inspector).getByRole('button', { name: 'Routing', exact: true }));
   expect(screen.getByText('Captured started at: 2026-09-07T12:00:00Z')).toBeVisible();
@@ -219,7 +219,7 @@ it('discloses publication digest and exact-task captured usage without aggregati
   });
   render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   await screen.findByRole('button', { name: /Captured disclosures/ });
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  inspectHarnessJob('harness', selected.job_ref.job_id);
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(screen.queryByRole('region', { name: 'Captured usage for task-1' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'task-1: running' }));

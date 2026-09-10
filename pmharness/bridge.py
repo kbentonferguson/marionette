@@ -55,6 +55,30 @@ def _analyze_max_turns() -> int:
         return 40
 
 
+DEFAULT_WORKER_TOKEN_BUDGET = 250000
+MIN_WORKER_TOKEN_BUDGET = 40000
+
+
+def parse_worker_token_budget(raw: object) -> int:
+    """Parse a worker token ceiling.
+
+    ``0`` / ``off`` / ``unlimited`` / empty reset to
+    ``DEFAULT_WORKER_TOKEN_BUDGET``. Values below ``MIN_WORKER_TOKEN_BUDGET``
+    also reset — a 1-token ceiling force-submits every agentic worker on
+    turn 2. Non-numeric input raises ``ValueError``.
+    """
+    text = "" if raw is None else str(raw).strip().lower()
+    if text in ("", "0", "off", "none", "unlimited", "default"):
+        return DEFAULT_WORKER_TOKEN_BUDGET
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid workerTokenBudget")
+    if value < MIN_WORKER_TOKEN_BUDGET:
+        return DEFAULT_WORKER_TOKEN_BUDGET
+    return value
+
+
 def worker_token_budget() -> int:
     """Default token ceiling stamped on analysis/implement worker payloads.
 
@@ -65,9 +89,11 @@ def worker_token_budget() -> int:
     """
     import os as _os
     try:
-        return max(1, int(_os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "250000") or 250000))
-    except (TypeError, ValueError):
-        return 250000
+        return parse_worker_token_budget(
+            _os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "250000")
+        )
+    except ValueError:
+        return DEFAULT_WORKER_TOKEN_BUDGET
 
 
 def _browser_swarm_enabled(goal: str) -> bool:
@@ -1903,6 +1929,12 @@ def execute_intent(
             auth_failure=auth_note,
             adapter=adapter,
         )
+    except SystemExit as exc:
+        # Inline workers share this process. crash_after_claim and similar
+        # aborts must fail the dispatch, not take down the chat backend.
+        raise RuntimeError(
+            f"swarm worker aborted without killing the backend ({exc})"
+        ) from exc
     except Exception as exc:
         _enrich_bridge_dispatch_error(exc, store)
         raise

@@ -756,14 +756,9 @@ class ProviderWorker:
         if _governing is not None:
             self.budget = _governing.child()
         else:
-            try:
-                _default_tokens = int(
-                    os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "250000") or 250000
-                )
-            except (TypeError, ValueError):
-                _default_tokens = 250000
-            if _default_tokens < 1:
-                _default_tokens = 250000
+            from pmharness.bridge import worker_token_budget
+
+            _default_tokens = worker_token_budget()
             # Analysis needs more idle headroom: leaf workers do not emit
             # swarm findings, so each investigate-only cycle increments idle.
             _idle = 5 if not self.expects_diff else 2
