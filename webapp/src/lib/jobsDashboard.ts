@@ -65,3 +65,44 @@ export function notifyJobsDashboardChrome(focused: boolean): void {
     /* ignore */
   }
 }
+
+export function dashboardUnavailableMessage(err?: unknown): string {
+  if (err instanceof Error && err.message.trim()) return err.message.trim();
+  if (typeof err === "string" && err.trim()) return err.trim();
+  return "Could not locate the Puppetmaster dashboard.";
+}
+
+export function dashboardLocateError(payload: DashboardLocate & { stderr?: string }): string {
+  const stderr = typeof payload.stderr === "string" ? payload.stderr.trim() : "";
+  const base = (payload.detail || payload.error || "").trim() || dashboardUnavailableMessage();
+  return stderr ? `${base}: ${stderr.slice(0, 280)}` : base;
+}
+
+export type JobsListEmptyInput = {
+  failedRead: boolean;
+  viewReady: boolean;
+  working: boolean;
+  hiddenCount: number;
+  filter: string;
+  hasJobs: boolean;
+};
+
+/** Honest empty-list copy — never "Job data unavailable" as a blank lie. */
+export function jobsListEmptyTruth(input: JobsListEmptyInput): { title: string; detail?: string } {
+  if (input.failedRead) {
+    return {
+      title: "Job observations could not be loaded",
+      detail: "Retry updates; an empty view does not establish no work.",
+    };
+  }
+  if (!input.viewReady || (!input.hasJobs && input.working)) {
+    return { title: "Loading jobs…" };
+  }
+  if (input.filter !== "all" && !input.hasJobs) {
+    return { title: "No jobs match this filter" };
+  }
+  if (input.hiddenCount > 0 && !input.hasJobs) {
+    return { title: "All jobs are hidden" };
+  }
+  return { title: "No jobs yet" };
+}

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildDashboardEmbedUrl,
+  dashboardLocateError,
+  dashboardUnavailableMessage,
+  jobsListEmptyTruth,
   jobsRailIsPuppetmasterViewport,
   jobsRailViewportUrl,
   JOBS_RAIL_VIEWPORT,
@@ -46,5 +49,36 @@ describe("requestRightMinWidth", () => {
     const event = spy.mock.calls[0]?.[0] as CustomEvent<{ focused: boolean }>;
     expect(event.type).toBe(JOBS_DASHBOARD_CHROME_EVENT);
     expect(event.detail.focused).toBe(true);
+  });
+});
+
+
+describe("Jobs rail honesty", () => {
+  it("names locate/embed failures instead of Job data unavailable", () => {
+    expect(dashboardLocateError({
+      ok: false,
+      error: "state_dir_unavailable",
+      detail: "No Puppetmaster project store for this workspace.",
+    })).toBe("No Puppetmaster project store for this workspace.");
+    expect(dashboardUnavailableMessage()).toBe("Could not locate the Puppetmaster dashboard.");
+    expect(jobsListEmptyTruth({
+      failedRead: true,
+      viewReady: true,
+      working: false,
+      hiddenCount: 0,
+      filter: "all",
+      hasJobs: false,
+    })).toEqual({
+      title: "Job observations could not be loaded",
+      detail: "Retry updates; an empty view does not establish no work.",
+    });
+    expect(jobsListEmptyTruth({
+      failedRead: false,
+      viewReady: true,
+      working: false,
+      hiddenCount: 0,
+      filter: "all",
+      hasJobs: false,
+    }).title).toBe("No jobs yet");
   });
 });

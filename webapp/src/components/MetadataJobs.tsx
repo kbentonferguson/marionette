@@ -16,10 +16,12 @@ import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
-// Jobs rail picker + PM embed host. Adapters locate the dashboard; they are
-// not a dual native tracker (see jobsDashboard.ts / JobDashboardHost).
+// Jobs rail picker + PM embed host. Selecting a hire hosts JobDashboardHost.
+// Adapters locate the dashboard; they are not a dual native tracker.
 import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
 import { isPmDashboardJob, isSwarmTrackerJob } from '../lib/jobClassification';
+import { jobDisplayTitle } from '../lib/jobDisplayTitle';
+import { jobsListEmptyTruth } from '../lib/jobsDashboard';
 import JobDashboardHost from './JobDashboardHost';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
@@ -502,7 +504,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     setPreferences(p => ({ ...p, dismissed: [...new Set([...p.dismissed, ...finishedRows.filter(j => j.read_status !== 'unavailable').flatMap(j => j.metadata_key ? [j.metadata_key] : [])])].slice(-200) }));
   };
   const renderJob = (job: Job) => {
-    const key = job.metadata_key ?? '', hostable = isPmDashboardJob(job), open = !hostable && preferences.expanded.includes(key);
+    const key = job.metadata_key ?? '', title = jobDisplayTitle(job), hostable = isPmDashboardJob(job), open = !hostable && preferences.expanded.includes(key);
     const expert = currentExpert(state, key), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, key));
     const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isActive(job) && !model;
     const header = currentHeader(state, key);
@@ -514,10 +516,10 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     const adapter = job.adapter || '';
     return <div className="relative shrink-0 flex flex-col border-b border-edge/25 last:border-b-0" key={key} hidden={isFinished(job) && !finishedOpen} data-job-id={job.id} data-job-source={job.source} data-quality={quality(job)}
       onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
-      <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-5' : ''}`} aria-label={`${job.goal} · ${metadataOutcomeLabel(job.status)}`} {...(hostable ? { 'aria-pressed': selectedKey === key } : { 'aria-expanded': open })} onClick={() => hostable ? setSelectedKey(key) : setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
+      <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-5' : ''}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} {...(hostable ? { 'aria-pressed': selectedKey === key } : { 'aria-expanded': open })} onClick={() => hostable ? setSelectedKey(key) : setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
         <span className="shrink-0 text-faint">{hostable || open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
         <span className="shrink-0">{runningIcon ? <MetadataActivityIndicator /> : isActive(job) ? <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" /> : failedOutcomeStatuses.has(job.status) ? <XCircle size={12} className="text-risk" /> : quality(job) === 'degraded' ? <AlertTriangle size={12} className="text-warn" /> : ['completed', 'complete', 'done'].includes(job.status) ? <CheckCircle2 size={12} className="text-faint" /> : job.status === 'cancelled' ? <XCircle size={12} className="text-muted" /> : <Circle size={12} className="text-muted" />}</span>
-        <span className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">{job.goal}</span>
+        <span className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">{title}</span>
         {showWorkerProgress && <span className="inline-flex items-center gap-1 shrink-0">
           <span className="h-0.5 w-8 rounded-full bg-edge/50 overflow-hidden" aria-hidden>
             <span className={`block h-full rounded-full ${workerProgressFull ? (quality(job) === 'degraded' ? 'bg-warn/70 w-full' : 'bg-good/70 w-full') : 'bg-accent/70'}`} style={{ width: workerProgressFull ? '100%' : `${Math.max(8, Math.round((finishedWorkers / workerCount) * 100))}%` }} />
@@ -529,7 +531,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
         {routing && <span className="shrink-0"> · routing…</span>}
         <span className={`text-[9px] font-medium tabular-nums shrink-0 ${job.status === 'cancelled' ? 'text-muted' : failedOutcomeStatuses.has(job.status) ? 'text-risk/80' : quality(job) === 'degraded' ? 'text-warn/80' : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? 'text-good' : 'text-accent/80'}`}>{quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span>
       </button>
-      {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from Jobs: ${job.goal}`} title="Dismiss from Jobs (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
+      {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from Jobs: ${title}`} title="Dismiss from Jobs (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
       {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
       {open && <MetadataInspection compact revealed={inspected.includes(key)} onReveal={() => setInspected(p => p.includes(key) ? p : [...p, key].slice(-8))} job={job} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
     </div>;
@@ -636,13 +638,13 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     {!shown.length && filter !== 'untrustworthy' && <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
       <Network size={20} className="text-faint/50" />
       <span className="text-[12px] text-muted font-medium">{failedRead
-        ? 'Job data unavailable'
+        ? jobsListEmptyTruth({ failedRead: true, viewReady: true, working: false, hiddenCount: 0, filter: 'all', hasJobs: false }).title
         : state.view.kind !== 'view' || !jobs.length && state.working
           ? <><span>Loading jobs...</span> Waiting for job metadata; no lifecycle result is known yet.</>
           : hidden.length && filter === 'all' ? 'Observed finished jobs are hidden. Show hidden jobs to restore them.'
             : !jobs.length ? 'No jobs yet'
               : 'No jobs match this filter'}</span>
-      {failedRead ? <span className="text-[10.5px] text-faint">Job observations are unavailable. Retry updates; an empty view does not establish no work.</span>
+      {failedRead ? <span className="text-[10.5px] text-faint">Retry updates; an empty view does not establish no work.</span>
         : filter !== 'all' && (jobs.length > 0 || hidden.length > 0) ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setFilter('all')}>Clear filter</button>
         : hidden.length > 0 ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>
         : !failedRead && state.view.kind === 'view' && !jobs.length && !state.working && (
