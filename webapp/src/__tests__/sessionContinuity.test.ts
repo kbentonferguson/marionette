@@ -11,7 +11,13 @@ vi.mock("../lib/api", () => ({ api: {
  readEventsSince: vi.fn(), chatEventsLive: vi.fn(), interruptSession: vi.fn(),
 } }));
 const ref = <T,>(current: T) => ({ current });
-const msg = (text: string): Item => ({ kind: "msg", msg: { role: "user", text } });
+const msg = (text: string, id?: string): Item => ({
+  kind: "msg",
+  msg: { role: "user", text, ...(id ? { id } : {}) },
+});
+/** Hydrate stamps ordinal ids for session A user rows. */
+const hydratedUser = (text: string, ordinal = 0): Item =>
+  msg(text, `msg:A:user:${ordinal}`);
 function deferred<T>() {
  let resolve!: (value: T) => void;
  const promise = new Promise<T>((r) => { resolve = r; });
@@ -117,7 +123,7 @@ it("arms recovery after all transcript failures and can recover later", async ()
  expect(api.readEventsSince).toHaveBeenCalledTimes(1);
  vi.mocked(api.sessionTranscript).mockResolvedValue({history:[{role:"user",content:"recovered"}]});
  await act(async () => recovery.resolve({session_id:"A",cursor:0,events:[{id:0,kind:"ring_miss",data:{code:"ring_miss",missed:true,available:false}}]}));
- expect(d.itemsRef.current).toEqual([msg("recovered")]);
+ expect(d.itemsRef.current).toEqual([hydratedUser("recovered")]);
 });
 it("arms recovery after an empty warm refresh", async () => {
  writeTranscriptCache("A", [msg("warm")]);
@@ -132,7 +138,7 @@ it("cold resume hydrates then attaches exactly one live owner", async () => {
  vi.mocked(api.getSessionState).mockResolvedValue({ runners: { A: "running" } });
  const d = fixture(); renderHook(() => useSessionSwitch(d));
  await act(async () => {});
- expect(d.itemsRef.current).toEqual([msg("cold")]);
+ expect(d.itemsRef.current).toEqual([hydratedUser("cold")]);
  expect(api.chatEventsLive).toHaveBeenCalledTimes(1);
  expect(api.readEventsSince).not.toHaveBeenCalled();
  d.ensureChatEventsReattachRef.current();
@@ -149,7 +155,7 @@ it("rapid A-B-A rejects old responses and only detaches the backend stream", asy
  h.rerender({sid:"B"}); h.rerender({sid:"A"});
  await act(async () => latest.resolve({history:[{role:"user",content:"latest"}]}));
  await act(async () => { a.resolve({history:[{role:"user",content:"old A"}]}); b.resolve({history:[{role:"user",content:"old B"}]}); });
- expect(d.itemsRef.current).toEqual([msg("latest")]);
+ expect(d.itemsRef.current).toEqual([hydratedUser("latest")]);
  expect(close).toHaveBeenCalledTimes(1);
  expect(api.interruptSession).not.toHaveBeenCalled();
 });
@@ -177,7 +183,7 @@ it("recovers a failed cold transcript while the idle event store reports no ring
  expect(d.itemsRef.current).toEqual([]);
  vi.mocked(api.sessionTranscript).mockResolvedValue({history:[{role:"user",content:"durable"}]});
  await act(async () => vi.advanceTimersByTimeAsync(2000));
- expect(d.itemsRef.current).toEqual([msg("durable")]);
+ expect(d.itemsRef.current).toEqual([hydratedUser("durable")]);
 });
 it("bounds failed cold recovery", async () => {
  vi.mocked(api.sessionTranscript).mockRejectedValue(new Error("offline"));
