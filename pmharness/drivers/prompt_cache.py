@@ -423,6 +423,43 @@ def maybe_attach_openrouter_session_id(
         return
 
 
+def is_opencode_host(base_url: str | None) -> bool:
+    """True when *base_url* points at OpenCode Go/Zen (opencode.ai)."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(base_url or "").netloc.lower()
+    except Exception:
+        host = (base_url or "").lower()
+    return host == "opencode.ai" or host.endswith(".opencode.ai") or "opencode.ai" in (base_url or "").lower()
+
+
+def maybe_attach_opencode_session_header(
+    headers: dict,
+    *,
+    base_url: str | None,
+    session_id: str | None = None,
+    messages: list | None = None,
+    system: str | None = None,
+) -> None:
+    """Set ``x-opencode-session`` for OpenCode Go/Zen routing. Best-effort.
+
+    OpenCode Go rejects requests that omit this header (MissingSessionID).
+    See https://opencode.ai/docs/go/#where-can-i-use-it
+    """
+    try:
+        if not isinstance(headers, dict) or not is_opencode_host(base_url):
+            return
+        sid = resolve_session_id(
+            session_id=session_id,
+            messages=messages,
+            system=system,
+        )
+        if sid:
+            headers["x-opencode-session"] = sid
+    except Exception:
+        return
+
+
 def supports_gpt56_explicit_prompt_cache(model: str | None) -> bool:
     """True for GPT-5.6+ families that accept prompt_cache_options/breakpoint."""
     m = (model or "").strip().lower().replace("_", "-")

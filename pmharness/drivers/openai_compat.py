@@ -21,6 +21,7 @@ from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
     apply_openai_compat_cache_control,
     maybe_attach_openrouter_session_id,
+    maybe_attach_opencode_session_header,
 )
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
@@ -729,6 +730,33 @@ class OpenAICompatDriver:
                                      or "invalid_request" in d or "not supported" in d
                                      or "unexpected" in d)
 
+    def _finalize_http_headers(
+        self,
+        headers: dict,
+        *,
+        session_id: str | None = None,
+        messages: list | None = None,
+        system: str | None = None,
+    ) -> dict:
+        """Merge extra_headers + OpenCode Go/Zen session routing header."""
+        headers.update(self.extra_headers)
+        maybe_attach_opencode_session_header(
+            headers,
+            base_url=self.base_url,
+            session_id=session_id if session_id is not None else self.session_id,
+            messages=messages,
+            system=system,
+        )
+        return headers
+        maybe_attach_opencode_session_header(
+            headers,
+            base_url=self.base_url,
+            session_id=session_id if session_id is not None else self.session_id,
+            messages=messages,
+            system=system,
+        )
+        return headers
+
     def _prepare_body(
         self,
         body: dict,
@@ -915,7 +943,9 @@ class OpenAICompatDriver:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key()}",
             }
-            headers.update(self.extra_headers)
+            self._finalize_http_headers(
+                headers, session_id=session_id, messages=body["messages"], system=system,
+            )
             t0 = time.time()
             raw = None
             last_err = None
@@ -1041,7 +1071,9 @@ class OpenAICompatDriver:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key()}",
             }
-            headers.update(self.extra_headers)
+            self._finalize_http_headers(
+                headers, session_id=session_id, messages=messages, system=system,
+            )
             t0 = time.time()
             raw = None
             try:
@@ -1253,7 +1285,9 @@ class OpenAICompatDriver:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key()}",
             }
-            headers.update(self.extra_headers)
+            self._finalize_http_headers(
+                headers, session_id=session_id, messages=messages, system=system,
+            )
             t0 = time.time()
             acc = _OpenAIChatSseAccumulator(
                 on_delta=on_delta,
