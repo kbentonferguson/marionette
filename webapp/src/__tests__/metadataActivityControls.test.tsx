@@ -139,7 +139,7 @@ it('embeds a provider hire and keeps that dashboard when lifecycle updates', asy
   await observe();
   expect(toggle('older-active')).toHaveAttribute('aria-expanded', 'true');
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Inspect actions' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Inspect actions' })).toBeVisible();
 });
 it('opens a finished hire from a pending Jobs deep-link even when the group is collapsed', async () => {
   await start(); mount();

@@ -4,7 +4,7 @@ import MetadataJobs, { MetadataInspection } from '../components/MetadataJobs';
 import { metadataJobs } from '../lib/jobMetadataContext';
 import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 import { nativeExpertFixture, capturedModelDetail } from './nativeExpert.fixtures';
-import { JobsInspectHarness } from './jobsInspectHarness';
+import { inspectHarnessJob, JobsInspectHarness } from './jobsInspectHarness';
 import { token } from './jobMetadata.fixtures';
 let fixture: Awaited<ReturnType<typeof expertMetadataFixture>> | Awaited<ReturnType<typeof nativeExpertFixture>> | undefined;
 afterEach(() => { cleanup(); fixture?.dispose(); fixture = undefined; localStorage.clear(); });
@@ -40,6 +40,7 @@ it('withholds final route on partial history, then preserves prior-page associat
   const job = metadataJobs(f.store.getSnapshot()).find(row => row.local_ref);
   if (!job) throw Error('Missing native job');
   render(<f.Provider><MetadataInspection job={job} /></f.Provider>);
+  await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Inspect routing' }));
   await screen.findByText(/routing: partial/);
   expect(screen.queryByText(/cheap-model/)).toBeNull();
@@ -77,12 +78,11 @@ it('keeps separate captured attempt models historical even with partial coverage
       page: { ...detail.history.attempts.page, outcome: 'partial', next_cursor: token(), scanned: 2, captured_count: 3 },
       rows: [attempt, { ...attempt, sequence: attempt.sequence + 1, facts: { ...attempt.facts, model: 'other-recorded-model', attempt_id: 'second-attempt' } }] } } };
   });
-  // Row click embeds the PM dashboard; inspect beside the strip instead.
   render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
   await screen.findByRole('button', { name: /Historical model inspection/ });
+  inspectHarnessJob('harness', 'job_1');
   const inspectBtn = within(screen.getByTestId('inspect-harness-job_1')).getByRole('button', { name: 'Inspect tasks and artifacts' });
   expect(inspectBtn).not.toBeDisabled();
-  await act(async () => { fireEvent.click(inspectBtn); });
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(screen.queryByTitle('Model: grok-4-5')).toBeNull();
   fireEvent.click(within(inspector).getByRole('button', { name: 'Routing', exact: true }));

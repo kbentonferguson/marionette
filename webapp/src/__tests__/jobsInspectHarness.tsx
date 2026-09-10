@@ -12,7 +12,8 @@ export function inspectHarnessJob(source: string, id: string) {
   const root = screen.getByTestId(`inspect-${source}-${id}`);
   const toggle = rowToggle(root);
   if (toggle && toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
-  const btn = within(root).getByRole("button", { name: "Inspect tasks and artifacts" });
+  const btn = within(root).queryByRole("button", { name: "Inspect tasks and artifacts" })
+    ?? within(root).getByRole("button", { name: "Inspect actions" });
   fireEvent.click(btn);
   return root;
 }

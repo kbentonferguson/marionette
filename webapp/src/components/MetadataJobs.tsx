@@ -287,17 +287,14 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
         </div>)}
       </div>
     </div>}
-    {!compact && <div className="flex flex-wrap gap-1">
+    <div className="flex flex-wrap gap-1">
       <button className={button} disabled={!local && !selectedPM} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
-    </div>}
-    {compact && !local && <div className="flex flex-wrap gap-1">
-      <button className={button} disabled={!selectedPM} onClick={() => inspect()}>Inspect tasks and artifacts</button>
-    </div>}
+    </div>
     {!local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
     {view.kind === 'view' && !local && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
-    {!compact && local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
-    {!compact && local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
+    {local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
+    {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
     {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
     {native?.error && <p role="alert">{native.summaryFreshness === 'observed' ? 'Selected lane is stale or unavailable. Retry inspection.' : 'Selected read unavailable. Retry inspection.'}</p>}
