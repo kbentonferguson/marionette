@@ -6,15 +6,20 @@ import { isOccludedScrollParentSize } from "./transcriptVirtualWindow";
 
 export const FEED_PIN_THRESHOLD_PX = 120;
 /**
- * Re-attach stick-to-bottom only when the viewport is this close to the true
- * end. Kept tight so a light Mac trackpad nudge cannot "still count as pinned"
- * and fight streaming growth.
+ * Re-attach stick-to-bottom after an input interrupt. ~70px is wide enough to
+ * catch a flick that lands near the end without treating a light trackpad
+ * nudge (still well above this band) as pinned. Unpin is input-based, not
+ * "distance exceeded this number".
  */
-export const FEED_REPIN_THRESHOLD_PX = 28;
-/** After the last wheel/touch/user-scroll event, wait this long before re-pin. */
+export const FEED_REPIN_THRESHOLD_PX = 70;
+/** After the last wheel/touch/keyboard/user-scroll event, wait this long before re-pin. */
 export const FEED_GESTURE_IDLE_MS = 150;
-/** Treat the viewport as at the true tail (not merely the 28px re-pin band). */
+/** Treat the viewport as at the true tail (not merely the re-pin band). */
 export const FEED_TAIL_EPSILON_PX = 0.5;
+/** Discrete spring: close residual error after feed-forwarding content growth. */
+export const FEED_FOLLOW_STIFFNESS = 0.42;
+export const FEED_FOLLOW_DAMPING = 0.78;
+export const FEED_FOLLOW_SETTLE_PX = 0.5;
 /** Inner live-reasoning pane re-pin threshold (smaller than outer feed). */
 export const THINKING_INNER_PIN_THRESHOLD_PX = 48;
 export const FEED_SETTLE_STABLE_FRAMES = 5;
@@ -128,13 +133,15 @@ export function pinStateFromScrollGeometry(
  * onScroll re-pins and the next stream token yanks the feed back — stutter.
  *
  * Rules:
- * - Upward wheel/touch sets ``releasedByGesture``; stay unpinned until the user
- *   scrolls toward the bottom AND lands within ``repinPx`` of the end.
- * - A still-active user gesture does not re-pin merely by entering the 28px
+ * - Input interrupt (wheel/touch/keyboard) sets ``releasedByGesture``; stay
+ *   unpinned until the user scrolls toward the bottom AND lands within
+ *   ``repinPx`` of the end.
+ * - A still-active user gesture does not re-pin merely by entering the restick
  *   band (mid-flick). Hitting the true tail (distance ~ 0) latches pin.
  * - ``wasPinned && !releasedByGesture`` survives content growth that pushes
  *   distance past the re-pin band — follow still owns the new max.
- * - Without a gesture release, pin follows the tight re-pin threshold only.
+ * - Geometry-only scrollTop changes (overflow-anchor, compositor) do not
+ *   unpin; ``inputInterrupt`` is required.
  */
 export function shouldDeferFollowDuringUserGesture(
   userGestureActive: boolean,
@@ -164,9 +171,12 @@ export function nextFeedPinState(opts: {
   repinPx?: number;
   /** Wheel/touch/scrollbar/keyboard gesture still in flight. */
   userGestureActive?: boolean;
+  /** Explicit input (wheel/touch/keyboard/scrollbar), not geometry alone. */
+  inputInterrupt?: boolean;
 }): { pinned: boolean; releasedByGesture: boolean } {
   const repinPx = opts.repinPx ?? FEED_REPIN_THRESHOLD_PX;
   const userGestureActive = opts.userGestureActive ?? false;
+  const inputInterrupt = opts.inputInterrupt ?? userGestureActive;
   const distance =
     opts.scrollHeight - opts.scrollTop - opts.clientHeight;
   const nearBottom = distance < repinPx;
@@ -185,7 +195,7 @@ export function nextFeedPinState(opts: {
   }
 
   if (opts.releasedByGesture) {
-    // Mid-flick above the tail: do not latch just because we entered 28px.
+    // Mid-flick above the tail: do not latch just because we entered the band.
     if (userGestureActive && !atTail) {
       return { pinned: false, releasedByGesture: true };
     }
@@ -196,10 +206,12 @@ export function nextFeedPinState(opts: {
   }
 
   // Keep stick-to-bottom across token growth. Height can jump so the old
-  // max sits well outside the 28px band before follow writes the new max.
+  // max sits well outside the restick band before follow writes the new max.
+  // Unpin only on input — overflow-anchor / compositor scrollTop noise must
+  // not release the pin.
   if (opts.wasPinned) {
-    if (scrolledAway && !nearBottom) {
-      return { pinned: false, releasedByGesture: false };
+    if (inputInterrupt && scrolledAway && !nearBottom) {
+      return { pinned: false, releasedByGesture: true };
     }
     return { pinned: true, releasedByGesture: false };
   }
@@ -234,6 +246,25 @@ export function shouldShowJumpToBottom(opts: {
 export function shouldUnpinOnWheel(deltaY: number, _settling: boolean): boolean {
   void _settling;
   return deltaY < 0;
+}
+
+const FEED_UNPIN_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
+
+/** Keyboard interrupt — PageUp / ArrowUp / Home. Composer is outside the feed. */
+export function shouldUnpinOnKeyboard(key: string): boolean {
+  return FEED_UNPIN_KEYS.has(key);
+}
+
+/** Wheel, touch, keyboard — not a scrollbar-position inference. */
+export function isFeedInputInterrupt(
+  source: "wheel" | "touch" | "keyboard" | "scrollbar",
+): boolean {
+  return (
+    source === "wheel"
+    || source === "touch"
+    || source === "keyboard"
+    || source === "scrollbar"
+  );
 }
 
 /**
@@ -277,6 +308,59 @@ export function shouldUnpinOnTouchMove(
  * Gesture release wins over session-switch settling so manual scroll-up during
  * settle glue is not overwritten by ResizeObserver follow.
  */
+export type FeedSpringFollowState = {
+  scrollTop: number;
+  velocityPxPerMs: number;
+};
+
+/**
+ * Stick-to-bottom follow: absorb content growth in the same frame (feed-
+ * forward), then spring any residual error toward max. A bare
+ * ``scrollTop = max`` snap fights overflow-anchor and hitchs when chrome
+ * shrinks a frame behind layout.
+ */
+export function nextFeedSpringFollow(opts: {
+  scrollTop: number;
+  maxScrollTop: number;
+  contentDeltaPx: number;
+  velocityPxPerMs: number;
+  dtMs?: number;
+  stiffness?: number;
+  damping?: number;
+}): FeedSpringFollowState {
+  const stiffness = opts.stiffness ?? FEED_FOLLOW_STIFFNESS;
+  const damping = opts.damping ?? FEED_FOLLOW_DAMPING;
+  void opts.dtMs;
+  // Feed-forward content growth so a pinned tail stays a pinned tail in the
+  // same frame. Spring only the leftover error (chrome / subpixel).
+  const forwarded = feedForwardFollowTop(
+    opts.scrollTop,
+    opts.contentDeltaPx,
+    opts.maxScrollTop,
+  );
+  const error = opts.maxScrollTop - forwarded;
+  if (Math.abs(error) < FEED_FOLLOW_SETTLE_PX) {
+    return { scrollTop: forwarded, velocityPxPerMs: 0 };
+  }
+  const velocity = (opts.velocityPxPerMs + error * stiffness) * damping;
+  const next = forwarded + velocity;
+  const clamped = Math.max(0, Math.min(opts.maxScrollTop, next));
+  if (Math.abs(opts.maxScrollTop - clamped) < FEED_FOLLOW_SETTLE_PX) {
+    return { scrollTop: opts.maxScrollTop, velocityPxPerMs: 0 };
+  }
+  return { scrollTop: clamped, velocityPxPerMs: velocity };
+}
+
+/** Same-frame feed-forward: keep distance-from-end across content growth. */
+export function feedForwardFollowTop(
+  scrollTop: number,
+  contentDeltaPx: number,
+  maxScrollTop: number,
+): number {
+  const forwarded = scrollTop + Math.max(0, contentDeltaPx);
+  return Math.max(0, Math.min(maxScrollTop, forwarded));
+}
+
 export function scrollTopAfterFeedHeightChange(opts: {
   scrollHeight: number;
   scrollTop: number;
@@ -285,6 +369,10 @@ export function scrollTopAfterFeedHeightChange(opts: {
   settling: boolean;
   releasedByGesture: boolean;
   userGestureActive?: boolean;
+  /** Prior scrollHeight so follow can feed-forward the growth delta. */
+  prevScrollHeight?: number;
+  velocityPxPerMs?: number;
+  dtMs?: number;
 }): number | null {
   if (opts.releasedByGesture) {
     return null;
@@ -303,10 +391,30 @@ export function scrollTopAfterFeedHeightChange(opts: {
     return null;
   }
   const maxScrollTop = Math.max(0, opts.scrollHeight - opts.clientHeight);
-  if (Math.abs(opts.scrollTop - maxScrollTop) < 0.5) {
+  if (opts.prevScrollHeight == null) {
+    if (Math.abs(opts.scrollTop - maxScrollTop) < FEED_FOLLOW_SETTLE_PX) {
+      return null;
+    }
+    return maxScrollTop;
+  }
+  const contentDeltaPx = opts.scrollHeight - opts.prevScrollHeight;
+  if (contentDeltaPx <= 0) {
+    if (Math.abs(opts.scrollTop - maxScrollTop) < FEED_FOLLOW_SETTLE_PX) {
+      return null;
+    }
+    return maxScrollTop;
+  }
+  const sprung = nextFeedSpringFollow({
+    scrollTop: opts.scrollTop,
+    maxScrollTop,
+    contentDeltaPx,
+    velocityPxPerMs: opts.velocityPxPerMs ?? 0,
+    dtMs: opts.dtMs ?? 16,
+  });
+  if (Math.abs(opts.scrollTop - sprung.scrollTop) < FEED_FOLLOW_SETTLE_PX) {
     return null;
   }
-  return maxScrollTop;
+  return sprung.scrollTop;
 }
 
 export type FeedResizeFollowResult =
@@ -411,6 +519,7 @@ export function feedResizeScrollFollowDecision(opts: {
     pinned: opts.snapshotPinned,
     settling: opts.snapshotSettling,
     releasedByGesture: false,
+    prevScrollHeight: opts.snapshotScrollHeight,
   });
   if (top != null) {
     return { kind: "follow", scrollTop: top };

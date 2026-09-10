@@ -13,8 +13,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
+  stableItemKey,
   type Item,
 } from "../components/TranscriptList";
+import { stampTranscriptMessageIds } from "../components/conversation/transcriptRowIdentity";
 
 afterEach(() => {
   cleanup();
@@ -225,5 +227,20 @@ describe("transcript feed virtualizer", () => {
     expect(list.className).toContain("relative");
     expect(list.className).not.toContain("flex-col");
     expect(screen.queryAllByTestId("transcript-virtual-row").length).toBeLessThan(80);
+  });
+
+  it("uses msgId#blockId keys that survive a persist-shaped remint", () => {
+    const live = stampTranscriptMessageIds(longTranscript(2), "sess-virt");
+    const persist = stampTranscriptMessageIds(
+      live.map((item) => (
+        item.kind === "msg"
+          ? { kind: "msg" as const, msg: { role: item.msg.role, text: item.msg.text, id: item.msg.id } }
+          : item
+      )),
+      "sess-virt",
+    );
+    expect(stableItemKey(live[0]!, 0)).toMatch(/#body$/);
+    expect(stableItemKey(live[0]!, 0)).toBe(stableItemKey(persist[0]!, 0));
+    expect(stableItemKey(live[0]!, 0)).not.toBe(stableItemKey(live[1]!, 1));
   });
 });

@@ -24,7 +24,7 @@ export function prefetchSessionTranscript(sessionId: string): Promise<boolean> {
       const res = await api.sessionTranscript(id);
       // Another path may have filled the cache while we were in flight.
       if (peekTranscriptCacheEntry(id)) return false;
-      writeTranscriptCache(id, transcriptResponseToItems(res));
+      writeTranscriptCache(id, transcriptResponseToItems(res, id));
       return true;
     } catch {
       return false;

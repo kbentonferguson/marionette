@@ -5,6 +5,7 @@ import {
   isOccludedScrollParentSize,
   restoreFeedScrollAfterFocus,
   shouldUseVirtualTranscriptWindow,
+  transcriptRowHeightMemoKey,
 } from "../components/conversation/transcriptVirtualWindow";
 
 describe("transcriptVirtualWindow", () => {
@@ -72,5 +73,11 @@ describe("transcriptVirtualWindow", () => {
     expect(file).toContain("invisible");
     expect(file).toContain("absolute");
     expect(file).not.toContain("hidden");
+  });
+
+  it("exposes the Pretext height memo key contract (id, length, width)", () => {
+    expect(transcriptRowHeightMemoKey("msg:s:user:0#body", 12, 510)).toBe(
+      ["msg:s:user:0#body", "12", "510"].join("\0"),
+    );
   });
 });

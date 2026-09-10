@@ -3592,7 +3592,7 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     {
       const height = 2000;
       const client = 400;
-      // 40px from bottom — inside old 120px band, outside tight repin.
+      // 40px from bottom — inside the 120px pin band; released+away stays unpinned.
       const lightUpTop = height - client - 40;
       expect(
         nextFeedPinState({

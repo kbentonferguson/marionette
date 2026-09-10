@@ -16,6 +16,8 @@ import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
 import type { Job } from '../lib/api';
 import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, loadJobScope, saveJobScope, type JobScope } from '../lib/jobScope';
+// Jobs rail picker + PM embed host. Adapters locate the dashboard; they are
+// not a dual native tracker (see jobsDashboard.ts / JobDashboardHost).
 import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
 import { isPmDashboardJob, isSwarmTrackerJob } from '../lib/jobClassification';
 import JobDashboardHost from './JobDashboardHost';

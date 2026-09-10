@@ -213,7 +213,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       const tres = await api.sessionTranscript(missSid);
       if (missHydrateGen !== runnerBusyPollGenRef.current) return;
       if (!subscriptionFencesStillPass(missSid) || !readStillCurrent()) return;
-      const loadedItems = transcriptResponseToItems(tres);
+      const loadedItems = transcriptResponseToItems(tres, missSid);
       const next = mergeTranscriptItems(itemsRef.current, loadedItems);
       const fp = transcriptFingerprint(next);
       if (fp === transcriptFpRef.current) return;
@@ -246,7 +246,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       const tres = await api.sessionTranscript(sid);
       if (!transcriptRefreshStillCurrent(pollGen, sid) || !readStillCurrent()) return;
       const terminalSwarmCalls = collectTerminalRunSwarmCalls(tres.display);
-      const loadedItems = transcriptResponseToItems(tres);
+      const loadedItems = transcriptResponseToItems(tres, sid);
       const local = itemsRef.current.filter((item) => {
         if (item.kind !== "card" || item.card.kind !== "run_swarm") return true;
         const live = liveRunSwarmIdentity(item.card);

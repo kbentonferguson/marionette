@@ -5,7 +5,15 @@
  * blurred or occluded (alt-tab). Falling back to the unvirtualized list
  * remounts every bubble and snaps the feed to the top. Latch virtualization
  * once the scroll parent has been sized, and ignore zero-size resizes.
+ *
+ * Height estimates finish the Pretext / Cheng Lou contract: `prepare` once
+ * per row text+font, `layout` per width, and a height memo keyed by
+ * (id, content length, width). Virtual rows never take Motion layoutScroll.
  */
+
+import { transcriptRowHeightMemoKey } from "./transcriptRowHeight";
+
+export { transcriptRowHeightMemoKey };
 
 export function isOccludedScrollParentSize(
   clientHeight: number,

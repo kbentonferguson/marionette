@@ -89,6 +89,15 @@ export function transcriptRowCacheKey(
   return `${rowId}\0${font}\0${whiteSpace}\0${text}`;
 }
 
+/** Cheng Lou height memo: prepare is text+font; height is (id, length, width). */
+export function transcriptRowHeightMemoKey(
+  rowId: string,
+  contentLength: number,
+  width: number,
+): string {
+  return `${rowId}\0${contentLength}\0${Math.round(width)}`;
+}
+
 export function hasMarkdownCodeFence(text: string): boolean {
   return /```/.test(text);
 }
@@ -292,11 +301,20 @@ export type TranscriptRowHeightCache = {
 
 export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
   const preparedByKey = new Map<string, PreparedText>();
+  const heightByMemo = new Map<string, number>();
 
   function layoutHeight(
     rowId: string,
     spec: TranscriptRowPretextSpec,
   ): number {
+    const memoKey = transcriptRowHeightMemoKey(
+      rowId,
+      spec.text.length,
+      spec.maxWidth,
+    );
+    const memoHit = heightByMemo.get(memoKey);
+    if (memoHit != null) return memoHit;
+
     const cacheKey = transcriptRowCacheKey(
       rowId,
       spec.text,
@@ -324,7 +342,9 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
         spec.maxProsePx != null
           ? Math.min(prose, spec.maxProsePx)
           : prose;
-      return Math.max(24, Math.ceil(capped + spec.chromePx));
+      const next = Math.max(24, Math.ceil(capped + spec.chromePx));
+      heightByMemo.set(memoKey, next);
+      return next;
     } catch {
       return TRANSCRIPT_ROW_FALLBACK_PX;
     }
@@ -349,7 +369,10 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
 
   return {
     estimateRowHeight,
-    clear: () => preparedByKey.clear(),
+    clear: () => {
+      preparedByKey.clear();
+      heightByMemo.clear();
+    },
   };
 }
 

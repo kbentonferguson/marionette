@@ -519,7 +519,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         try {
           const res = await api.sessionTranscript(sid);
           if (gen !== transcriptLoadGenRef.current) return null;
-          const loadedItems = transcriptResponseToItems(res);
+          const loadedItems = transcriptResponseToItems(res, sid);
           if (shouldRetryEmptyTranscript({
             loadedCount: loadedItems.length,
             attempt,
