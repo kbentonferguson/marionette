@@ -295,7 +295,7 @@ class SteerMixin:
             receipt = receipts.get(input_id)
             if receipt['status'] != 'accepted' or receipt['owner_instance'] != receipts.instance:
                 from .input_receipts import InputReceiptError
-                raise InputReceiptError('input_held', 'Input delivery was stopped or held; inspect Saved inputs.')
+                raise InputReceiptError('input_held', 'Input delivery was stopped or held; keep your draft and review it before sending again.')
             text, _ = receipts.delivery_content(input_id, text)
             cleaned = text.strip()
         if not cleaned:

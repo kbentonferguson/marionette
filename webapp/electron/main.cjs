@@ -1235,7 +1235,7 @@ ipcMain.on("harness:stream", (event, channelId, apiPath, identityHeaders) => {
       onEvent: (ev) => safeSend(`${channelId}:event`, ev),
       onDone: () => { safeSend(`${channelId}:done`); cleanup(); },
       onError: (payload) => {
-        logMain(`[stream] ${channelId} errored: ${payload && payload.message}`);
+        logMain(`[stream] ${channelId} errored: code=${payload && payload.code} status=${payload && payload.status}`);
         safeSend(`${channelId}:error`, payload);
         cleanup();
       },

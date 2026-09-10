@@ -60,6 +60,9 @@ export class JobMetadataStore {
   private readonly listeners = new Set<() => void>();
   private client: JobMetadataClient;
   private inFlight = false;
+  /** Backoff after Jobs metadata refresh 409 / refresh_in_progress so we stop hammering. */
+  private refreshRetryAt = 0;
+  private refreshFailures = 0;
   // Host generations survive effect replay. A new authoritative host generation
   // retires the old one; retain only the last admitted capture, never a history.
   private sourceCapture: { key: string; error: MetadataErrorCode | null } | null = null;
@@ -240,6 +243,7 @@ export class JobMetadataStore {
   refreshView(): Promise<MetadataActionResult> {
     const old = this.state.view;
     if (old.kind !== 'view' || old.refresh !== 'idle' || old.view.refreshing) return Promise.resolve('skipped');
+    if (this.refreshRetryAt > Date.now()) return Promise.resolve('skipped');
     const captured = old.context;
     const key = this.captureKey(old.view);
     return this.run(async epoch => {
@@ -250,14 +254,21 @@ export class JobMetadataStore {
       try {
         const view = await this.client.refresh(captured);
         if (this.current(epoch)) {
+          this.refreshFailures = 0;
+          this.refreshRetryAt = 0;
           this.sourceCapture = { key: this.captureKey(view), error: null };
           this.adopt(view, old.target);
         }
       } catch (error) {
-        if (code(error) === 'busy') {
+        if (code(error) === 'busy' || code(error) === 'refresh_in_progress') {
+          this.refreshFailures = Math.min(6, this.refreshFailures + 1);
+          this.refreshRetryAt = Date.now() + Math.min(120000, 2000 * 2 ** (this.refreshFailures - 1));
           this.sourceCapture = prior;
           if (this.current(epoch)) this.publish({ ...this.state, view: old });
-        } else this.sourceCapture = { key, error: code(error) };
+          if (code(error) === 'busy') throw error;
+          return;
+        }
+        this.sourceCapture = { key, error: code(error) };
         throw error;
       }
     }, error => {

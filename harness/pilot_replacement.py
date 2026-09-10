@@ -49,7 +49,7 @@ def input_publication(pilot):
             admission.validate()
             if admission.stop_epoch != getattr(pilot, '_input_stop_epoch', 0):
                 from .input_receipts import InputReceiptError
-                raise InputReceiptError('input_stopped', 'Stop cancelled this input admission; inspect Saved inputs.')
+                raise InputReceiptError('input_stopped', 'Stop cancelled this input admission; keep your draft and review it before sending again.')
         yield
 
 

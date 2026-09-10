@@ -148,13 +148,27 @@ class InputReceiptStore:
                     data = self._import_originals(archived)
                     self._write(data)
                     return data
+            except InputReceiptError:
+                raise
             except Exception as exc:
                 raise InputReceiptError('input_archive_unavailable', 'Archived input originals cannot be verified; no empty replacement was created.') from exc
             marker_handle = _INPUT_LOCAL.held[str(self.path)]
             marker_handle.seek(0)
-            if marker_handle.read() not in (b'', b'0'):
-                raise InputReceiptError('input_document_missing', 'Previously retained input originals are missing and no verified bundle can restore them.')
-            return {'version': 2, 'session_id': self.session_id, 'inputs': []}
+            revision = marker_handle.read()
+            # Empty / 0-byte orphan lock with no inputs.json: bootstrap a fresh
+            # document so the next admit can proceed honestly.
+            if revision in (b'', b'0'):
+                return {'version': 2, 'session_id': self.session_id, 'inputs': []}
+            # R-marker (or other non-empty digest) without a recoverable archive
+            # or inputs.json: clear the lock so we do not loop on a silent vague
+            # failure, then raise an honest recovery code.
+            self._reset_orphan_lock(marker_handle)
+            raise InputReceiptError(
+                'input_document_missing',
+                'Previously retained input originals are missing and no verified '
+                'bundle can restore them. Review your draft, then open or pick a '
+                'project session before sending again.',
+            )
         except (OSError, ValueError) as exc:
             raise InputReceiptError('input_read_failed', 'Input originals cannot be read. Evidence was retained unchanged.') from exc
         self.validate(data)
@@ -179,6 +193,23 @@ class InputReceiptStore:
             os.fsync(marker.fileno())
         except (OSError, ValueError) as exc:
             raise InputReceiptError('input_commit_uncertain', 'Input publication did not complete verification; keep your draft and inspect receipts before retrying.') from exc
+
+
+    @staticmethod
+    def _reset_orphan_lock(marker_handle):
+        """Clear a non-empty lock marker after an unrecoverable missing document.
+
+        Leaves a bootstrap-ready empty/0 marker so a later admit can create a
+        fresh inputs.json instead of failing closed forever on the stale digest.
+        """
+        marker_handle.seek(0)
+        marker_handle.write(b'0')
+        marker_handle.truncate()
+        marker_handle.flush()
+        try:
+            os.fsync(marker_handle.fileno())
+        except OSError:
+            pass
 
     def _check_recovery_revision(self, document):
         from .compaction_archive import json_digest
