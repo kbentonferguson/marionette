@@ -33,6 +33,23 @@ def get_dashboard(qs: dict, svc: JobServices) -> tuple[int, dict[str, Any]]:
     except Exception as exc:
         return 503, {"ok": False, "error": "state_dir_unavailable", "detail": str(exc)}
     if not state_dir:
+        if not repo:
+            return 503, {
+                "ok": False,
+                "error": "state_dir_unavailable",
+                "detail": "No Puppetmaster project store for this workspace.",
+            }
+        try:
+            from ..cli_job_merge import ensure_workspace_project_store
+
+            state_dir = ensure_workspace_project_store(repo)
+        except Exception as exc:
+            return 503, {
+                "ok": False,
+                "error": "state_dir_unavailable",
+                "detail": str(exc),
+            }
+    if not state_dir:
         return 503, {
             "ok": False,
             "error": "state_dir_unavailable",

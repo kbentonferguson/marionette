@@ -15,6 +15,22 @@ def test_pin_candidates_remap_cursor_luna_to_opencode_dots():
     assert "agentic/gpt-5.6-luna" in cands
 
 
+def test_pin_candidates_include_opencode_go_deepseek_aliases():
+    from harness.swarm_model_pin import pin_candidates
+
+    for pin in (
+        "opencode-go:deepseek-v4-flash",
+        "agentic/deepseek-v4-flash",
+        "agentic/opencode/deepseek-v4-flash",
+        "deepseek-v4-flash",
+    ):
+        cands = [c.lower() for c in pin_candidates(pin)]
+        blob = " ".join(cands)
+        assert "deepseek-v4-flash" in blob
+        assert "agentic/opencode-go/deepseek-v4-flash" in blob
+        assert "glm-5.2" not in blob
+
+
 def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     models_path.write_text(

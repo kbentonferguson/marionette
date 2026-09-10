@@ -87,6 +87,31 @@ def test_get_dashboard_reports_missing_state_dir(monkeypatch):
     assert payload["error"] == "state_dir_unavailable"
 
 
+def test_get_dashboard_heals_missing_store(monkeypatch):
+    monkeypatch.setattr(
+        "harness.api.dashboard.resolve_dashboard_state_dir",
+        lambda repo, job_id: None,
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.ensure_workspace_project_store",
+        lambda repo: "/tmp/healed-pm-state" if repo == "/work/new-kit" else None,
+    )
+    monkeypatch.setattr(
+        "harness.api.dashboard.ensure_local_dashboard",
+        lambda **_k: {
+            "ok": True,
+            "reused": False,
+            "host": "127.0.0.1",
+            "port": 8788,
+            "url": "http://127.0.0.1:8788/?embed=1",
+        },
+    )
+    svc = make_job_services(cfg=type("Cfg", (), {"repo": "/work/new-kit"})())
+    status, payload = get_dashboard({}, svc)
+    assert status == 200
+    assert payload["ok"] is True
+
+
 def test_ensure_local_dashboard_reuses_runfile(monkeypatch):
     calls = []
 

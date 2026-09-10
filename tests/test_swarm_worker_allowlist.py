@@ -135,6 +135,47 @@ def test_enabled_specs_keep_cursor_cli_intent_when_pilots_drop_it(monkeypatch):
     assert out["prefer_plan_billed"] is False
 
 
+def test_enabled_specs_do_not_union_full_keyed_catalog_when_curated(monkeypatch):
+    """Models toggles are the only discretionary allowlist.
+
+    enabled_pilots() falls back to every keyed vendor model when a curated
+    spec misses avail_set. Unioning that list is how toggled-off glm-5.2
+    won implement auto-route.
+    """
+    import harness.model_visibility as mv
+    import harness.swarm_worker_allowlist as swa
+
+    monkeypatch.setattr(
+        mv,
+        "get_enabled",
+        lambda: [
+            "openai-codex:gpt-5.6-luna",
+            "openrouter:google/gemini-3.8-flash",
+            "opencode-go:deepseek-v4-flash",
+        ],
+    )
+    monkeypatch.setattr(
+        mv,
+        "enabled_pilots",
+        lambda: [
+            "openai-codex:gpt-5.6-luna",
+            "openrouter:google/gemini-3.8-flash",
+            "opencode-go:deepseek-v4-flash",
+            "zai:glm-5.2",
+            "openrouter:z-ai/glm-5.2",
+        ],
+    )
+    specs = swa._enabled_or_visible_specs()
+    blob = " ".join(specs).lower()
+    assert "glm-5.2" not in blob
+    assert "glm-5-2" not in blob
+    assert "openai-codex:gpt-5.6-luna" in specs
+    ids = swa.allowed_model_ids_from_specs(specs)
+    id_blob = " ".join(ids).lower()
+    assert "glm-5.2" not in id_blob
+    assert "glm-5-2" not in id_blob
+
+
 def test_singleton_enabled_spec_maps_luna_not_gpt53():
     from harness.swarm_worker_allowlist import allowed_model_ids_from_specs
 

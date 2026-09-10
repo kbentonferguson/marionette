@@ -892,6 +892,34 @@ def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> 
     return "native"
 
 
+def _stamp_settings_model_allowlist(payload: dict) -> dict:
+    """Fail-closed implement auto-route to Settings Models toggles.
+
+    Analysis swarms already stamp ``allowed_model_ids``. Implement / parallel
+    used the full keyed agentic catalog, so a toggled-off ``glm-5.2`` won
+    balanced routing and returned empty managed worktrees.
+    """
+    try:
+        from harness.model_visibility import get_enabled
+        from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
+
+        allow = resolve_swarm_worker_allowlist()
+        ids = [
+            str(item).strip()
+            for item in (allow.get("allowed_model_ids") or [])
+            if str(item).strip()
+        ]
+        if ids:
+            payload["allowed_model_ids"] = ids
+        elif get_enabled():
+            payload["allowed_model_ids"] = [
+                str(spec).strip() for spec in get_enabled() if str(spec).strip()
+            ]
+    except Exception as exc:
+        _diag("edit_engines.settings_model_allowlist", exc)
+    return payload
+
+
 def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
@@ -1315,6 +1343,8 @@ def run_agentic_edit(
                 }
                 if agentic_pin is not None:
                     base_payload.update(agentic_pin.payload_fields())
+                else:
+                    _stamp_settings_model_allowlist(base_payload)
                 payload = stamp_task_payload(
                     base_payload, session_id=session_id, cwd=wt_path,
                 )
@@ -1362,6 +1392,8 @@ def run_agentic_edit(
                     payload["model"] = model
                 if agentic_pin is not None:
                     payload.update(agentic_pin.payload_fields())
+                elif not (provider and model):
+                    _stamp_settings_model_allowlist(payload)
 
                 spec = WorkerSpec(
                     role="implement",

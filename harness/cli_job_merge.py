@@ -95,6 +95,40 @@ def _retry_on_locked(read, attempts: int = 3, delay: float = 0.15):
     return read()
 
 
+def ensure_workspace_project_store(workspace_root: str = "") -> Optional[str]:
+    """Create the durable PM project store for a newly opened workspace.
+
+    ``resolve_cli_state_dir`` requires ``state.sqlite3``. A session that
+    relocates into a fresh git repo has no store yet, so Jobs 503s
+    ("No Puppetmaster project store"). Mint the sqlite file the same way
+    the CLI does on first job so the pane stays live.
+    """
+    raw = (workspace_root or "").strip()
+    if not raw:
+        return None
+    existing = resolve_cli_state_dir(raw)
+    if existing:
+        return existing
+    try:
+        from puppetmaster.state import default_state_dir
+        from puppetmaster.store_factory import create_store
+
+        path = default_state_dir(Path(raw).expanduser())
+        if path is None:
+            return None
+        path.mkdir(parents=True, exist_ok=True)
+        if is_marionette_host_scratch_dir(path):
+            return None
+        if not (path / "state.sqlite3").is_file():
+            create_store("sqlite", str(path)).ensure_schema()
+        if not (path / "state.sqlite3").is_file():
+            return None
+        return str(path)
+    except Exception as exc:
+        _log_merge_failure("cli_job_merge.ensure_workspace_project_store", exc)
+        return None
+
+
 def resolve_cli_state_dir(workspace_root: str = "") -> Optional[str]:
     """Resolve the Puppetmaster project state dir for ``workspace_root``.
 
