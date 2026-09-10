@@ -1198,16 +1198,34 @@ class CodexResponsesDriver:
             pass
         return None
 
-    def _request_headers(self, access_token: str) -> Dict[str, str]:
+    def _request_headers(
+        self,
+        access_token: str,
+        *,
+        session_id: str | None = None,
+    ) -> Dict[str, str]:
         """Auth + transport headers for this host's Responses endpoint."""
         if self.chatgpt_backend:
-            return _codex_cloudflare_headers(access_token, streaming=True)
-        return {
-            "User-Agent": "pm-harness",
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "text/event-stream",
-        }
+            headers = _codex_cloudflare_headers(access_token, streaming=True)
+        else:
+            # OpenCode Go rejects generic SDK agents; identify as Marionette.
+            ua = "Marionette" if "opencode.ai" in (self.base_url or "").lower() else "pm-harness"
+            headers = {
+                "User-Agent": ua,
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "text/event-stream",
+            }
+        try:
+            from .prompt_cache import maybe_attach_opencode_session_header
+            maybe_attach_opencode_session_header(
+                headers,
+                base_url=self.base_url,
+                session_id=session_id,
+            )
+        except Exception:
+            pass
+        return headers
 
     def _build_body(
         self,
@@ -1303,11 +1321,12 @@ class CodexResponsesDriver:
         on_reasoning_delta: Optional[Callable[..., None]],
         on_stream_item_done: Optional[Callable[..., None]] = None,
         t0: float,
+        session_id: str | None = None,
     ) -> Tuple[Optional[dict], Optional[DriverResponse], bytes]:
         """POST once (with reasoning-strip / pool rotate). Returns (raw, err_resp, data)."""
         for attempt in range(3):
             token = self._key()
-            headers = self._request_headers(token)
+            headers = self._request_headers(token, session_id=session_id)
             if self.chatgpt_backend:
                 headers.update(
                     _codex_session_affinity_headers(body.get("prompt_cache_key"))
@@ -1470,6 +1489,7 @@ class CodexResponsesDriver:
         on_reasoning_delta: Optional[Callable[..., None]] = None,
         on_stream_item_done: Optional[Callable[..., None]] = None,
         on_wait_notice: Optional[Callable[[str], None]] = None,
+        session_id: str | None = None,
     ) -> DriverResponse:
         # Enforce stream even if a caller mutated the body.
         body = dict(body)
@@ -1615,6 +1635,7 @@ class CodexResponsesDriver:
                     on_reasoning_delta=on_reasoning_delta,
                     on_stream_item_done=on_stream_item_done,
                     t0=t0,
+                    session_id=session_id,
                 )
                 if err_resp is not None:
                     if _has_continuation_progress():
@@ -1785,7 +1806,7 @@ class CodexResponsesDriver:
             system=system,
             session_id=session_id,
         )
-        return self._post_stream(body)
+        return self._post_stream(body, session_id=session_id)
 
     def chat(
         self,
@@ -1798,7 +1819,7 @@ class CodexResponsesDriver:
         body = self._build_body(
             messages, tools=tools, system=system, session_id=session_id,
         )
-        return self._post_stream(body)
+        return self._post_stream(body, session_id=session_id)
 
     def chat_stream(
         self,
@@ -1827,6 +1848,7 @@ class CodexResponsesDriver:
             on_reasoning_delta=on_reasoning_delta,
             on_stream_item_done=on_stream_item_done,
             on_wait_notice=on_wait_notice,
+            session_id=session_id,
         )
         if on_tool_hint is not None:
             for tc in (resp.meta or {}).get("tool_calls") or []:

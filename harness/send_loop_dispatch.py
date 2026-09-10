@@ -296,6 +296,65 @@ def _render_swarm_delivery_manifest(job_id: str, rows: list[dict], delivery: dic
     return "\n".join(lines)
 
 
+def _looks_like_home_workspace(path: str) -> bool:
+    """True for Marionette Home roots (``~/.pmharness/home`` / ``…/state/home``)."""
+    import os
+    import re
+
+    raw = (path or "").strip()
+    if not raw:
+        return False
+    try:
+        abs_path = os.path.abspath(os.path.expanduser(raw))
+    except Exception:
+        abs_path = raw
+    norm = abs_path.replace("\\", "/").rstrip("/").lower()
+    if re.search(r"(?:^|/)(?:\.pmharness|pmharness)/(?:state/)?home$", norm):
+        return True
+    if norm.endswith("/home") and ("pmharness" in norm or ".marionette" in norm):
+        return True
+    try:
+        from harness.server import _is_home_workspace
+        if _is_home_workspace(abs_path):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _home_workspace_swarm_error(repo: str) -> Optional[str]:
+    """Refuse run_swarm when the session is still on the durable Home root.
+
+    Home (``~/.pmharness/home`` or ``{HARNESS_STATE_DIR}/home``) is a notes
+    surface, not a git checkout. Workers must target a real project — nudge
+    the pilot/user to open one from Projects.
+    """
+    import os
+
+    path = (repo or "").strip()
+    if not path:
+        return None
+    try:
+        abs_path = os.path.abspath(os.path.expanduser(path))
+    except Exception:
+        abs_path = path
+    if not _looks_like_home_workspace(abs_path):
+        return None
+    # If Home already resolved to a git child, allow it.
+    git_marker = os.path.join(abs_path, ".git")
+    try:
+        if os.path.isdir(git_marker) or os.path.isfile(git_marker):
+            return None
+    except Exception:
+        pass
+    return (
+        "run_swarm refused: session is on Marionette Home "
+        f"({abs_path}), which is not a project git checkout. "
+        "Open a real repo from Projects (or pass repo=<absolute git path>) "
+        "before launching swarm workers."
+    )
+
+
 def _non_git_workspace_error(repo: str) -> Optional[str]:
     """Calm refuse when the resolved workspace is not a git work tree.
 
@@ -317,6 +376,9 @@ def _non_git_workspace_error(repo: str) -> Optional[str]:
         abs_path = os.path.abspath(path)
     except Exception:
         abs_path = path
+    home_err = _home_workspace_swarm_error(abs_path)
+    if home_err:
+        return home_err
     git_marker = os.path.join(abs_path, ".git")
     try:
         if os.path.isdir(git_marker) or os.path.isfile(git_marker):
@@ -337,6 +399,13 @@ def _non_git_workspace_error(repo: str) -> Optional[str]:
             return None
     except Exception:
         pass
+    if _looks_like_home_workspace(abs_path):
+        return (
+            "run_swarm refused: Marionette Home "
+            f"({abs_path}) is not a git repository. "
+            "Open a real project checkout from Projects, or nest a "
+            "marionette git child under Home."
+        )
     return (
         f"Workspace is not a git repository (resolved to {abs_path}). "
         "Open the project checkout or ensure Home has a marionette child."
@@ -584,7 +653,21 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             return None
         _swarm_repo = resolve_effective_repo(_subject_abs)
     else:
-        _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
+        _session_repo = (session.config.repo or '').strip()
+        # Fail closed on bare Home before resolve can quietly no-op.
+        _home_refuse = _home_workspace_swarm_error(_session_repo) if _session_repo else None
+        if _home_refuse:
+            # Only refuse when resolve cannot find a git child.
+            _probe = resolve_effective_repo(_session_repo) if _session_repo else ''
+            if (not _probe) or _probe == _session_repo or _looks_like_home_workspace(_probe):
+                # Confirm probe is still non-git Home.
+                _home_refuse = _home_workspace_swarm_error(_probe or _session_repo) or _home_refuse
+                yield ConvEvent('action_result', {'id': aid, 'error': _home_refuse})
+                session._append_action_result(
+                    act, aid, f'(swarm {aid} failed: {_home_refuse})', is_native,
+                )
+                return None
+        _swarm_repo = resolve_effective_repo(_session_repo) if _session_repo else ''
     intent = DriverIntent(
         action='run_swarm',
         goal=act.goal,
@@ -905,8 +988,17 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             auth_failure = _auth_failure_note(list(result.artifacts) or []) or ''
         except Exception:
             auth_failure = ''
+    provider_reject = ''
+    if not auth_failure:
+        try:
+            from pmharness.bridge import _provider_http_reject_note
+            provider_reject = _provider_http_reject_note(list(result.artifacts) or []) or ''
+        except Exception:
+            provider_reject = ''
     if auth_failure:
         yield ConvEvent('swarm_auth_failure', {'id': aid, 'job_id': result.job_id, 'message': auth_failure})
+    elif provider_reject:
+        yield ConvEvent('swarm_auth_failure', {'id': aid, 'job_id': result.job_id, 'message': provider_reject})
     _SIGNAL = {'finding', 'risk', 'decision'}
     # Strip demo artifacts entirely so placeholder headlines never reach the
     # transcript card or pilot digest.
@@ -993,7 +1085,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     # reference) must not turn the badge green -- a swarm whose workers choked
     # on the goal used to read as a clean "N findings" success.
     _substantive = [a for a in _signal if _is_substantive_artifact(a)]
-    _swarm_ok = bool(_substantive) and (not auth_failure) and (not _demo_refused)
+    _swarm_ok = (
+        bool(_substantive)
+        and (not auth_failure)
+        and (not provider_reject)
+        and (not _demo_refused)
+    )
     _ntc_note = "" if _demo_refused or auth_failure else (
         _no_tool_calls_degrade_note(ordered) or _no_tool_calls_degrade_note(_all_arts)
     )
@@ -1002,6 +1099,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     elif auth_failure:
         # Lead with the provider/key note, never a generic "no findings" badge.
         _badge_summary = auth_failure[:160] if len(auth_failure) > 20 else 'auth failure'
+    elif provider_reject and not _substantive:
+        # Codex OAuth http_status:400 / empty findings must never green-complete.
+        _badge_summary = provider_reject[:160]
     elif _ntc_note and not _substantive:
         _badge_summary = (
             _ntc_note if _ntc_note.lower().startswith('degraded:')
@@ -1018,7 +1118,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _badge_error = (
         'demo substrate -- not real codebase analysis' if _demo_refused
         else auth_failure or (
-            _ntc_note if (_ntc_note and not _swarm_ok)
+            provider_reject if (provider_reject and not _swarm_ok)
+            else _ntc_note if (_ntc_note and not _swarm_ok)
             else None if _swarm_ok
             else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
             else 'swarm produced no FINDING/RISK/DECISION artifacts' if _ui_num

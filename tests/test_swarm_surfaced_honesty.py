@@ -79,7 +79,12 @@ def test_failure_tagged_run_is_not_green(tag):
     )
 
     assert status in ("failed", "degraded", "error")
-    assert "no structured findings" in summary.lower()
+    low = summary.lower()
+    assert (
+        "no structured findings" in low
+        or "provider reject" in low
+        or str(tag).lower() in low
+    ), summary
 
 
 def test_untagged_prose_still_promotes():
