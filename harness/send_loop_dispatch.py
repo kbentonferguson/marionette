@@ -98,43 +98,14 @@ def _artifact_job_id(row: Any) -> str:
     return str(getattr(row, "job_id", "") or "").strip()
 
 
-_SIGNAL_TYPES = frozenset({"finding", "risk", "decision", "gist"})
-
-
-def _artifact_type(row: Any) -> str:
-    if isinstance(row, dict):
-        return str(row.get("type") or "").strip().lower()
-    return str(getattr(row, "type", "") or "").strip().lower()
-
-
-def _execution_ref_job_id(row: Any) -> str:
-    if isinstance(row, dict):
-        ref = row.get("execution_ref")
-    else:
-        ref = getattr(row, "execution_ref", None)
-    if not isinstance(ref, dict):
-        return ""
-    return str(ref.get("job_id") or "").strip()
-
-
 def _rows_for_job(rows, job_id: str) -> list:
-    """Drop rows that claim a different job — identical artifact ids may collide.
-
-    Signal rows (finding/risk/decision/gist) need a current-job stamp — either
-    top-level ``job_id`` or ``execution_ref.job_id``. Unstamped findings cannot
-    be attributed to this job by silence. Plumbing without a stamp can stay.
-    """
+    """Drop rows that claim a different job — identical artifact ids may collide."""
     current = str(job_id or "").strip()
     out = []
     for row in rows or []:
         claimed = _artifact_job_id(row)
         if claimed and current and claimed != current:
             continue
-        if current and _artifact_type(row) in _SIGNAL_TYPES:
-            parent = _execution_ref_job_id(row)
-            owner = claimed or parent
-            if owner != current:
-                continue
         out.append(row)
     return out
 

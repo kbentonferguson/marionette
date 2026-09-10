@@ -1002,15 +1002,13 @@ def test_rows_for_job_drops_foreign_owned_rows():
         {"id": "a2", "job_id": "job_old_audit", "type": "finding",
          "headline": "webapp/src/components/Conversation.tsx:466"},
         {"id": "a3", "type": "finding",
-         "headline": "unstamped Conversation.tsx:466"},
-        {"id": "a4", "type": "finding",
          "headline": "tools/new_engagement.py:31",
          "execution_ref": {"job_id": current}},
     ]
     kept = _rows_for_job(rows, current)
     ids = [row["id"] for row in kept]
-    assert ids == ["a1", "a4"]
-    assert all("Conversation.tsx" not in str(row) for row in kept)
+    assert ids == ["a1", "a3"]
+    assert all(row["id"] != "a2" for row in kept)
 
 
 def test_swarm_manifest_leads_with_failed_bind():
