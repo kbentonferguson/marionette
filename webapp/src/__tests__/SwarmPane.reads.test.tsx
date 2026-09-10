@@ -78,7 +78,9 @@ it('shows transport failure instead of an empty tracker and retries', async () =
   await act(async () => { f.store.setTarget(f.context()); await f.store.readView(); });
   expect(await screen.findByRole('alert')).toHaveTextContent('Job updates unavailable');
   expect(screen.queryByText(/^No jobs observed in this view/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Job observations could not be loaded/)).toBeInTheDocument();
   expect(screen.getByText(/an empty view does not establish no work/)).toBeInTheDocument();
+  expect(screen.queryByText('Job data unavailable')).not.toBeInTheDocument();
   f.request.mockImplementation(async (method, path) => {
     const result = await request(method, path);
     if (new URL(path, 'http://fixture').pathname === '/api/jobs/metadata') {

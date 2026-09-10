@@ -7,10 +7,13 @@ import { openAgentUrlExternal } from "../lib/agentLinks";
 import {
   JOBS_DASHBOARD_EXPAND_MIN_PX,
   JOBS_DASHBOARD_FOCUS_MIN_PX,
+  dashboardLocateError,
+  dashboardUnavailableMessage,
   notifyJobsDashboardChrome,
   requestRightMinWidth,
   type DashboardLocate,
 } from "../lib/jobsDashboard";
+import { jobDisplayTitle } from "../lib/jobDisplayTitle";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
 /**
@@ -33,7 +36,7 @@ export default function JobDashboardHost({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const title = (job.goal || "").trim() || job.id;
+  const title = jobDisplayTitle(job);
   const deepLinkId = dashboardJobId(job);
   const frameKey = deepLinkId || job.id;
   const embedUrl = locate?.embed_url || locate?.url || "";
@@ -53,7 +56,7 @@ export default function JobDashboardHost({
     const repo = lastSelectedProjectRoot() || undefined;
     const locateDashboard = api.dashboard;
     if (typeof locateDashboard !== "function") {
-      setError("Dashboard unavailable.");
+      setError(dashboardUnavailableMessage());
       setLoading(false);
       return;
     }
@@ -64,16 +67,12 @@ export default function JobDashboardHost({
         if (cancelled) return;
         setLocate(payload);
         if (!payload.ok || !(payload.embed_url || payload.url)) {
-          const stderr = typeof (payload as { stderr?: unknown }).stderr === "string"
-            ? String((payload as { stderr?: string }).stderr).trim()
-            : "";
-          const base = payload.detail || payload.error || "Dashboard unavailable.";
-          setError(stderr ? `${base}: ${stderr.slice(0, 280)}` : base);
+          setError(dashboardLocateError(payload));
         }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Dashboard unavailable.");
+        setError(dashboardUnavailableMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
