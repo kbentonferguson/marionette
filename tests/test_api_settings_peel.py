@@ -196,6 +196,46 @@ def test_post_settings_bad_worker_token_budget():
     assert post_settings({"workerTokenBudget": "nope"}, svc)[0] == 400
 
 
+def test_post_settings_worker_token_budget_zero_resets_to_default(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"workerTokenBudget": "0"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
+
+
+def test_post_settings_worker_token_budget_one_resets_to_default(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"workerTokenBudget": "1"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
+
+
+def test_post_settings_worker_token_budget_below_floor_resets_to_default(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"workerTokenBudget": "39999"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
+
+
+def test_post_settings_worker_token_budget_floor_accepted(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+    svc, _, _, calls = _svc()
+    code, _ = post_settings({"workerTokenBudget": "40000"}, svc)
+    assert code == 200
+    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "40000"
+
+
 def test_post_settings_compaction_residual_hybrid(monkeypatch):
     monkeypatch.setattr(
         "harness.auto_registry.sync_agentic_registry_safe", lambda: None

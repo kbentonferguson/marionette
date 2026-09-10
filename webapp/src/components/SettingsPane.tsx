@@ -1265,9 +1265,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </div>
           <p className="text-[10px] text-muted">
             Default token ceiling for a single native worker run when no ambient AutoBudget
-            is governing the tree (default 250k — 40–50k starves analysis workers).
-            Swarm/implement payloads stamp the same value as token_budget. Applies on
-            the next worker spawn -- no restart needed.
+            is governing the tree (default 250k). Values below 40k, including 0, reset to
+            250k — this field is not unlimited. Swarm/implement payloads stamp the same
+            value as token_budget. Applies on the next worker spawn -- no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
             <label className="text-[11px] text-muted shrink-0">Worker reasoning</label>

@@ -14,8 +14,15 @@ import { context, selection as legacySelection } from './jobMetadata.fixtures';
 import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
 
 function selection(n = 1): MetadataSelection { const s = legacySelection(n); return { ...s, job_ref: { ...s.job_ref, version: 2, incarnation: '12345678-1234-4234-8234-123456789abc' } }; }
-async function expandAndInspect(_name?: string | RegExp) {
-  fireEvent.click(screen.getByRole('button', { name: /Inspect (tasks and artifacts|actions)/ }));
+async function expandAndInspect(name?: string | RegExp) {
+  const jobs = name
+    ? screen.queryAllByRole('button', { name }).filter((btn) => btn.getAttribute('aria-expanded') != null)
+    : screen.queryAllByRole('button').filter((btn) => (
+      btn.getAttribute('aria-expanded') === 'false' && (btn.getAttribute('aria-label') || '').includes(' · ')
+    ));
+  const job = jobs[0];
+  if (job?.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
+  fireEvent.click(await screen.findByRole('button', { name: /Inspect (tasks and artifacts|actions)/ }));
   await screen.findByRole('region', { name: 'Selected job inspector' });
 }
 function inspected() {
@@ -376,7 +383,7 @@ describe('positive owner polling and narrow worker layouts', () => {
     const expert = facts();
     f.selected.mockImplementation(async s => ({ ...selected(expert, s), lifecycle: 'complete', context: f.context() }));
     render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+    await expandAndInspect(/Completed audit/);
     await screen.findAllByTitle('Model: gpt-6-astra');
     expect(screen.getByRole('button', { name: 'Completed audit · complete' })).toHaveTextContent('done');
     const changed = facts('gpt-6-astra', 'Broken after update'); changed.quality = 'degraded'; changed.artifacts[0].check_result = 'failed';
@@ -406,7 +413,7 @@ it('suppresses only the duplicate unmatched header route while workers keep thei
   for (let i = 0; i < 16; i++) await act(async () => { await f.store.ownerTick(); });
   render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
   expect(screen.getByTitle('Model: job-model')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  await expandAndInspect(/Audit auth flow/);
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(await within(inspector).findByTitle('Model: worker-two')).toBeVisible();
   expect(within(inspector).getByTitle('Model: gpt-6-astra')).toBeVisible();
@@ -420,7 +427,7 @@ it('keeps each worker token and cost disclosure separate with compact formatting
   expert.tasks.push({ ...expert.tasks[0], id: 'task-2', role: 'Reviewer', usage: { tokens_in: 60000, tokens_out: 0, est_cost_usd: .07, estimated: true, cost_provenance: 'estimate' } });
   f.selected.mockImplementation(async s => ({ ...selected(expert, s), context: f.context() }));
   render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  await expandAndInspect(/Audit auth flow/);
   await screen.findAllByText('Workers (2)');
   expect(screen.queryByText('120,000t')).toBeNull();
   const tokensInspector = screen.getByRole('region', { name: 'Selected job inspector' });
@@ -445,7 +452,7 @@ it('paints mixed completed current workers as degraded without contaminating the
     return { ...d, lifecycle: 'complete', context: f.context(), tasks: { ...d.tasks, rows: d.tasks.rows.map(t => ({ ...t, status: 'complete' })) } };
   });
   render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  await expandAndInspect(/Mixed audit/);
   await screen.findAllByText('Workers (2)');
   const job = screen.getByRole('button', { name: 'Mixed audit · complete' });
   expect(within(job).getByText('degraded')).toHaveClass('text-warn');

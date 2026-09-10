@@ -1,39 +1,28 @@
-import { useState } from "react";
+import { expect } from "vitest";
 import { fireEvent, screen, within } from "@testing-library/react";
-import { MetadataInspection } from "../components/MetadataJobs";
-import { isPmDashboardJob } from "../lib/jobClassification";
-import { metadataJobs, useSharedJobMetadata } from "../lib/jobMetadataContext";
 
-/** Click Inspect for a PM job without selecting the Jobs row
- *  (row click hosts the dashboard and replaces the list). */
+function rowToggle(root: HTMLElement) {
+  return within(root).queryAllByRole("button").find((btn) => (
+    btn.getAttribute("aria-expanded") != null && (btn.getAttribute("aria-label") || "").includes(" · ")
+  ));
+}
+
+/** Expand the compact Jobs row and (for PM jobs) load selected artifacts. */
 export function inspectHarnessJob(source: string, id: string) {
   const root = screen.getByTestId(`inspect-${source}-${id}`);
-  const btn = within(root).queryByRole("button", { name: "Inspect tasks and artifacts" });
-  if (btn) fireEvent.click(btn);
+  const toggle = rowToggle(root);
+  if (toggle && toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
+  const btn = within(root).queryByRole("button", { name: "Inspect tasks and artifacts" })
+    ?? within(root).getByRole("button", { name: "Inspect actions" });
+  fireEvent.click(btn);
   return root;
 }
 
-/** Compact inspection beside the Jobs strip so worker/artifact tests
- *  keep a surface after every hire row embeds the dashboard. */
+export function expectNoDashboardHost() {
+  expect(screen.queryByTestId("job-dashboard-host")).not.toBeInTheDocument();
+}
+
+/** Compatibility wrapper: inspection now lives on the Jobs row itself. */
 export function JobsInspectHarness({ children }: { children?: React.ReactNode }) {
-  const { state } = useSharedJobMetadata();
-  const [revealed, setRevealed] = useState<string[]>([]);
-  return (
-    <>
-      {children}
-      {metadataJobs(state).filter(isPmDashboardJob).map((job) => {
-        const key = job.metadata_key ?? `${job.source}-${job.id}`;
-        return (
-          <div key={key} data-testid={`inspect-${job.source}-${job.id}`} data-inspect-source={job.source}>
-            <MetadataInspection
-              job={job}
-              compact
-              revealed={revealed.includes(key)}
-              onReveal={() => setRevealed((prev) => (prev.includes(key) ? prev : [...prev, key]))}
-            />
-          </div>
-        );
-      })}
-    </>
-  );
+  return <>{children}</>;
 }

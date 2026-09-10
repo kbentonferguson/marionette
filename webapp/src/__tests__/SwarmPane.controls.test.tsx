@@ -216,15 +216,16 @@ it('does not persist PM dashboard focus as row expansion', async () => {
   const fixture = await controlsFixture();
   const first = render(<fixture.Provider><SwarmPane /></fixture.Provider>);
   const row = await screen.findByRole('button', { name: /Inspect A/ });
-  expect(row).not.toHaveAttribute('aria-expanded');
+  expect(row).toHaveAttribute('aria-expanded', 'false');
   fireEvent.click(row);
-  expect(await screen.findByTestId('job-dashboard-host')).toBeInTheDocument();
+  expect(row).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   first.unmount(); clearSWRCache();
   await fixture.observe();
   render(<fixture.Provider><SwarmPane /></fixture.Provider>);
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: /Inspect A/ })).not.toHaveAttribute('aria-expanded');
-  expect(screen.getByRole('button', { name: /Inspect CLI/ })).not.toHaveAttribute('aria-expanded');
+  expect(screen.getByRole('button', { name: /Inspect A/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByRole('button', { name: /Inspect CLI/ })).toHaveAttribute('aria-expanded', 'false');
   expect(api.swarmLive).not.toHaveBeenCalled();
 });
 

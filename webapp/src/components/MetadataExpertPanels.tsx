@@ -16,14 +16,15 @@ import { historyCursors } from '../lib/selectedMetadataEvidence';
 import type { HistoryLaneName, SelectedMetric } from '../lib/selectedMetadataEvidence';
 
 const button = 'min-h-11 px-2 text-sm text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
+const compactButton = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
 const tabs = ['Tasks', 'Artifacts', 'Routing', 'Checks', 'History', 'Economics'] as const;
 type Panel = typeof tabs[number];
 function metricText(metric: SelectedMetric | undefined, dollars = false): string {
   if (!metric || metric.total === null || metric.state === 'unknown') return 'unknown';
   return `${dollars ? '$' : ''}${metric.total.toLocaleString(undefined, { maximumFractionDigits: dollars ? 8 : 0 })} (${metric.state})`;
 }
-export default function MetadataExpertPanels({ detail, store, busy, stale, navigation }: {
-  navigation?: SwarmNavigationTarget; detail: MetadataDetail; store: JobMetadataStore; busy: boolean; stale: boolean;
+export default function MetadataExpertPanels({ detail, store, busy, stale, navigation, compact = false }: {
+  navigation?: SwarmNavigationTarget; detail: MetadataDetail; store: JobMetadataStore; busy: boolean; stale: boolean; compact?: boolean;
 }) {
   const [panel, setPanel] = useState<Panel>('Tasks');
   const artifactRows = useRef(new Map<string, HTMLDetailsElement>());
@@ -50,7 +51,8 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
     void store.readDetail(lane);
   };
   const lanes: HistoryLaneName[] = ['attempts', 'runs', 'process_outcomes', 'observations'];
-  return <section aria-label="Selected job inspector" className="space-y-2 border-t border-edge pt-2">
+  const chrome = compact ? compactButton : button;
+  return <section aria-label="Selected job inspector" className={`space-y-2 border-t border-edge pt-2 ${compact ? 'text-[11px] text-muted' : ''}`}>
     {display?.kind === 'available' && <div>
       <p className="text-txt break-words">{display.goal_preview}{display.goal_preview_truncated ? ' (preview truncated)' : ''}</p>
       <p>Delivery: {display.delivery}. Quality: {expert ? expertJobQuality(expert) : display.quality}. Publication and lifecycle do not certify verification.</p>
@@ -60,7 +62,7 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
     {expert ? <><ExpertCost header={expert.live_economics ?? expert.header} />{expert.compaction && <p>Compaction coverage: {expert.compaction.coverage}. {expert.compaction.reason.replaceAll('_', ' ')}.</p>}<ExpertFindings expert={expert} /><SelectedJobEvidence expert={expert} /></> : <MetadataFindingCount detail={detail} />}
     <p>Historical receipts: {history.kind === 'available' ? 'captured records available' : history.kind === 'partial' ? 'partially available' : 'unavailable'}. {expert ? 'Current evidence is available below with explicit coverage.' : 'Artifact bodies and check assertions are unavailable through the bounded public reader.'}</p>
     {stale && <p role="status">Retained selected details are stale. Retry inspection to refresh.</p>}
-    <nav aria-label="Inspector panels" className="flex flex-wrap gap-1">{tabs.map(tab => <button type="button" className={button}
+    <nav aria-label="Inspector panels" className="flex flex-wrap gap-1">{tabs.map(tab => <button type="button" className={chrome}
       key={tab} aria-pressed={panel === tab} onClick={() => setPanel(tab)}>{tab}</button>)}</nav>
     {panel === 'Tasks' && <section aria-label="Tasks" className="space-y-1">
       <MetadataWorkerProgress tasks={detail.tasks} />
@@ -68,7 +70,7 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
       {detail.tasks.rows.length === 0 && <p>{detail.tasks.page.outcome === 'complete' ? 'No tasks recorded.' : 'Task records unavailable.'}</p>}
       {expert ? <ExpertWorkers expert={expert} tasks={detail.tasks.rows} headerModel={expertJobModel(expert) ?? expertHeaderModel(currentHeader(store.getSnapshot(), metadataSelectionKey(detail.selection))) ?? undefined} /> : detail.tasks.rows.map(task => <MetadataWorkerIdentity key={task.id} task={task} history={history} running={!stale && detail.lifecycle === 'running' && task.status === 'running'} />)}
       {!expert && detail.artifacts.rows.map(artifact => <p key={artifact.id}>{artifact.type ?? 'Artifact'} / {artifact.id}: recorded, check result unavailable</p>)}
-      <button className={button} disabled={busy || stale || detail.tasks.page.outcome !== 'partial'} onClick={() => read('tasks')}>Next tasks</button>
+      <button className={chrome} disabled={busy || stale || detail.tasks.page.outcome !== 'partial'} onClick={() => read('tasks')}>Next tasks</button>
     </section>}
     {panel === 'Artifacts' && <section aria-label="Artifacts" className="space-y-1">
       {target && !detail.artifacts.rows.some(artifact => artifact.id === target.artifactId) && <p role="status">Requested artifact {target.artifactId} is not in the loaded records. Navigation remains pending; inspect again or load the next artifacts page.</p>}
@@ -76,11 +78,11 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
       {detail.artifacts.rows.length === 0 && <p>{detail.artifacts.page.outcome === 'complete' ? 'No artifacts recorded.' : 'Artifact records unavailable.'}</p>}
       {detail.artifacts.rows.map(artifact => <details key={artifact.id} data-artifact-ids={artifact.id} data-finding-id={artifact.id} tabIndex={-1}
         ref={element => { if (element) artifactRows.current.set(artifact.id, element); else artifactRows.current.delete(artifact.id); }} className="rounded border border-edge p-2">
-        <summary className="cursor-pointer min-h-11 focus-visible:outline">{expert?.artifacts.find(a => a.id === artifact.id)?.headline || `${artifact.type ?? 'Artifact'} / ${artifact.id}: ${artifact.status ?? 'unknown'}`}</summary>
+        <summary className={`cursor-pointer focus-visible:outline ${compact ? 'min-h-7 py-0.5' : 'min-h-11'}`}>{expert?.artifacts.find(a => a.id === artifact.id)?.headline || `${artifact.type ?? 'Artifact'} / ${artifact.id}: ${artifact.status ?? 'unknown'}`}</summary>
         <dl className="break-all"><dt>Task</dt><dd>{artifact.task_id ?? 'link missing'}</dd><dt>SHA-256</dt><dd>{artifact.sha256 ?? 'unknown'}</dd></dl>
         {expert?.artifacts.some(a => a.id === artifact.id) ? expert.artifacts.filter(a => a.id === artifact.id).map(a => <div key={a.id}><p>Check: {a.check_result}</p>{a.detail && <p className="whitespace-pre-wrap break-words">{a.detail}</p>}{a.failure && <p>{a.failure}</p>}</div>) : <><p>Recorded; contents not independently verified. Artifact body unavailable.</p><p>Check result unavailable.</p></>}
       </details>)}
-      <button className={button} disabled={busy || stale || detail.artifacts.page.outcome !== 'partial'} onClick={() => read('artifacts')}>Next artifacts</button>
+      <button className={chrome} disabled={busy || stale || detail.artifacts.page.outcome !== 'partial'} onClick={() => read('artifacts')}>Next artifacts</button>
     </section>}
     {panel === 'Checks' && <section aria-label="Checks">{expert ? <ExpertFindings expert={expert} /> : <p>Check assertions are unavailable in this reader. Recorded artifacts and completed lifecycle do not establish that checks passed.</p>}
       {!expert && detail.artifacts.rows.filter(a => ['gate', 'verification', 'check', 'test'].includes(a.type?.toLowerCase() ?? '')).map(a => <p key={a.id}>{a.type} / {a.id}: recorded, check result unavailable</p>)}
@@ -96,7 +98,7 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
         {row.facts.started_at != null && <dd>Captured started at: {String(row.facts.started_at)}</dd>}
         <dd>{Object.entries(row.facts).filter(([key]) => key !== 'model' && /model|provider|adapter|route/.test(key)).map(([key, value]) => `${key}: ${value ?? 'unknown'}`).join(' · ') || 'Routing facts unknown'}</dd>
       </dl>)}
-      <button className={button} disabled={busy || stale || history.kind === 'unavailable' || history.attempts.page.outcome !== 'partial'} data-cursor-lane={historyCursors.attempts} onClick={() => read('attempts')}>Next attempts</button>
+      <button className={chrome} disabled={busy || stale || history.kind === 'unavailable' || history.attempts.page.outcome !== 'partial'} data-cursor-lane={historyCursors.attempts} onClick={() => read('attempts')}>Next attempts</button>
     </section>}
     {panel === 'History' && <section aria-label="History" className="space-y-2">
       <p>Captured records only. Complete provider-invocation history is unverified.</p>
@@ -105,12 +107,12 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
         <h4 className="text-txt font-semibold">{lane.replaceAll('_', ' ')}</h4>
         <p>{history[lane].rows.length} shown; {history[lane].page.captured_count ?? 'unknown'} captured. Coverage: {history[lane].page.coverage}. Page: {history[lane].page.outcome}.</p>
         {history[lane].rows.map(row => <details key={row.sequence} className="rounded border border-edge p-2">
-          <summary className="cursor-pointer min-h-11 focus-visible:outline">{row.kind} {row.sequence}</summary>
+          <summary className={`cursor-pointer focus-visible:outline ${compact ? 'min-h-7 py-0.5' : 'min-h-11'}`}>{row.kind} {row.sequence}</summary>
           <dl className="break-all">{Object.entries(row.facts).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value === null ? 'unknown' : String(value)}</dd></div>)}</dl>
           {row.completion?.intent_digest != null && <dl className="break-all"><dt>Publication intent digest</dt><dd>{row.completion.intent_digest}</dd></dl>}
           {row.completion && <p>Publication: {row.completion.outcome.replaceAll('_', ' ')}. Run: {row.completion.run_id}. This is not a quality verdict.</p>}
         </details>)}
-        <button className={button} disabled={busy || stale || history[lane].page.outcome !== 'partial'} data-cursor-lane={historyCursors[lane]} onClick={() => read(lane)}>Next {lane.replaceAll('_', ' ')}</button>
+        <button className={chrome} disabled={busy || stale || history[lane].page.outcome !== 'partial'} data-cursor-lane={historyCursors[lane]} onClick={() => read(lane)}>Next {lane.replaceAll('_', ' ')}</button>
       </section>)}
     </section>}
     {panel === 'Economics' && <section aria-label="Economics" className="space-y-1 tabular-nums">

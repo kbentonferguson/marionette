@@ -15,7 +15,7 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { MetadataInspection } from "../components/MetadataJobs";
-import { JobsInspectHarness } from "./jobsInspectHarness";
+import { inspectHarnessJob, JobsInspectHarness } from "./jobsInspectHarness";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
 
@@ -69,6 +69,7 @@ it('retries locally and treats a successful empty response as loaded', async () 
   empty.artifacts = { page: { ...empty.artifacts.page, scanned: 0 }, rows: [] };
   fixture.selected.mockRejectedValueOnce(new Error('store offline')).mockResolvedValueOnce(empty);
   render(<fixture.Provider><JobsPane /></fixture.Provider>);
+  await expand('Inspect A');
   fireEvent.click(await screen.findByRole('button', { name: 'Inspect tasks and artifacts' }));
   const retry = await screen.findByRole('button', { name: 'Retry', exact: true });
   expect(screen.queryByText('No artifacts recorded')).not.toBeInTheDocument();
@@ -134,13 +135,13 @@ it("hydrates exact artifact identities and hashes independently across colliding
   metadata = await evidenceFixture('Inspect A', [evidenceSelection, cli]);
   const fixture = metadata;
   render(<fixture.Provider><JobsPane /></fixture.Provider>);
-  fireEvent.click(within(screen.getByTestId(`inspect-harness-${evidenceSelection.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  inspectHarnessJob('harness', evidenceSelection.job_ref.job_id);
   await screen.findByText('Findings (1)');
   fireEvent.click(screen.getByRole('button', { name: 'Artifacts', exact: true }));
   fireEvent.click(screen.getByText('finding / harness-finding: unknown'));
   expect(screen.getByText(evidenceHash)).toBeVisible();
   expect(screen.queryByText(/cli-finding/)).not.toBeInTheDocument();
-  fireEvent.click(within(screen.getByTestId(`inspect-cli-${cli.job_ref.job_id}`)).getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  inspectHarnessJob('cli', cli.job_ref.job_id);
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(2));
   const inspectors = await screen.findAllByRole('region', { name: 'Selected job inspector' });
   expect(inspectors).toHaveLength(2);

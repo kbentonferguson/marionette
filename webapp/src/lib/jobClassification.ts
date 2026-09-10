@@ -97,14 +97,14 @@ function refJobId(value: unknown): string {
   return String(id || "").trim();
 }
 
-/** Durable ``job_…`` token for the PM dashboard embed (empty if not ready). */
+/** Durable ``job_…`` token for the PM board pop-out (empty if not ready). */
 export function dashboardJobId(job: CommandJobSignals): string {
   const candidates = [refJobId(job.job_ref), String(job.id || "").trim(), refJobId(job.local_ref), refJobId(job.parent_ref)];
   return candidates.find((id) => id.startsWith("job_")) || "";
 }
 
 /**
- * Every Jobs-rail hire embeds the Puppetmaster dashboard. Adapters
+ * Tracker hire that can pop out the Puppetmaster board. Adapters
  * (agentic, cursor, claude-code, …) are transports under that kernel.
  * ``local_ref`` is a row alias, not a separate non-PM lane.
  */

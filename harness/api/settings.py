@@ -283,10 +283,13 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
             except (ValueError, TypeError):
                 return 400, {"error": "Invalid pilotToolBudget"}
     if "workerTokenBudget" in body:
+        from pmharness.bridge import parse_worker_token_budget
+
         raw = str(body["workerTokenBudget"]).strip().lower()
         try:
             _set_env_setting(
-                "HARNESS_WORKER_TOKEN_BUDGET", str(max(1, int(raw)))
+                "HARNESS_WORKER_TOKEN_BUDGET",
+                str(parse_worker_token_budget(raw)),
             )
         except (ValueError, TypeError):
             return 400, {"error": "Invalid workerTokenBudget"}

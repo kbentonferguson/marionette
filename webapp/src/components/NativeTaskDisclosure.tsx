@@ -64,7 +64,7 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
       </div>
     </button>
     {usage && <div className="px-1"><ExpertWorkerUsage usage={usage} compact /></div>}
-    <div id={id} hidden={!open} className="px-1 pt-1 text-xs text-muted space-y-2">
+    <div id={id} hidden={!open} className="px-1 pt-1 text-[10px] text-muted space-y-1">
       {open && <>
         {onInspect && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" onKeyUp={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onInspect(); }}>Inspect</button>}
         {kill && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" aria-label="Cancel this job"
