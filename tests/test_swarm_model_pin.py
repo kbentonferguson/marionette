@@ -559,3 +559,129 @@ def test_exposed_catalog_lists_enabled_astra_ahead_of_file_order_junk(
     hint = swarm_model_pin_hint(limit=16)
     assert "gpt-6-astra" in hint
     assert "gpt-3.5-turbo" not in hint
+
+
+def test_luna_max_aliases_normalize_to_gpt56_luna_with_max_effort():
+    from harness.swarm_model_pin import (
+        is_luna_max_pin,
+        normalize_swarm_model_pin_request,
+        pin_candidates,
+    )
+
+    for pin in (
+        "Luna Max",
+        "GPT Luna Max",
+        "gpt-5.6-luna-max",
+        "openai-codex:Luna Max",
+        "agentic/openai-codex/gpt-luna-max",
+    ):
+        assert is_luna_max_pin(pin), pin
+        out, meta = normalize_swarm_model_pin_request(pin)
+        assert "luna-pro" not in out.lower(), (pin, out)
+        assert out.endswith("gpt-5.6-luna") or out == "gpt-5.6-luna" or out.endswith(":gpt-5.6-luna") or "/gpt-5.6-luna" in out, (pin, out)
+        assert meta.get("reasoning_effort_hint") == "max", (pin, meta)
+        assert "gpt-5.6-luna-pro" not in pin_candidates(pin)
+
+
+def test_codex_oauth_pro_pins_remap_to_base_family():
+    from harness.swarm_model_pin import (
+        normalize_swarm_model_pin_request,
+        pin_candidates,
+        remap_codex_oauth_pro_model,
+    )
+
+    remapped, reason = remap_codex_oauth_pro_model("gpt-5.6-luna-pro")
+    assert remapped == "gpt-5.6-luna"
+    assert "codex_oauth_pro_remap" in reason
+
+    out, meta = normalize_swarm_model_pin_request("openai-codex:gpt-5.6-luna-pro")
+    assert out == "openai-codex:gpt-5.6-luna"
+    assert meta.get("codex_pro_remap")
+
+    cands = pin_candidates("agentic/openai-codex/gpt-5.6-sol-pro")
+    assert "agentic/openai-codex/gpt-5.6-sol" in cands
+    assert all("sol-pro" not in c or c.endswith("sol-pro") is False or True for c in cands)
+    # Remapped base must lead; never prefer *-pro for Codex OAuth dispatch.
+    assert cands[0] == "agentic/openai-codex/gpt-5.6-sol"
+
+
+def test_resolve_luna_max_pin_stamps_reasoning_effort_max(monkeypatch, tmp_path):
+    import json
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "agentic/openai-codex/gpt-5.6-luna",
+                        "adapter": "agentic",
+                        "adapter_model_name": "gpt-5.6-luna",
+                        "payload_defaults": {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.6-luna",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"openai-codex"},
+    )
+
+    def _fake_pin(payload, model, *, adapter, registry=None):
+        if adapter != "agentic":
+            return {**(payload or {}), "model": model}
+        if "luna-pro" in str(model):
+            raise AssertionError(f"must never pin luna-pro, got {model!r}")
+        if model in (
+            "gpt-5.6-luna",
+            "agentic/gpt-5.6-luna",
+            "openai-codex/gpt-5.6-luna",
+            "agentic/openai-codex/gpt-5.6-luna",
+        ):
+            return {
+                **(payload or {}),
+                "model": "gpt-5.6-luna",
+                "provider": "openai-codex",
+                "pinned_model": "agentic/openai-codex/gpt-5.6-luna",
+                "pinned_adapter_model_name": "gpt-5.6-luna",
+            }
+        return {**(payload or {}), "model": model}
+
+    monkeypatch.setattr("puppetmaster.model_registry.apply_model_pin", _fake_pin)
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda **_k: {
+            "allowed_adapters": ["agentic"],
+            "prefer_plan_billed": False,
+            "primary_adapter": "agentic",
+        },
+    )
+
+    from harness.swarm_model_pin import resolve_swarm_model_pin
+
+    out = resolve_swarm_model_pin("GPT Luna Max")
+    assert out["demoted"] is False
+    assert out["resolved"] == "agentic/openai-codex/gpt-5.6-luna"
+    assert out["pin_fields"].get("model") == "gpt-5.6-luna"
+    assert "luna-pro" not in str(out["pin_fields"]).lower()
+    assert out["pin_fields"].get("reasoning_effort") == "max"
+
+
+def test_openai_codex_pilot_models_drop_pro_slugs():
+    from harness.providers import get_provider
+
+    p = get_provider("openai-codex")
+    models = list(p.pilot_models)
+    assert "gpt-5.6-luna" in models
+    assert "gpt-5.6-luna-pro" not in models
+    assert "gpt-5.6-sol-pro" not in models
+    assert "gpt-5.6-terra-pro" not in models

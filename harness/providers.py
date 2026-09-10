@@ -225,14 +225,14 @@ PROVIDERS = (
         base_url="https://chatgpt.com/backend-api/codex",
         api_mode="codex_responses", display_name="ChatGPT Codex (OAuth)",
         # ChatGPT Codex OAuth catalog (Hermes-aligned). Live fetch from
-        # chatgpt.com/backend-api/codex/models merges on top when signed in.
+        # chatgpt.com/backend-api/codex/models wins when signed in. Do NOT list
+        # gpt-5.6-*-pro here: ChatGPT accounts reject those ids with HTTP 400
+        # ("not supported when using Codex with a ChatGPT account"). Luna Max
+        # is gpt-5.6-luna + reasoning_effort=max, never luna-pro.
         pilot_models=(
             "gpt-5.6-sol",
-            "gpt-5.6-sol-pro",
             "gpt-5.6-terra",
-            "gpt-5.6-terra-pro",
             "gpt-5.6-luna",
-            "gpt-5.6-luna-pro",
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
