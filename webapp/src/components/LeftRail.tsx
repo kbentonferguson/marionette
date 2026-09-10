@@ -1,7 +1,9 @@
 import { metadataSelectionKey } from '../lib/jobMetadata';
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import { useSharedJobMetadata, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
-import { MetadataInspection, MetadataStatus } from './MetadataJobs';
+import { MetadataStatus } from './MetadataJobs';
+import { openAgentSwarmJob } from '../lib/agentLinks';
+import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
@@ -2209,19 +2211,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   return (
                     <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
-                        onClick={() => toggleJobCard(key, selection)}
+                        onClick={() => openAgentSwarmJob(j.id)}
                         className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
                       >
                         <JobStatusIcon status={st} />
                         <span
                           className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
-                          title={j.goal}
+                          title={jobDisplayTitle(j)}
                         >
-                          {j.goal}
+                          {jobDisplayTitle(j)}
                         </span>
                         <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
                       </button>
-                      {isOpen && <MetadataInspection job={j} />}
+                      {/* Selection opens Jobs rail PM embed via openAgentSwarmJob */}
 
                     </div>
                   );
