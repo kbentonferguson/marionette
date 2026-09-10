@@ -474,6 +474,41 @@ def resolve_bare_model(model: str) -> tuple:
     return (candidates[0], model)
 
 
+_UNLIMITED_MAX_TOKENS = frozenset({"0", "off", "none", "unlimited"})
+_REQUIRED_MAX_TOKENS_FALLBACK = 128000
+
+
+def requested_max_output_tokens() -> Optional[int]:
+    """HARNESS_MAX_TOKENS as a request-time ceiling.
+
+    None means omit ``max_tokens`` on hosts that allow it. Empty or invalid
+    values keep the historical 8000 default so tool-call JSON is not cut off.
+    """
+    raw = (os.environ.get("HARNESS_MAX_TOKENS") or "").strip()
+    if not raw:
+        return 8000
+    if raw.lower() in _UNLIMITED_MAX_TOKENS:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 8000
+    if n <= 0:
+        return None
+    return n
+
+
+def _required_max_tokens(max_tokens: Optional[int]) -> int:
+    """APIs that reject a missing ceiling get a high fallback, not a silent 0."""
+    if max_tokens is None:
+        return _REQUIRED_MAX_TOKENS_FALLBACK
+    try:
+        n = int(max_tokens)
+    except (TypeError, ValueError):
+        return _REQUIRED_MAX_TOKENS_FALLBACK
+    return n if n > 0 else _REQUIRED_MAX_TOKENS_FALLBACK
+
+
 def build_pilot(spec: str, *, max_tokens: int | None = None):
     """Build a thin driver for a pilot spec.
 
@@ -488,10 +523,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     # / write_file tool calls are NOT truncated mid-arguments -- a 1500-token cap
     # silently cut off big tool-call JSON, which is why edit_file "lost" its args.
     if max_tokens is None:
-        try:
-            max_tokens = int(os.environ.get("HARNESS_MAX_TOKENS", "").strip() or "8000")
-        except (ValueError, TypeError):
-            max_tokens = 8000
+        max_tokens = requested_max_output_tokens()
 
     preset_name = spec
     if spec.startswith("moa:"):
@@ -561,7 +593,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         if burl and burl.rstrip("/").endswith("v1beta"):
             kwargs["base_url"] = burl
         return _finalize_driver(
-            GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=max_tokens, **kwargs)
+            GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=_required_max_tokens(max_tokens), **kwargs)
         )
 
     if provider.api_mode == "anthropic_messages":
@@ -572,7 +604,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
             burl = burl.rstrip("/") + "/v1"
         return _finalize_driver(
             AnthropicDriver(name=spec, model=model, base_url=burl,
-                            api_key_env=key_env, max_tokens=max_tokens)
+                            api_key_env=key_env, max_tokens=_required_max_tokens(max_tokens))
         )
     if provider.api_mode == "opencode_go":
         # Go's protocol is per model, not per provider: the driver (and the
@@ -599,7 +631,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     if provider.api_mode == "bedrock":
         from pmharness.drivers.bedrock import BedrockDriver
         return _finalize_driver(
-            BedrockDriver(name=spec, model=model, max_tokens=max_tokens)
+            BedrockDriver(name=spec, model=model, max_tokens=_required_max_tokens(max_tokens))
         )
     if provider.api_mode in ("codex_responses", "responses"):
         from pmharness.drivers.codex_responses import CodexResponsesDriver
@@ -614,7 +646,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 model=model,
                 base_url=provider.base_url,
                 api_key_env=key_env or default_key_env,
-                max_tokens=max_tokens,
+                max_tokens=_required_max_tokens(max_tokens),
                 chatgpt_backend=(provider.api_mode == "codex_responses"),
             )
         )

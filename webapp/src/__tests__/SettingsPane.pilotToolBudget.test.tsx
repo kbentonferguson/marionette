@@ -35,6 +35,7 @@ const sampleSettings: Settings = {
   state_dir: "/tmp/state",
   repo: "/tmp/repo",
   maxPilotSteps: "40",
+  maxOutputTokens: "8000",
   pilotToolBudget: "25",
 };
 
@@ -49,8 +50,10 @@ describe("SettingsPane pilotToolBudget control", () => {
     render(<SettingsPane onOpenWizard={vi.fn()} section="safety" />);
 
     expect(await screen.findByText("Max investigation steps")).toBeInTheDocument();
+    expect(screen.getByText("Reply output cap")).toBeInTheDocument();
     expect(screen.getByText("Per-turn tool-call cap")).toBeInTheDocument();
     expect(screen.getByDisplayValue("25")).toBeInTheDocument();
     expect(screen.getByDisplayValue("40")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("8000")).toBeInTheDocument();
   });
 });

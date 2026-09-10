@@ -137,6 +137,10 @@ def test_mimo_pro_output_ceiling_is_clamped_to_what_xiaomi_serves():
     assert go.max_tokens_for_model("mimo-v2.5-pro", 8000) == 8000
     # Other models keep whatever the caller asked for.
     assert go.max_tokens_for_model("kimi-k3", 262144) == 262144
+    # Unknown models (DeepSeek Flash) have no vendor cap; 0/None omit.
+    assert go.max_tokens_for_model("deepseek-v4-flash", 0) == 0
+    assert go.max_tokens_for_model("deepseek-v4-flash", None) == 0
+    assert go.max_tokens_for_model("deepseek-v4-flash", 8000) == 8000
 
 
 def test_kimi_models_use_the_temperature_the_go_relay_accepts():

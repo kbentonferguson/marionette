@@ -96,7 +96,19 @@ def test_finish_reason_length_is_explicit_incomplete(monkeypatch):
         }),
         b"data: [DONE]\n",
     ]
-    resp = _run_stream(monkeypatch, _driver(), lines)
+    calls = {"n": 0}
+
+    def urlopen(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("no continue fixture")
+        return _SseResp(lines)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    resp = _driver().chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
     assert resp.error
     assert "length" in resp.error
     assert resp.text == "partial cut"
@@ -106,6 +118,46 @@ def test_finish_reason_length_is_explicit_incomplete(monkeypatch):
     assert resp.tokens_in == 8
     assert resp.tokens_out == 4
     assert resp.meta["tool_calls"] == []
+
+
+def test_finish_reason_length_continues_then_stops(monkeypatch):
+    first = [
+        _data({"choices": [{"delta": {"content": "hello"}, "finish_reason": "length"}]}),
+        b"data: [DONE]\n",
+    ]
+    second = [
+        _data({"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    queue = [first, second]
+
+    def urlopen(*_a, **_k):
+        return _SseResp(queue.pop(0))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    resp = _driver().chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+    )
+    assert resp.error is None
+    assert resp.text == "helloworld"
+    assert resp.meta["finish_reason"] == "stop"
+    assert resp.meta.get("length_continues") == 1
+
+
+def test_build_chat_body_omits_nonpositive_max_tokens():
+    driver = _driver()
+    driver.max_tokens = None
+    body = driver._build_chat_body([{"role": "user", "content": "hi"}])
+    assert "max_tokens" not in body
+    assert "max_completion_tokens" not in body
+    driver.max_tokens = 0
+    body = driver._build_chat_body([{"role": "user", "content": "hi"}])
+    assert "max_tokens" not in body
+    driver.max_tokens = 8000
+    body = driver._build_chat_body([{"role": "user", "content": "hi"}])
+    field = driver._output_token_limit_field()
+    assert body[field] == 8000
 
 
 def test_partial_eof_without_done_or_finish_is_incomplete(monkeypatch):
