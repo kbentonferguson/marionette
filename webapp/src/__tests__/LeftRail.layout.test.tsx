@@ -40,7 +40,13 @@ describe("LeftRail branch layout", () => {
   });
 
   it("gives the branches list a fixed height so the resize handle can move", async () => {
-    const { container } = render(<LeftRail jobsRefresh={0} />);
+    const store = new JobMetadataStore();
+    store.setView({ kind: "view", view: view([{ source: "harness", state_id: "state", cross_project: false, available: true }], context()), generation: 1 });
+    const { container } = render(
+      <JobMetadataContext.Provider value={store}>
+        <LeftRail jobsRefresh={0} />
+      </JobMetadataContext.Provider>,
+    );
 
     await screen.findByRole("button", { name: /main/ });
     const branchList = container.querySelector<HTMLElement>("[data-slot=left-rail-branches-list]");
