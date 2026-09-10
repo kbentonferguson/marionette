@@ -2034,6 +2034,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               return (
               <button
                 key={w.name}
+                type="button"
+                aria-label={w.name}
                 onClick={() => switchWs(w.name)}
                 title={linked
                   ? `Open ${linkKind || "linked"} worktree (separate folder)`

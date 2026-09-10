@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import LeftRail from "../components/LeftRail";
@@ -44,7 +44,8 @@ const pruneButton = () => screen.getByTitle("Prune unused edit/worker and leftov
 it("captures and displays the repository before confirmation, with one pending dispatch", async () => {
   vi.mocked(api.pruneEditBranches).mockImplementation(() => new Promise(() => {}));
   render(<LeftRail jobsRefresh={0} />);
-  await screen.findByRole("button", { name: /main/ });
+  await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+  await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
   act(() => { fireEvent.click(pruneButton()); fireEvent.click(pruneButton()); });
   expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("/workspace"));
   expect(api.pruneEditBranches).toHaveBeenCalledExactlyOnceWith("/workspace");
@@ -57,7 +58,8 @@ it.each(["success", "failure"])("suppresses late %s after workspace scope change
   const toast = vi.fn();
   window.addEventListener("harness-toast", toast);
   render(<LeftRail jobsRefresh={0} />);
-  await screen.findByRole("button", { name: /main/ });
+  await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+  await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
   fireEvent.click(pruneButton());
   const calls = vi.mocked(api.workspaces).mock.calls.length;
   await act(async () => {
@@ -76,7 +78,8 @@ it("cancels when scope changes while confirmation is open", async () => {
     return true;
   });
   render(<LeftRail jobsRefresh={0} />);
-  await screen.findByRole("button", { name: /main/ });
+  await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+  await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
   fireEvent.click(pruneButton());
   expect(api.pruneEditBranches).not.toHaveBeenCalled();
 });
@@ -89,7 +92,8 @@ it("reports protected targets after pruning", async () => {
   const toast = vi.fn();
   window.addEventListener("harness-toast", toast);
   render(<LeftRail jobsRefresh={0} />);
-  await screen.findByRole("button", { name: /main/ });
+  await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+  await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
   await act(async () => { fireEvent.click(pruneButton()); });
   expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("/workspace/tree (Locked worktree)") }));
   expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("pmedit-unique (Commits not retained") }));
