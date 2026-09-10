@@ -637,3 +637,56 @@ def test_catalog_keeps_informative_go_native_name(monkeypatch):
     ox = next(row for row in entries if row["model"] == "ox-alpha-free")
     assert ox["name"] == "Native Ox Label"
     assert seen == []
+
+# ── OpenCode Go session routing header ─────────────────────────────────────
+
+def test_openai_compat_go_sends_x_opencode_session_header():
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+    from pmharness.drivers.prompt_cache import maybe_attach_opencode_session_header
+
+    driver = prov.build_pilot("opencode-go:deepseek-v4-flash")
+    assert isinstance(driver, OpenAICompatDriver)
+    headers = {"Authorization": "Bearer test"}
+    driver._finalize_http_headers(headers, session_id="sess-go-1")
+    assert headers["User-Agent"] == go.USER_AGENT
+    assert headers["x-opencode-session"] == "sess-go-1"
+
+
+def test_anthropic_go_sends_x_opencode_session_header():
+    driver = prov.build_pilot("opencode-go:minimax-m3")
+    headers = driver._headers(session_id="sess-go-2")
+    assert headers["User-Agent"] == go.USER_AGENT
+    assert headers["x-opencode-session"] == "sess-go-2"
+
+
+def test_responses_go_sends_x_opencode_session_and_marionette_ua():
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    driver = prov.build_pilot("opencode-go:gpt-5.6-luna")
+    assert isinstance(driver, CodexResponsesDriver)
+    headers = driver._request_headers("sk-go-test", session_id="sess-go-3")
+    assert headers["User-Agent"] == go.USER_AGENT
+    assert headers["x-opencode-session"] == "sess-go-3"
+    assert headers["Authorization"] == "Bearer sk-go-test"
+
+
+def test_opencode_session_header_omitted_without_session_id():
+    from pmharness.drivers.prompt_cache import maybe_attach_opencode_session_header
+
+    headers = {"User-Agent": "Marionette"}
+    maybe_attach_opencode_session_header(
+        headers, base_url=go.BASE_URL, session_id=None, messages=None, system=None,
+    )
+    assert "x-opencode-session" not in headers
+
+
+def test_opencode_session_header_skipped_for_non_opencode_hosts():
+    from pmharness.drivers.prompt_cache import maybe_attach_opencode_session_header
+
+    headers = {}
+    maybe_attach_opencode_session_header(
+        headers,
+        base_url="https://openrouter.ai/api/v1",
+        session_id="sess-x",
+    )
+    assert "x-opencode-session" not in headers

@@ -429,7 +429,7 @@ class AnthropicDriver:
 
         return body
 
-    def _headers(self) -> dict:
+    def _headers(self, session_id: str | None = None) -> dict:
         key = self._key()
         headers = {
             "Content-Type": "application/json",
@@ -477,15 +477,24 @@ class AnthropicDriver:
                 betas.append("interleaved-thinking-2025-05-14")
             if betas:
                 headers["anthropic-beta"] = ",".join(betas)
+        try:
+            from .prompt_cache import maybe_attach_opencode_session_header
+            maybe_attach_opencode_session_header(
+                headers,
+                base_url=self.base_url,
+                session_id=session_id,
+            )
+        except Exception:
+            pass
         return headers
 
-    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
+    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None, session_id: str | None = None) -> DriverResponse:
         url = f"{self.base_url}/messages"
         body = self._build_body(messages, tools, system)
         data = json.dumps(body).encode("utf-8")
 
         def _call() -> DriverResponse:
-            headers = self._headers()
+            headers = self._headers(session_id=session_id)
             t0 = time.time()
             raw = None
             for attempt in range(2):
@@ -502,7 +511,7 @@ class AnthropicDriver:
                     if attempt == 0:
                         nxt = self._pool_rotate_on_http_error(e.code, detail)
                         if nxt:
-                            headers = self._headers()
+                            headers = self._headers(session_id=session_id)
                             continue
                     return DriverResponse(
                         text="", model=self.name,
@@ -588,6 +597,7 @@ class AnthropicDriver:
         on_delta=None,
         on_reasoning_delta=None,
         on_tool_hint=None,
+        session_id: str | None = None,
     ) -> DriverResponse:
         """Streaming counterpart of chat() over Anthropic's SSE Messages API.
         Emits text deltas via on_delta(str) as they arrive, while assembling the
@@ -598,7 +608,7 @@ class AnthropicDriver:
         body = self._build_body(messages, tools, system)
         body["stream"] = True
         data = json.dumps(body).encode("utf-8")
-        headers = self._headers()
+        headers = self._headers(session_id=session_id)
         if on_delta is None:
             on_delta = lambda _t: None
 
