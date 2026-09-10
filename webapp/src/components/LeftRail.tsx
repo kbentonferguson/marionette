@@ -1,4 +1,3 @@
-import { metadataSelectionKey } from '../lib/jobMetadata';
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import { useSharedJobMetadata, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
 import { MetadataStatus } from './MetadataJobs';
@@ -7,7 +6,6 @@ import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, Trash2, Brush, Search, X, Square } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
-import { jobArtifactKey, selectJobRef, type ArtifactLoad, type SelectedJobRef } from "../lib/jobArtifacts";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -93,7 +91,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
 }) {
-  const { store: metadataStore, state: metadata } = useSharedJobMetadata();
+  const { state: metadata } = useSharedJobMetadata();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
@@ -144,7 +142,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => window.removeEventListener("harness-job-scope-changed", onScope);
   }, []);
   const [showAllJobs, setShowAllJobs] = useState(false);
-  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
   const [branchesHeight, setBranchesHeight] = useState(loadBranchesHeight);
   const [pruningBranches, setPruningBranches] = useState(false);
@@ -156,21 +153,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     events.forEach(event => window.addEventListener(event, invalidate));
     return () => {
       invalidate();
-      events.forEach(event => window.removeEventListener(event, invalidate));
-    };
-  }, []);
-  const [artifactsByJob, setArtifactsByJob] = useState<Record<string, ArtifactLoad>>({});
-  const artifactEpoch = useRef(0);
-  useEffect(() => {
-    const invalidate = () => {
-      artifactEpoch.current += 1;
-      setArtifactsByJob({});
-      setExpandedJobs({});
-    };
-    const events = ["harness-project-switching", "harness-project-selected", "harness-session-changed", "harness-config-changed"];
-    events.forEach(event => window.addEventListener(event, invalidate));
-    return () => {
-      artifactEpoch.current += 1;
       events.forEach(event => window.removeEventListener(event, invalidate));
     };
   }, []);
@@ -283,17 +265,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   useEffect(() => () => {
     branchesResizeCleanupRef.current?.();
   }, []);
-
-  const loadJobArtifacts = (selection: SelectedJobRef) => {
-    const match = metadata.observations.find(o => metadataSelectionKey(o.row.selection) === metadataSelectionKey({ ...selection, source: o.row.selection.source }) && o.row.selection.source === selection.source);
-    if (match && !metadata.working) { metadataStore.select(match.row.selection); void metadataStore.readDetail(); }
-  };
-
-  const toggleJobCard = (key: string, selection: SelectedJobRef | null) => {
-    const opening = !expandedJobs[key];
-    setExpandedJobs(previous => ({ ...previous, [key]: opening }));
-    if (opening && selection && artifactsByJob[key] === undefined) loadJobArtifacts(selection);
-  };
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [selectedProjectPath, setSelectedProjectPath] = useState("");
@@ -1380,7 +1351,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const artifactContextRef = useRef(artifactContext);
   if (artifactContextRef.current !== artifactContext) {
     artifactContextRef.current = artifactContext;
-    artifactEpoch.current += 1;
   }
   const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId)
     .filter(isJobsListRow)
@@ -2204,10 +2174,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <>
                 {displayedJobs.map((j) => {
                   const st = jobStatus(j);
-                  const selection = selectJobRef(j, selectedProjectPath, activeSessionId);
-                  const key = selection ? `${artifactEpoch.current}:${jobArtifactKey(selection)}`
-                    : JSON.stringify([j.metadata_key ?? j.id, j.source, selectedProjectPath, activeSessionId]);
-                  const isOpen = !!expandedJobs[key];
+                  const key = j.metadata_key ?? j.id;
                   return (
                     <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
@@ -2221,7 +2188,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                         >
                           {jobDisplayTitle(j)}
                         </span>
-                        <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
                       </button>
                       {/* Selection opens Jobs rail PM embed via openAgentSwarmJob */}
 
