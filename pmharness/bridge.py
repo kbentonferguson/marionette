@@ -576,12 +576,16 @@ def _compact_artifact(a: Any) -> dict:
     # Provider HTTP rejects (esp. Codex OAuth http_status:400) must carry
     # stderr / provider body into compact.detail so Swarm/Jobs Alerts can show
     # the real reject instead of a green empty-findings completion.
+    # Do NOT run this for empty_or_unstructured_agentic_result / other
+    # no-structure tags: _provider_reject_detail falls back to the bare
+    # failure string and would clobber parked analysis prose in body,
+    # breaking rescue_analysis_compact promotion.
     detail = ""
-    if failure and (_is_http_status_failure(failure) or _is_no_structure_failure(failure)):
+    if failure and _is_http_status_failure(failure):
         detail = _provider_reject_detail(payload, failure)
         if detail and (not body or body == str(headline or "")):
             body = detail
-        if detail and _is_http_status_failure(failure):
+        if detail:
             if "HTTP" not in str(headline or "").upper() and "provider reject" not in str(headline or "").lower():
                 code = str(failure).rsplit(":", 1)[-1]
                 snippet = detail.splitlines()[0].strip()[:160] if detail else failure
