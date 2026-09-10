@@ -245,10 +245,11 @@ def provider_models(p, *, force: bool = False) -> list:
     # failed response must not be disguised with the curated static list.
     if p.name == "openrouter" and keyed:
         return list(dict.fromkeys(m for m in live if m))
-    # Go/Zen: live listing is availability authority. Curated survives only
-    # when listing fails or returns nothing — do not merge stale curated ids
-    # into a successful live catalog.
-    if p.name in ("opencode-go", "opencode-zen"):
+    # Go/Zen/ChatGPT Codex OAuth: live listing is availability authority.
+    # Curated survives only when listing fails or returns nothing — do not
+    # merge stale curated ids (especially gpt-5.6-*-pro) into a successful
+    # live Codex catalog; ChatGPT accounts reject those with HTTP 400.
+    if p.name in ("opencode-go", "opencode-zen", "openai-codex"):
         if live:
             return list(dict.fromkeys(m for m in live if m))
         return list(dict.fromkeys(m for m in curated if m))

@@ -538,9 +538,7 @@ def _compact_artifact(a: Any) -> dict:
     if headline_text and art_type in (
         "verification", "finding", "risk", "decision", "patch",
     ):
-        is_no_structure = (
-            fail_l in _NO_STRUCTURE_FAILURES or fail_l.startswith("no_tool_calls")
-        )
+        is_no_structure = _is_no_structure_failure(fail_l)
         if is_no_structure or _looks_like_reasoning_fragment(headline_text):
             meta = _is_meta_degrade_artifact(
                 {"failure": failure, "headline": headline_text}
@@ -575,6 +573,20 @@ def _compact_artifact(a: Any) -> dict:
             headline = f"{str(headline).rstrip('. ')}. {mitigation}"
             body = str(headline) if not body else body
             empty_headline = False
+    # Provider HTTP rejects (esp. Codex OAuth http_status:400) must carry
+    # stderr / provider body into compact.detail so Swarm/Jobs Alerts can show
+    # the real reject instead of a green empty-findings completion.
+    detail = ""
+    if failure and (_is_http_status_failure(failure) or _is_no_structure_failure(failure)):
+        detail = _provider_reject_detail(payload, failure)
+        if detail and (not body or body == str(headline or "")):
+            body = detail
+        if detail and _is_http_status_failure(failure):
+            if "HTTP" not in str(headline or "").upper() and "provider reject" not in str(headline or "").lower():
+                code = str(failure).rsplit(":", 1)[-1]
+                snippet = detail.splitlines()[0].strip()[:160] if detail else failure
+                headline = f"provider reject (HTTP {code}): {snippet}"
+                empty_headline = False
     compact = {
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
@@ -586,6 +598,8 @@ def _compact_artifact(a: Any) -> dict:
         # for a weak-model / bad-prompt degrade.
         "failure": failure,
     }
+    if detail:
+        compact["detail"] = detail[:1200]
     compact.update(_artifact_provenance(a, payload))
     return compact
 
@@ -744,9 +758,53 @@ _NO_STRUCTURE_FAILURES = frozenset({
     "no_credentials",
     "context_length_exceeded",
     "provider_error",
+    "http_status:400",
     "http_status:429",
     "http_status:500",
 })
+
+def _is_http_status_failure(failure: object) -> bool:
+    """True for provider HTTP reject tags (``http_status:400`` / ``429`` / …)."""
+    low = str(failure or "").strip().lower()
+    if not low.startswith("http_status:"):
+        return False
+    code = low.rsplit(":", 1)[-1]
+    return code.isdigit() and int(code) >= 400
+
+
+def _is_no_structure_failure(failure: object) -> bool:
+    """True when a failure tag means no real analysis (incl. any http_status:*)."""
+    fail = str(failure or "").strip()
+    if not fail:
+        return False
+    low = fail.lower()
+    if low in _NO_STRUCTURE_FAILURES or low.startswith("no_tool_calls"):
+        return True
+    return _is_http_status_failure(fail)
+
+
+def _provider_reject_detail(payload: dict, failure: object = "") -> str:
+    """Best-effort stderr / provider body for Alerts + Jobs UI."""
+    if not isinstance(payload, dict):
+        payload = {}
+    for key in (
+        "stderr", "provider_body", "provider_error", "error", "detail",
+        "message", "stdout", "body", "response_body",
+    ):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:1200]
+        if isinstance(raw, dict):
+            for sub in ("error", "message", "detail", "body"):
+                val = raw.get(sub)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()[:1200]
+                if isinstance(val, dict):
+                    msg = val.get("message") or val.get("detail")
+                    if isinstance(msg, str) and msg.strip():
+                        return msg.strip()[:1200]
+    fail = str(failure or "").strip()
+    return fail[:240] if fail else ""
 
 
 # Failure tag that means the worker wrote free-text analysis but never called
@@ -898,8 +956,7 @@ def _is_meta_degrade_artifact(a: dict) -> bool:
     try:
         fail = str(a.get("failure") or "").strip().lower()
         if (
-            fail in _NO_STRUCTURE_FAILURES
-            or fail.startswith("no_tool_calls")
+            _is_no_structure_failure(fail)
             or fail.startswith("auth")
             or fail.startswith("routing")
             or fail.startswith("route_")
@@ -958,7 +1015,7 @@ def _worker_submitted_structure(compact: list) -> bool:
             if _is_auth_failure_tag(a.get("failure"), a.get("headline")):
                 return False
             fail = str(a.get("failure") or "").strip().lower()
-            if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+            if _is_no_structure_failure(fail):
                 return False
             if fail:
                 continue
@@ -982,10 +1039,11 @@ def _analysis_bridge_status(compact: list, *, job_status: str, summary: str,
     # Honest empty submit (structured channel used, zero findings) stays clean.
     if _worker_submitted_structure(compact):
         return str(job_status or ""), summary or ""
-    reason = "no structured findings"
+    reject_note = _provider_http_reject_note(compact)
+    reason = reject_note or "no structured findings"
     for a in compact or []:
         fail = str(a.get("failure") or "").strip()
-        if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+        if _is_no_structure_failure(fail):
             reason = f"no structured findings ({fail})"
             break
         if str(a.get("type") or "") == "verification" and _looks_like_reasoning_fragment(
@@ -999,7 +1057,14 @@ def _analysis_bridge_status(compact: list, *, job_status: str, summary: str,
     if status not in ("failed", "degraded", "error"):
         status = "failed"
     raw_summary = (summary or "").strip()
-    if not raw_summary or _looks_like_reasoning_fragment(raw_summary):
+    # Provider HTTP rejects (Codex OAuth 400) must lead the summary — never keep
+    # a green-sounding "completed without structured findings" stitcher line.
+    if reject_note:
+        if not raw_summary or "without structured findings" in raw_summary.lower():
+            raw_summary = reject_note
+        elif reject_note not in raw_summary:
+            raw_summary = f"{reject_note}\n{raw_summary}"
+    elif not raw_summary or _looks_like_reasoning_fragment(raw_summary):
         raw_summary = reason
     elif "without structured findings" not in raw_summary.lower() and (
             "no structured findings" not in raw_summary.lower()):
@@ -1033,6 +1098,24 @@ def _is_auth_failure_tag(failure: object, headline: object = "") -> bool:
     if "AUTH FAILURE" in head.upper():
         return True
     return False
+
+
+def _provider_http_reject_note(compact: list) -> str:
+    """Loud one-liner when workers died on HTTP 4xx/5xx with empty findings."""
+    for a in compact or []:
+        if not isinstance(a, dict):
+            continue
+        fail = str(a.get("failure") or "").strip()
+        if not _is_http_status_failure(fail):
+            continue
+        detail = str(a.get("detail") or a.get("body") or a.get("headline") or "").strip()
+        head = str(a.get("headline") or "").strip()
+        if detail and detail != head:
+            return f"provider reject ({fail}): {detail[:200]}"
+        if head:
+            return f"provider reject ({fail}): {head[:200]}"
+        return f"provider reject ({fail})"
+    return ""
 
 
 def _inherited_provenance(source: dict) -> dict:

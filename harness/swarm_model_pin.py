@@ -27,6 +27,120 @@ _PIN_PROVIDER_ALIASES = {
     "codex-plan": "openai-codex",
 }
 
+# ChatGPT Codex OAuth (OPENAI_CODEX_TOKEN) rejects gpt-5.6-*-pro with HTTP 400.
+# Luna/Sol/Terra Max = base id + reasoning_effort=max — never the -pro slug.
+_CODEX_OAUTH_PRO_BASE = {
+    "gpt-5.6-luna-pro": "gpt-5.6-luna",
+    "gpt-5.6-sol-pro": "gpt-5.6-sol",
+    "gpt-5.6-terra-pro": "gpt-5.6-terra",
+}
+_LUNA_MAX_PIN_ALIASES = frozenset({
+    "luna max",
+    "gpt luna max",
+    "gpt-luna-max",
+    "luna-max",
+    "gpt-5.6-luna-max",
+    "gpt-5-6-luna-max",
+    "max-tier luna",
+    "max tier luna",
+})
+
+
+def _bare_model_tail(pin: str) -> str:
+    """Last path/colon segment of a pin, lowercased."""
+    body = (pin or "").strip()
+    if not body:
+        return ""
+    if ":" in body:
+        body = body.split(":", 1)[1].strip() or body
+    if "/" in body:
+        body = body.rsplit("/", 1)[-1].strip() or body
+    return body.lower()
+
+
+def is_luna_max_pin(pin: str) -> bool:
+    """True when the pilot/user named Luna Max (max effort), not Luna Pro."""
+    raw = (pin or "").strip().lower()
+    if not raw:
+        return False
+    if raw in _LUNA_MAX_PIN_ALIASES:
+        return True
+    compact = re.sub(r"[\s_]+", " ", raw).strip()
+    if compact in _LUNA_MAX_PIN_ALIASES:
+        return True
+    bare = _bare_model_tail(pin)
+    if bare in _LUNA_MAX_PIN_ALIASES or bare.endswith("luna-max"):
+        return True
+    # Free-text phrases inside longer pins / labels.
+    if "luna max" in compact or "gpt luna max" in compact:
+        return True
+    return False
+
+
+def remap_codex_oauth_pro_model(model_id: str) -> tuple[str, str]:
+    """Remap ChatGPT Codex OAuth *-pro ids to the supported base slug.
+
+    Returns ``(model, reason)``. Reason is empty when unchanged. Prefer remap
+    over reject so Luna Max pins that wrongly resolved to luna-pro still
+    dispatch as gpt-5.6-luna (caller keeps reasoning_effort).
+    """
+    raw = (model_id or "").strip()
+    if not raw:
+        return "", ""
+    bare = _bare_model_tail(raw)
+    base = _CODEX_OAUTH_PRO_BASE.get(bare)
+    if not base:
+        # Also catch hyphen/dot variants of the same pro tails.
+        for pro, target in _CODEX_OAUTH_PRO_BASE.items():
+            if bare == pro or bare.endswith("/" + pro) or bare.endswith(":" + pro):
+                base = target
+                break
+    if not base:
+        return raw, ""
+    # Preserve any provider/agentic prefix, swap only the model tail.
+    if ":" in raw:
+        prov, _rest = raw.split(":", 1)
+        return f"{prov}:{base}", f"codex_oauth_pro_remap:{bare}->{base}"
+    if "/" in raw:
+        head, _tail = raw.rsplit("/", 1)
+        # agentic/openai-codex/gpt-5.6-luna-pro → agentic/openai-codex/gpt-5.6-luna
+        return f"{head}/{base}", f"codex_oauth_pro_remap:{bare}->{base}"
+    return base, f"codex_oauth_pro_remap:{bare}->{base}"
+
+
+def normalize_swarm_model_pin_request(pin: str) -> tuple[str, dict[str, str]]:
+    """Normalize pilot-supplied swarm pins before catalog resolution.
+
+    - Luna Max / GPT Luna Max → gpt-5.6-luna (effort=max is separate).
+    - ChatGPT Codex OAuth *-pro → base family id (keep effort).
+    """
+    requested = (pin or "").strip()
+    meta: dict[str, str] = {}
+    if not requested:
+        return "", meta
+    if is_luna_max_pin(requested):
+        # Preserve an explicit openai-codex / agentic provider prefix when present.
+        prov, _model = _parse_pin_provider_model(requested)
+        if prov in ("openai-codex", "codex", "chatgpt-codex", "codex-plan"):
+            out = f"{_normalize_pin_provider(prov)}:gpt-5.6-luna"
+        elif requested.lower().startswith("agentic/openai-codex/"):
+            out = "agentic/openai-codex/gpt-5.6-luna"
+        elif requested.lower().startswith("agentic/"):
+            out = "agentic/gpt-5.6-luna"
+        else:
+            out = "gpt-5.6-luna"
+        meta["luna_max"] = "1"
+        meta["reasoning_effort_hint"] = "max"
+        meta["normalize"] = f"luna_max->{out}"
+        _diag("swarm_model_pin.luna_max", msg=meta["normalize"])
+        return out, meta
+    remapped, reason = remap_codex_oauth_pro_model(requested)
+    if reason:
+        meta["codex_pro_remap"] = reason
+        _diag("swarm_model_pin.codex_pro_remap", msg=reason)
+        return remapped, meta
+    return requested, meta
+
 
 @dataclass(frozen=True)
 class AgenticModelPin:
@@ -382,9 +496,11 @@ def swarm_model_pin_hint(*, limit: int = 16) -> str:
 
 def pin_candidates(pin: str) -> list[str]:
     """Ordered alias candidates for a pilot-supplied swarm model pin."""
-    raw = (pin or "").strip()
-    if not raw:
+    original = (pin or "").strip()
+    if not original:
         return []
+    normalized, _meta = normalize_swarm_model_pin_request(original)
+    raw = normalized or original
     out: list[str] = []
     seen: set[str] = set()
 
@@ -398,7 +514,10 @@ def pin_candidates(pin: str) -> list[str]:
         seen.add(key)
         out.append(v)
 
+    # Remapped Codex/Luna Max ids first so apply_model_pin never pins *-pro.
     _add(raw)
+    if original.lower() != raw.lower():
+        _add(original)
 
     # provider:model / engine/model → bare model
     bare = raw
@@ -506,18 +625,21 @@ def resolve_swarm_model_pin(
         "adapter": str,       # adapter that accepted the pin (or "")
       }
     """
-    requested = (pin or "").strip()
+    original = (pin or "").strip()
+    requested, norm_meta = normalize_swarm_model_pin_request(original)
     empty = {
         "pin_fields": {},
         "auto_route": True,
-        "requested": requested,
+        "requested": original,
         "resolved": "",
         "demoted": False,
         "reason": "empty",
         "adapter": "",
     }
-    if not requested:
+    if not original:
         return empty
+    if not requested:
+        requested = original
 
     # Refresh catalog against live keys so alias resolution sees OpenCode Go /
     # OpenRouter / etc. as they exist *now*, not a stale peer machine catalog.
@@ -544,23 +666,38 @@ def resolve_swarm_model_pin(
             if not stamped:
                 continue
             resolved = str(stamped.get("pinned_model") or "").strip()
+            pin_fields = {**stamped, "auto_route": False}
+            # Fail closed: never dispatch ChatGPT Codex OAuth *-pro ids.
+            for key in ("model", "pinned_adapter_model_name"):
+                cur = str(pin_fields.get(key) or "").strip()
+                remapped, reason = remap_codex_oauth_pro_model(cur)
+                if reason and remapped:
+                    pin_fields[key] = remapped
+                    _diag("swarm_model_pin.codex_pro_remap_fields", msg=f"{key}:{reason}")
+            if norm_meta.get("reasoning_effort_hint") and not pin_fields.get("reasoning_effort"):
+                pin_fields["reasoning_effort"] = norm_meta["reasoning_effort_hint"]
+            reason = (
+                "exact"
+                if candidate == original
+                else f"alias:{candidate}"
+            )
+            if norm_meta.get("normalize"):
+                reason = f"{norm_meta['normalize']};{reason}"
+            elif norm_meta.get("codex_pro_remap"):
+                reason = f"{norm_meta['codex_pro_remap']};{reason}"
             return {
-                "pin_fields": {**stamped, "auto_route": False},
+                "pin_fields": pin_fields,
                 "auto_route": False,
-                "requested": requested,
-                "resolved": resolved,
+                "requested": original,
+                "resolved": str(pin_fields.get("pinned_model") or resolved).strip(),
                 "demoted": False,
-                "reason": (
-                    "exact"
-                    if candidate == requested
-                    else f"alias:{candidate}"
-                ),
+                "reason": reason,
                 "adapter": adapter,
             }
 
     available = list_available_worker_models(limit=8, adapters=set(adapters))
     reason = (
-        f"pin {requested!r} not in keyed worker registry "
+        f"pin {original!r} not in keyed worker registry "
         f"(adapters={adapters}); "
         f"auto-routing among {available or ['(none keyed)']}"
     )
