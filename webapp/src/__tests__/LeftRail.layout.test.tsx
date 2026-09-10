@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LeftRail from "../components/LeftRail";
+import { api } from "../lib/api";
 import { JobMetadataContext } from '../lib/jobMetadataContext';
 import { JobMetadataStore } from '../lib/useJobMetadata';
 import { context, summary, view } from './jobMetadata.fixtures';
@@ -42,7 +43,8 @@ describe("LeftRail branch layout", () => {
   it("gives the branches list a fixed height so the resize handle can move", async () => {
     const { container } = render(<LeftRail jobsRefresh={0} />);
 
-    await screen.findByRole("button", { name: /main/ });
+    await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
     const branchList = container.querySelector<HTMLElement>("[data-slot=left-rail-branches-list]");
     const upperSections = container.querySelector<HTMLElement>("[data-slot=left-rail-upper-sections]");
     const jobsPanel = container.querySelector<HTMLElement>("[data-slot=left-rail-jobs]");
