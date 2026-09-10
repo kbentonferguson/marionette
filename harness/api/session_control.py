@@ -855,7 +855,7 @@ def post_session_steer(body: dict, svc: SessionControlServices, pilot=None) -> t
     if not svc.get_pilot():
         return 404, {"error": "no active session"}
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
-        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
@@ -997,7 +997,7 @@ def post_session_queue(body: dict, svc: SessionControlServices, pilot=None) -> t
     if not svc.get_pilot():
         return 404, {"error": "no active session"}
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
-        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
@@ -1077,7 +1077,7 @@ def post_session_queue_reorder(
         return 409, not_ready
     pilot = svc.get_pilot()
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
-        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if body.get("session_id") is not None and body["session_id"] != getattr(pilot, "harness_session_id", ""):
         return 409, {"ok": False, "code": "session_changed", "error": "Active session changed. Your queue was not modified."}
     if not pilot:
@@ -1094,9 +1094,9 @@ def get_session_queue(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """GET /api/session/queue."""
     pilot = svc.get_pilot()
     if isinstance(pilot, PromptQueueMixin) and not getattr(pilot, "harness_session_id", ""):
-        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Choose a session before using its prompt queue."}
+        return 409, {"ok": False, "code": "queue_session_unbound", "error": "Open a workspace or pick a project session before using its prompt queue."}
     if pilot is not None and not hasattr(pilot, "list_prompts"):
-        return 409, {"ok": False, "code": "pilot_not_ready", "error": "Session queue is not ready."}
+        return 409, {"ok": False, "code": "pilot_not_ready", "error": "No project session is ready yet. Open a workspace or pick a project session."}
     session_id = getattr(pilot, "harness_session_id", "")
     recovery = pilot.prompt_queue_recovery() if hasattr(pilot, "prompt_queue_recovery") else []
     try:

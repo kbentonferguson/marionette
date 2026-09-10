@@ -143,10 +143,21 @@ for (const code of ["input_commit_uncertain", "input_stopped"]) test(`${code} ke
   assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
 });
 
-test("unknown structured input error codes remain sanitized", () => {
+test("safe unknown input_* codes keep their code without forwarding body text", () => {
   const res = fakeResponse(503);
   const calls = wireWithRecorder(res);
-  res.emit("data", JSON.stringify({ code: `input_${SECRET_TOKEN}`, error: SECRET_TOKEN }));
+  res.emit("data", JSON.stringify({ code: "input_document_missing", error: SECRET_TOKEN }));
+  res.emit("end");
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0].code, "input_document_missing");
+  assert.equal(calls.errors[0].status, 503);
+  assert.ok(!JSON.stringify(calls.errors).includes(SECRET_TOKEN));
+});
+
+test("unsafe input error tokens fall back to HTTP classification", () => {
+  const res = fakeResponse(503);
+  const calls = wireWithRecorder(res);
+  res.emit("data", JSON.stringify({ code: `input_${SECRET_TOKEN}!`, error: SECRET_TOKEN }));
   res.emit("end");
   assert.equal(calls.errors.length, 1);
   assert.equal(calls.errors[0].code, "backend_error");

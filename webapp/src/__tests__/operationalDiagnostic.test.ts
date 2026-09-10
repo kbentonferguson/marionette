@@ -158,6 +158,23 @@ describe("fromTransportFailure", () => {
     expect(diag.code).toBe(TRANSPORT_HTTP);
     expect(diag.scope).toBe("transport");
   });
+
+  it("preserves backend code and HTTP status on chat/input transport failures", () => {
+    const err = Object.assign(new Error("Open a workspace or pick a project session"), {
+      status: 409,
+      code: "queue_session_unbound",
+    });
+    const diag = fromTransportFailure({
+      operation: "stream",
+      path: "/api/chat",
+      err,
+      userAgent: "Chrome",
+      hasBridge: false,
+    });
+    expect(diag.code).toBe("queue_session_unbound");
+    expect(diag.detail).toContain("HTTP 409");
+    expect(diag.detail).not.toMatch(/device or query/i);
+  });
 });
 
 describe("scope and retry rules", () => {

@@ -3210,7 +3210,7 @@ export default function Conversation({
           });
         } catch (err) {
           if (activeSessionIdRef.current !== kickSid || streamGenRef.current !== generation) return;
-          setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queue handoff failed. Inspect saved inputs."));
+          setQueueWriteError(inputFailureMessage(err) || (err instanceof Error ? err.message : "Queue handoff failed. Review your draft before sending again."));
         } finally {
           queueDrainPendingRef.current = false;
           if (activeSessionIdRef.current === kickSid) refreshQueue(kickSid);

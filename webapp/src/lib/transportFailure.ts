@@ -23,6 +23,8 @@ export function publishTransportFailure(
     }));
     return;
   }
+  // Input failures stay composer-local (inputFailureMessage); codes/status are
+  // preserved on the sanitized stream/error object and in electron.log.
   if (isInputFailure(err)) return;
   // Only a recognized action with a structured backend reason stays local.
   // Unknown statuses and malformed responses still report operational failure.

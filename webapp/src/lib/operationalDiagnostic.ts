@@ -186,16 +186,26 @@ export function fromTransportFailure(input: {
     });
   }
   const err = input.err;
-  const fields = err && typeof err === "object" ? err : {};
-  const correlationId = "correlationId" in fields && typeof fields.correlationId === "string" ? fields.correlationId : "";
-  const raw = "message" in fields && typeof fields.message === "string" ? fields.message : String(err || "request failed");
+  const fields = err && typeof err === "object" ? err as Record<string, unknown> : {};
+  const correlationId = typeof fields.correlationId === "string" ? fields.correlationId : "";
+  const raw = typeof fields.message === "string" ? fields.message : String(err || "request failed");
+  const backendCode = typeof fields.code === "string" && /^[A-Za-z][A-Za-z0-9_]{0,80}$/.test(fields.code)
+    ? fields.code
+    : "";
+  const status = typeof fields.status === "number" && Number.isFinite(fields.status)
+    ? fields.status
+    : null;
+  const statusSuffix = status != null ? ` (HTTP ${status})` : "";
   if (input.isTransient) {
     return createOperationalDiagnostic({
       scope: "transport",
       operation: input.operation,
       code: TRANSPORT_UNCERTAIN,
       summary: "Backend connection is uncertain",
-      detail: sanitizeDiagnosticText(raw, DETAIL_MAX),
+      detail: sanitizeDiagnosticText(
+        `${raw}${statusSuffix}${backendCode ? ` [${backendCode}]` : ""}`,
+        DETAIL_MAX,
+      ),
       severity: "warning",
       retryable: true,
       recovery: { kind: "retry", label: "Retry" },
@@ -207,12 +217,13 @@ export function fromTransportFailure(input: {
   const viaIpc = input.hasBridge ?? (
     typeof window !== "undefined" && !!(window as { harnessIPC?: unknown }).harnessIPC
   );
+  const detailBase = input.path ? `${input.path}: ${raw}` : raw;
   return createOperationalDiagnostic({
     scope: "transport",
     operation: input.operation,
-    code: viaIpc ? TRANSPORT_IPC : TRANSPORT_HTTP,
+    code: backendCode || (viaIpc ? TRANSPORT_IPC : TRANSPORT_HTTP),
     summary: "Request failed",
-    detail: sanitizeDiagnosticText(input.path ? `${input.path}: ${raw}` : raw, DETAIL_MAX),
+    detail: sanitizeDiagnosticText(`${detailBase}${statusSuffix}`, DETAIL_MAX),
     severity: "error",
     retryable: true,
     recovery: { kind: "retry", label: "Retry" },

@@ -59,14 +59,21 @@ const INPUT_ERROR_CODES = new Set([
   "input_archive_stale", "input_stop_uncertain", "input_stopped", "input_session_changed", "input_stash_expired",
 ]);
 
+/** Safe input_* vocabulary token: never forward free-form / secret-bearing codes. */
+function isSafeInputErrorCode(code) {
+  return typeof code === "string" && /^input_[a-z0-9_]+$/.test(code);
+}
+
 function sanitizedInputError(status, text) {
   try {
     const body = JSON.parse(text);
-    if (body && INPUT_ERROR_CODES.has(body.code)) {
+    const code = body && body.code;
+    // Preserve allowlisted and other safe input_* codes; never forward bodies.
+    if (isSafeInputErrorCode(code)) {
       return {
         status,
-        code: body.code,
-        message: "Input delivery could not be confirmed. Keep your draft and inspect Saved inputs before retrying.",
+        code,
+        message: "Input delivery could not be confirmed. Keep your draft and review it before sending again.",
       };
     }
   } catch { /* malformed errors retain the HTTP classification */ }

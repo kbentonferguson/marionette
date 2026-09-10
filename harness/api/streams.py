@@ -196,17 +196,30 @@ def _admit_stream_input(pilot, text, images, upload_dir, *, documents=None,
     if not isinstance(pilot, PromptQueueMixin):
         return None, {}, text, images
     if not getattr(pilot, 'harness_session_id', ''):
-        raise InputReceiptError('input_owner_required', 'Choose a session before submitting input.')
+        raise InputReceiptError('input_owner_required', 'Open a workspace or pick a project session before submitting input.')
     pilot._input_upload_root = upload_dir
     store = session_input_store(pilot)
     if input_id:
-        receipt = store.get(input_id)
-        accepted = receipt['status'] == 'accepted' and not handoff_token
-        handed_off = (receipt['status'] == 'delivering' and handoff_token
-                      and receipt.get('handoff_token') == handoff_token and not receipt.get('handoff_claimed'))
-        if receipt['owner_instance'] != store.instance or not (accepted or handed_off):
-            raise InputReceiptError('input_handoff_conflict', 'Input is held or already attempted; inspect its receipt.')
-        text = receipt.get('delivery_text', receipt['original_text'])
+        try:
+            receipt = store.get(input_id)
+        except InputReceiptError as exc:
+            # Client-allocated optimistic input_id on first send: create, do not
+            # treat as a missing handoff target.
+            if exc.code != 'input_unknown' or handoff_token:
+                raise
+            receipt = store.admit(
+                text, original_text=original_text, images=images, documents=documents,
+                upload_root=upload_dir, retry_key=retry_key, input_id=input_id)
+            if receipt['status'] != 'accepted' or receipt['owner_instance'] != store.instance:
+                raise InputReceiptError('input_held', 'Input is held or already attempted; inspect its receipt.')
+            input_id = receipt['id']
+        else:
+            accepted = receipt['status'] == 'accepted' and not handoff_token
+            handed_off = (receipt['status'] == 'delivering' and handoff_token
+                          and receipt.get('handoff_token') == handoff_token and not receipt.get('handoff_claimed'))
+            if receipt['owner_instance'] != store.instance or not (accepted or handed_off):
+                raise InputReceiptError('input_handoff_conflict', 'Input is held or already attempted; inspect its receipt.')
+            text = receipt.get('delivery_text', receipt['original_text'])
     else:
         if handoff_token:
             raise InputReceiptError('input_handoff_conflict', 'A handoff requires its input ID.')

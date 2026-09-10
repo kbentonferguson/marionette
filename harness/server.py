@@ -2653,9 +2653,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from .correlation import get_correlation_id
             from .diag import note
+            from urllib.parse import urlparse
 
-            if '?' in getattr(self, 'path', '') or 'X-Harness-Device-Token' in getattr(self, 'headers', {}) or getattr(self, 'path', '').startswith('/api/device'):
-                msg = 'device or query request (target omitted)'
+            raw_path = getattr(self, 'path', '') or ''
+            headers = getattr(self, 'headers', {}) or {}
+            redact_query = (
+                '?' in raw_path
+                or 'X-Harness-Device-Token' in headers
+                or raw_path.startswith('/api/device')
+            )
+            if redact_query:
+                parsed = urlparse(raw_path)
+                # Chat/stream/session paths carry prompt text in the query —
+                # keep method+path+HTTP status so input_* failures stay diagnosable.
+                if parsed.path.startswith(('/api/chat', '/api/stream', '/api/session/')):
+                    status = args[1] if len(args) >= 2 else '-'
+                    size = args[2] if len(args) >= 3 else '-'
+                    msg = f'"{self.command} {parsed.path} HTTP/1.1" {status} {size}'
+                else:
+                    msg = 'device or query request (target omitted)'
             else:
                 msg = fmt % args if args else str(fmt)
             cid = get_correlation_id()
