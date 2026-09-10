@@ -1,4 +1,10 @@
-/** Puppetmaster dashboard deep-links hosted in the Jobs tool. */
+/**
+ * Jobs rail is a viewport over Puppetmaster (`?job=&embed=1`).
+ * Marionette adapters locate and embed that dashboard — they are transports,
+ * not a second native tracker.
+ */
+
+export const JOBS_RAIL_VIEWPORT = "puppetmaster-embed" as const;
 
 export const JOBS_DASHBOARD_FOCUS_MIN_PX = 640;
 export const JOBS_DASHBOARD_EXPAND_MIN_PX = 800;
@@ -23,6 +29,19 @@ export function buildDashboardEmbedUrl(host: string, port: number, jobId?: strin
   if (id) params.set("job", id);
   params.set("embed", "1");
   return `http://${host}:${port}/?${params.toString()}`;
+}
+
+/** Alias: the Jobs rail hosts only this PM embed, never a dual native tracker. */
+export function jobsRailViewportUrl(
+  host: string,
+  port: number,
+  jobId?: string | null,
+): string {
+  return buildDashboardEmbedUrl(host, port, jobId);
+}
+
+export function jobsRailIsPuppetmasterViewport(): true {
+  return true;
 }
 
 export function requestRightMinWidth(minPx: number): void {

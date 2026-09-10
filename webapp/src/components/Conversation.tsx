@@ -45,6 +45,11 @@ import {
   transcriptFingerprint,
   transcriptResponseToItems,
 } from "./conversation/transcriptItems";
+import {
+  allocateOptimisticInputId,
+  optimisticUserEchoMsg,
+  stampTranscriptMessageIds,
+} from "./conversation/transcriptRowIdentity";
 import { hoistCardsBeforeTrailingFinals, newThinkingId } from "./conversation/thinkingToolPrep";
 import {
   type MentionListingCap,
@@ -119,6 +124,7 @@ import {
   scrollToFeedEnd,
   settleFrameResult,
   shouldShowJumpToBottom,
+  shouldUnpinOnKeyboard,
   shouldUnpinOnTouchMove,
   FEED_UNPIN_BUBBLE_EVENT,
   feedWheelUnpinListenerOptions,
@@ -261,10 +267,11 @@ export default function Conversation({
   // Mirror of items for session-switch cache writes without stale closures.
   const itemsRef = useRef<Item[]>([]);
   const setItems = useCallback((update: SetStateAction<Item[]>) => {
-    const next = typeof update === "function" ? update(itemsRef.current) : update;
+    const raw = typeof update === "function" ? update(itemsRef.current) : update;
+    const next = stampTranscriptMessageIds(raw, activeSessionId);
     itemsRef.current = next;
     setRenderedItems(next);
-  }, []);
+  }, [activeSessionId]);
   // Tracks which session the visible transcript belongs to (for warm-cache save).
   const cachedSessionIdRef = useRef<string | null>(null);
   // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
@@ -1356,6 +1363,7 @@ export default function Conversation({
         settling: scrollSettlingRef.current,
         repinPx: FEED_REPIN_THRESHOLD_PX,
         userGestureActive: userScrollGestureRef.current,
+        inputInterrupt: userScrollGestureRef.current || scrollReleasedByGestureRef.current,
       });
       pinnedToBottomRef.current = next.pinned;
       scrollReleasedByGestureRef.current = next.releasedByGesture;
@@ -1391,6 +1399,14 @@ export default function Conversation({
       pinnedToBottomRef.current = false;
       publishJumpVisibilityRef.current();
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!shouldUnpinOnKeyboard(e.key)) return;
+      markUserScrollGesture();
+      scrollSettlingRef.current = false;
+      scrollReleasedByGestureRef.current = true;
+      pinnedToBottomRef.current = false;
+      publishJumpVisibilityRef.current();
+    };
     let touchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? null;
@@ -1418,6 +1434,7 @@ export default function Conversation({
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
     el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
     return () => {
       clearGestureIdleTimer();
       el.removeEventListener("scroll", onScroll);
@@ -1427,6 +1444,7 @@ export default function Conversation({
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
       el.removeEventListener("touchcancel", onTouchEnd);
+      el.removeEventListener("keydown", onKeyDown);
     };
   }, []);
   const applyFeedResizeFollow = (
@@ -2395,7 +2413,8 @@ export default function Conversation({
         const restored = transcriptResponseToItems({
           display: res.display,
           history: res.history,
-        });
+          session_id: activeSessionId || undefined,
+        }, activeSessionId || undefined);
         setItems(restored);
         writeTranscriptCache(activeSessionId || "", restored);
         setEditingIndex(null);
@@ -2864,7 +2883,7 @@ export default function Conversation({
     if (!sid) return;
     void api.sessionTranscript(sid).then((tres) => {
       if (cachedSessionIdRef.current !== sid) return;
-      const loadedItems = transcriptResponseToItems(tres);
+      const loadedItems = transcriptResponseToItems(tres, sid);
       setItems((prev) => {
         if (cachedSessionIdRef.current !== sid) return prev;
         const next = applyLocalTurnSettle(
@@ -2963,10 +2982,18 @@ export default function Conversation({
         text: msg, original_text: submission.original_text, images: imgPaths, documents: submission.documents ?? attachedDocuments, model: config?.driver,
       }),
     };
+    if (!requestSubmission.input_id && !resume) {
+      requestSubmission.input_id = allocateOptimisticInputId();
+    }
     if (!resume) {
       // A resume turn carries no new user message -- the pilot is continuing off
       // a finished background job, so we don't add a user bubble or send images.
-      setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
+      // Echo id matches the persisted display `input_id` so hydrate does not remount.
+      const echoId = String(requestSubmission.input_id || "").trim();
+      setItems((p) => [...p, {
+        kind: "msg",
+        msg: optimisticUserEchoMsg({ text: msg, images: imgsToSend, id: echoId }),
+      }]);
       const hasPriorUserTurn = itemsRef.current.some(
         (it) => it.kind === "msg" && it.msg.role === "user",
       );
@@ -3622,7 +3649,7 @@ export default function Conversation({
             if (!stopLive()) return;
             const tres = await api.sessionTranscript(sid);
             if (!stopLive()) return;
-            const loadedItems = transcriptResponseToItems(tres);
+            const loadedItems = transcriptResponseToItems(tres, sid);
             const settle = lastSettleRef.current;
             const liveIds = liveNonLocalSwarmJobIds();
             setItems((prev) => {

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { scrollToFeedEnd } = require("./feed-scroll.cjs");
+const { scrollToFeedEnd, feedForwardFollowTop } = require("./feed-scroll.cjs");
 
 /**
  * Electron-side feed scroll contract (jsdom layout tests live in feedScroll.test.ts).
@@ -10,6 +10,16 @@ const { scrollToFeedEnd } = require("./feed-scroll.cjs");
 test("scrollToEnd contract matches Marionette feedScroll helper", () => {
   assert.equal(scrollToFeedEnd(2000, 400), 1600);
   assert.equal(scrollToFeedEnd(350, 400), 0);
+});
+
+test("feed-forward follow absorbs content growth without an independent max snap", () => {
+  const client = 400;
+  const oldHeight = 2000;
+  const oldTop = scrollToFeedEnd(oldHeight, client);
+  const grown = 80;
+  const max = scrollToFeedEnd(oldHeight + grown, client);
+  assert.equal(feedForwardFollowTop(oldTop, grown, max), max);
+  assert.equal(feedForwardFollowTop(oldTop - 12, grown, max), oldTop - 12 + grown);
 });
 
 test("stream-to-fold live tail growth outside the virtual window still pins to the true end", () => {

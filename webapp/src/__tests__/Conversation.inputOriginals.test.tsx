@@ -50,9 +50,16 @@ function streamMock() {
   const chat = vi.spyOn(api, 'chat').mockImplementation((_message, onEvent, onDone, onError) => {
     event = onEvent; done = () => onDone?.(); error = err => onError?.(err); return () => {};
   });
-  return { chat, accept: () => act(async () => event({ kind: 'input_receipt', data: { input_id: 'new', status: 'accepted' } })),
+  return {
+    chat,
+    accept: () => act(async () => {
+      const last = chat.mock.calls.at(-1);
+      const submittedId = String(last?.[6]?.input_id || '').trim() || 'new';
+      event({ kind: 'input_receipt', data: { input_id: submittedId, status: 'accepted' } });
+    }),
     finish: () => act(async () => { event({ kind: 'assistant_done', data: {} }); done(); }),
-    fail: () => act(async () => error(new Error('transport interrupted'))) };
+    fail: () => act(async () => error(new Error('transport interrupted'))),
+  };
 }
 
 it('shows held originals after reload and copies exact text, images and documents locally without draining', async () => {

@@ -16,6 +16,7 @@ import {
   transcriptBubbleMaxWidth,
   transcriptFeedInnerWidth,
   transcriptRowCacheKey,
+  transcriptRowHeightMemoKey,
   TRANSCRIPT_ROW_FALLBACK_PX,
   TRANSCRIPT_USER_CLAMP_PX,
 } from "../components/conversation/transcriptRowHeight";
@@ -31,6 +32,8 @@ vi.mock("@chenglou/pretext", () => ({
     return { height: lineCount * lineHeight, lineCount };
   }),
 }));
+
+import { layout } from "@chenglou/pretext";
 
 function msg(
   role: "user" | "assistant",
@@ -57,6 +60,28 @@ describe("transcriptRowHeight", () => {
   it("applies role-specific bubble width ratios", () => {
     expect(transcriptBubbleMaxWidth(600, "user")).toBe(510);
     expect(transcriptBubbleMaxWidth(600, "assistant")).toBe(570);
+  });
+
+  it("memos height by id, content length, and width", () => {
+    expect(transcriptRowHeightMemoKey("u-1", 11, 510)).toBe(
+      transcriptRowHeightMemoKey("u-1", 11, 510),
+    );
+    expect(transcriptRowHeightMemoKey("u-1", 11, 510)).not.toBe(
+      transcriptRowHeightMemoKey("u-1", 12, 510),
+    );
+    expect(transcriptRowHeightMemoKey("u-1", 11, 510)).not.toBe(
+      transcriptRowHeightMemoKey("u-1", 11, 400),
+    );
+    const cache = createTranscriptRowHeightCache();
+    const first = msg("user", "hello world");
+    const persistHandoff = msg("user", "hello world");
+    cache.estimateRowHeight(first, "u-1", 600);
+    cache.estimateRowHeight(persistHandoff, "u-1", 600);
+    expect(layout).toHaveBeenCalledTimes(1);
+    cache.estimateRowHeight(first, "u-1", 400);
+    expect(layout).toHaveBeenCalledTimes(2);
+    cache.estimateRowHeight(msg("user", "hello worlds"), "u-1", 600);
+    expect(layout).toHaveBeenCalledTimes(3);
   });
 
   it("builds stable cache keys from row id, text, and font", () => {
