@@ -305,6 +305,46 @@ def test_agentic_store_failure_snapshot_captures_events_when_reason_empty():
     assert summary.strip() != "Agentic engine error: swarm exited with incomplete tasks"
 
 
+def test_agentic_store_failure_snapshot_does_not_steal_another_job():
+    """Empty job_id on a multi-job store must not bind jobs[-1].
+
+    A shared ledger (or a list_jobs order that is not 'this run') used to
+    copy another job's stdout into final_response_excerpt — the failed
+    2-role smoke that was reported with Conversation.tsx:466 findings.
+    """
+    foreign = "FINDING: webapp/src/components/Conversation.tsx:466 dedupe drops legitimate repeats"
+
+    class _Store:
+        def list_jobs(self):
+            return [
+                type("J", (), {"id": "job_old_audit", "status": "complete"})(),
+                type("J", (), {"id": "job_failed_smoke", "status": "failed"})(),
+            ]
+
+        def list_tasks(self, job_id):
+            raise AssertionError(f"must not read tasks without a bound job, got {job_id}")
+
+        def read_events(self, job_id):
+            raise AssertionError(f"must not read events without a bound job, got {job_id}")
+
+        def list_artifacts(self, job_id):
+            raise AssertionError(f"must not read artifacts without a bound job, got {job_id}")
+
+        def get_job(self, job_id):
+            raise AssertionError(f"must not get_job without a bound job, got {job_id}")
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["job_id"] == ""
+    assert snap["final_response_excerpt"] == ""
+    assert foreign not in str(snap)
+    summary = _format_agentic_engine_error(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+    )
+    assert "Conversation.tsx" not in summary
+    assert "final response:" not in summary
+
+
 def test_format_agentic_engine_error_includes_events_when_reason_empty():
     snap = {
         "reason": "",

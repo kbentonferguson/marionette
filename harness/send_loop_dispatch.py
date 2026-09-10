@@ -98,14 +98,43 @@ def _artifact_job_id(row: Any) -> str:
     return str(getattr(row, "job_id", "") or "").strip()
 
 
+_SIGNAL_TYPES = frozenset({"finding", "risk", "decision", "gist"})
+
+
+def _artifact_type(row: Any) -> str:
+    if isinstance(row, dict):
+        return str(row.get("type") or "").strip().lower()
+    return str(getattr(row, "type", "") or "").strip().lower()
+
+
+def _execution_ref_job_id(row: Any) -> str:
+    if isinstance(row, dict):
+        ref = row.get("execution_ref")
+    else:
+        ref = getattr(row, "execution_ref", None)
+    if not isinstance(ref, dict):
+        return ""
+    return str(ref.get("job_id") or "").strip()
+
+
 def _rows_for_job(rows, job_id: str) -> list:
-    """Drop rows that claim a different job — identical artifact ids may collide."""
+    """Drop rows that claim a different job — identical artifact ids may collide.
+
+    Signal rows (finding/risk/decision/gist) need a current-job stamp — either
+    top-level ``job_id`` or ``execution_ref.job_id``. Unstamped findings cannot
+    be attributed to this job by silence. Plumbing without a stamp can stay.
+    """
     current = str(job_id or "").strip()
     out = []
     for row in rows or []:
         claimed = _artifact_job_id(row)
         if claimed and current and claimed != current:
             continue
+        if current and _artifact_type(row) in _SIGNAL_TYPES:
+            parent = _execution_ref_job_id(row)
+            owner = claimed or parent
+            if owner != current:
+                continue
         out.append(row)
     return out
 
@@ -266,14 +295,33 @@ def _swarm_artifact_delivery(
     }
 
 
-def _render_swarm_delivery_manifest(job_id: str, rows: list[dict], delivery: dict) -> str:
+def _render_swarm_delivery_manifest(
+    job_id: str,
+    rows: list[dict],
+    delivery: dict,
+    *,
+    job_status: str = "",
+) -> str:
     expected = int(delivery.get("pm_artifacts") or 0)
     available = int(delivery.get("available_to_inspect") or 0)
+    findings = sum(
+        1 for row in (rows or [])
+        if str((row or {}).get("type") or "").strip().lower()
+        in {"finding", "risk", "decision"}
+    )
     lines = [
+        "PM SWARM BIND:",
+        f"- job_id: {job_id}",
+    ]
+    status = str(job_status or "").strip()
+    if status:
+        lines.append(f"- status: {status}")
+    lines.append(f"- findings: {findings}")
+    lines.extend([
         "PM SWARM ARTIFACT MANIFEST:",
         f"- PM artifacts: {expected}",
         f"- Available to inspect: {available}/{expected}",
-    ]
+    ])
     missing = list(delivery.get("missing") or [])
     if missing:
         lines.append("- WARNING: Synthesis continued with incomplete PM evidence.")
@@ -797,6 +845,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         })
         manifest = _render_swarm_delivery_manifest(
             _source_job_id, _delivered_reuse, _delivery_reuse,
+            job_status="reused",
         )
         session._append_action_result(
             act, aid,
@@ -1277,6 +1326,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     turn_findings.extend((a for a in delivered_arts if a.get('type') != 'verification'))
     body = _render_swarm_delivery_manifest(
         _job_id_text, delivered_arts, artifact_delivery,
+        job_status=str(getattr(result, "status", "") or ""),
     )
     stall = ''
     if _demo_refused or counters['demo_swarms'] >= 1:
