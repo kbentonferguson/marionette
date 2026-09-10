@@ -214,6 +214,8 @@ def test_api_usage_excludes_unowned_cli_store_jobs(tmp_path, monkeypatch):
 
     httpd, port = _api_server(str(harness_dir))
     try:
+        monkeypatch.setattr("pmharness.registry.resolve_price", lambda _: (1.0, 2.0))
+        monkeypatch.setattr("pmharness.registry.price_with_source", lambda _: (1.0, 2.0, "catalog"))
         monkeypatch.delenv("HARNESS_CLI_COST_MERGE", raising=False)
         monkeypatch.setattr(server, "_jobs_snapshot", lambda: [])
         monkeypatch.setattr(
