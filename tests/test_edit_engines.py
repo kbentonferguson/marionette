@@ -724,6 +724,48 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
+def test_agentic_payload_stamps_settings_allowlist_not_glm(monkeypatch):
+    """Implement auto-route must fail closed to Models toggles, not glm-5.2."""
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        captured: list[dict] = []
+        _install_agentic_mocks(monkeypatch, capture_payload=captured)
+        monkeypatch.delenv("HARNESS_IMPLEMENT_PROVIDER", raising=False)
+        monkeypatch.delenv("HARNESS_IMPLEMENT_MODEL", raising=False)
+        monkeypatch.delenv("HARNESS_IMPLEMENT_DEEP", raising=False)
+        monkeypatch.setattr(
+            "harness.model_visibility.get_enabled",
+            lambda: [
+                "openai-codex:gpt-5.6-luna",
+                "openrouter:google/gemini-3.8-flash",
+            ],
+        )
+        monkeypatch.setattr(
+            "harness.swarm_worker_allowlist._enabled_or_visible_specs",
+            lambda: [
+                "openai-codex:gpt-5.6-luna",
+                "openrouter:google/gemini-3.8-flash",
+            ],
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff content", ["test.txt"]),
+        )
+
+        result = run_agentic_edit(cfg, "make a change")
+        assert result.ok is True
+        payload = captured[0]
+        ids = [str(item).lower() for item in (payload.get("allowed_model_ids") or [])]
+        blob = " ".join(ids)
+        assert ids, "auto-route implement must stamp Settings allowed_model_ids"
+        assert "gpt-5.6-luna" in blob
+        assert "glm-5.2" not in blob
+        assert "glm-5-2" not in blob
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def test_agentic_payload_token_budget_from_env(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:

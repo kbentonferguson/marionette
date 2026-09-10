@@ -26,26 +26,34 @@ _PRODUCT_WORKER_ADAPTERS = ("agentic", "cursor", "openai")
 
 
 def _enabled_or_visible_specs() -> list[str]:
-    """Models toggles (user intent), unioned with keyed pilot availability.
+    """Models toggles are the worker allowlist when any row is curated.
 
-    ``enabled_pilots()`` only keeps specs whose *pilot* provider is keyed right
-    now. That drops ``cursor-cli:cursor-grok-*`` / ``composer-*`` when the user
-    has no Cursor Agent login, even though ``CURSOR_API_KEY`` platform workers
-    are ready and Settings still shows those models enabled. Worker allowlist
-    must honor the curated Models toggles as adapter *intent* — otherwise Luna
-    Max cannot orchestrate Grok workers despite both being on in Settings.
+    ``enabled_pilots()`` is only the empty-curation fallback. Unioning it
+    while Settings has a subset leaks every keyed vendor model (glm-5.2
+    winning implement auto-route while toggled off). Cursor-cli Grok still
+    counts as intent because it lives on the curated list, even when
+    ``enabled_pilots()`` drops it for missing Cursor Agent login.
     """
     try:
         from . import model_visibility as _mv
 
-        curated = list(_mv.get_enabled() or [])
+        curated = [
+            str(spec or "").strip()
+            for spec in (_mv.get_enabled() or [])
+            if str(spec or "").strip()
+        ]
+        if curated:
+            # Models toggles are the only discretionary allowlist. Do not
+            # union enabled_pilots() here — that function falls back to every
+            # keyed vendor model when a curated spec misses avail_set, which
+            # is how a toggled-off glm-5.2 won implement auto-route.
+            return curated
         pilots = list(_mv.enabled_pilots() or [])
-        if not curated and not pilots:
+        if not pilots:
             return []
-        # Curated first (user intent), then keyed pilots for any extras.
         out: list[str] = []
         seen: set[str] = set()
-        for spec in curated + pilots:
+        for spec in pilots:
             s = str(spec or "").strip()
             if not s or s in seen:
                 continue

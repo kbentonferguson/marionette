@@ -471,3 +471,37 @@ def test_seed_all_dirty_when_small_dirty_set_misses_goal_tokens(tmp_path, monkey
     assert (wt / "app.js").read_text(encoding="utf-8") == "console.log(1)\n"
     assert (wt / "index.html").read_text(encoding="utf-8") == "<html></html>\n"
     assert (wt / "styles.css").read_text(encoding="utf-8") == "body{}\n"
+
+
+def test_seed_skips_codegraph_index_noise(tmp_path, monkeypatch):
+    """Relocate auto-index must not seed .codegraph into implement worktrees."""
+    from harness.worktree_seed import _list_git_status_porcelain_paths
+
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True)
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    cg = repo / ".codegraph"
+    cg.mkdir()
+    (cg / ".gitignore").write_text("*.db\n", encoding="utf-8")
+    (cg / "codegraph.db").write_bytes(b"not-an-index")
+    (repo / "playbooks.md").write_text("kit\n", encoding="utf-8")
+
+    monkeypatch.setattr("harness.worktree_seed.reflink_copy_supported", lambda force_refresh=False: False)
+    dirty = _list_git_status_porcelain_paths(str(repo))
+    assert "playbooks.md" in dirty
+    assert not any(p.replace("\\", "/").startswith(".codegraph/") for p in dirty)
+
+    result = seed_worktree_from_goal(
+        str(repo), str(wt), "write the playbooks layer", copy_strategy="copy",
+    )
+    assert "playbooks.md" in result.paths
+    assert not any(p.replace("\\", "/").startswith(".codegraph/") for p in result.paths)
+    assert not (wt / ".codegraph").exists()

@@ -3082,6 +3082,12 @@ def dispatch_local_action(
                 ensure_repo_swarm_adapter(_cfg)
             except Exception:
                 pass
+            try:
+                from harness.cli_job_merge import ensure_workspace_project_store
+
+                ensure_workspace_project_store(target_repo)
+            except Exception:
+                pass
             _record_recent_workspace(target_repo)
         except Exception:
             session.config.repo = target_repo

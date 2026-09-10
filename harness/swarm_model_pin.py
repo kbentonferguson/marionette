@@ -524,21 +524,27 @@ def pin_candidates(pin: str) -> list[str]:
     if ":" in bare:
         bare = bare.split(":", 1)[1].strip() or bare
     _add(bare)
-    if "/" in bare:
+    prefix_heads = {
+        "cursor",
+        "cursor-cli",
+        "codex",
+        "openai",
+        "openai-codex",
+        "agentic",
+        "native",
+        "opencode-go",
+        "opencode-zen",
+        "opencode",
+    }
+    while "/" in bare:
         head, rest = bare.split("/", 1)
-        if head.lower() in {
-            "cursor",
-            "cursor-cli",
-            "codex",
-            "openai",
-            "openai-codex",
-            "agentic",
-            "native",
-            "opencode-go",
-            "opencode-zen",
-        }:
-            bare = rest.strip() or bare
-            _add(bare)
+        if head.lower() not in prefix_heads:
+            break
+        next_bare = rest.strip()
+        if not next_bare:
+            break
+        bare = next_bare
+        _add(bare)
 
     # Cursor registry uses hyphens in gpt-5-6-*; OpenCode Go uses dots (gpt-5.6-*).
     dotted = re.sub(r"(gpt-\d+)-(\d+)", r"\1.\2", bare, count=1, flags=re.I)
@@ -554,8 +560,16 @@ def pin_candidates(pin: str) -> list[str]:
         # collide with OpenCode Go's flat agentic/gpt-5.6-* rows.
         _add(f"openai-codex/{body}")
         _add(f"agentic/openai-codex/{body}")
+        # OpenCode Go registry rows are payload_defaults.provider=opencode-go
+        # with id agentic/<model> *or* agentic/opencode-go/<model>. A pin of
+        # agentic/opencode/<model> (missing -go) used to demote to auto-route.
+        _add(f"opencode-go/{body}")
+        _add(f"agentic/opencode-go/{body}")
         # Platform cursor registry peers (only useful when bridge allows cursor).
         _add(f"cursor/{body}")
+    # Common typo: agentic/opencode/X vs the real opencode-go provider slug.
+    if "agentic/opencode/" in raw.lower() and "opencode-go" not in raw.lower():
+        _add(re.sub(r"(?i)agentic/opencode/", "agentic/opencode-go/", raw, count=1))
     return out
 
 

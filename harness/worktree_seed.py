@@ -44,6 +44,27 @@ logger = logging.getLogger("pmharness.worktree_seed")
 # Cap dynamic copies so a vague goal cannot flood the worktree.
 _MAX_DYNAMIC_SEED = 250
 
+# Generated index / cache trees. Relocate auto-indexes CodeGraph into a
+# brand-new repo; seeding those files made implement worktrees commit a
+# ".codegraph/.gitignore" baseline and then fail as empty diffs.
+_SEED_NOISE_TOP = frozenset({
+    ".codegraph",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+})
+
+
+def _is_seed_noise_path(rel: str) -> bool:
+    """True for generated index/cache paths that must not seed a worktree."""
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p]
+    if not parts:
+        return False
+    return parts[0] in _SEED_NOISE_TOP
+
 # When the live dirty/untracked set is small, seed every remaining dirty path
 # after the goal-token pass. Token match can miss (e.g. "polish the mockup"
 # vs app.js/index.html/styles.css); a small dirty tree almost always belongs
@@ -396,7 +417,7 @@ def _list_git_status_porcelain_paths(repo: str) -> list[str]:
         if len(line) < 4:
             continue
         for path_part in _parse_porcelain_path_field(line[3:]):
-            if path_part in seen:
+            if path_part in seen or _is_seed_noise_path(path_part):
                 continue
             seen.add(path_part)
             out.append(path_part)
@@ -697,6 +718,8 @@ def _copy_into_worktree(
     wt_abs = os.path.abspath(wt_path)
     src = os.path.join(repo_abs, rel.replace("/", os.sep))
     dst = os.path.join(wt_abs, rel.replace("/", os.sep))
+    if _is_seed_noise_path(rel):
+        return False
     # Regular files only — do not follow/copy symlinks as file bodies.
     if not os.path.isfile(src):
         return False

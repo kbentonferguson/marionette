@@ -417,6 +417,30 @@ def test_resolve_cli_state_dir_honors_non_scratch_env(tmp_path, monkeypatch):
     assert Path(got).resolve() == override.resolve()
 
 
+def test_ensure_workspace_project_store_creates_sqlite(tmp_path, monkeypatch):
+    import subprocess
+
+    from harness.cli_job_merge import ensure_workspace_project_store
+    from puppetmaster.state import default_state_dir
+
+    repo = tmp_path / "fresh-kit"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setattr(
+        "puppetmaster.state.app_state_root",
+        lambda: tmp_path / "pm-root",
+    )
+    assert resolve_cli_state_dir(str(repo)) is None
+    got = ensure_workspace_project_store(str(repo))
+    assert got is not None
+    sqlite_path = Path(got) / "state.sqlite3"
+    assert sqlite_path.is_file()
+    expected = default_state_dir(repo)
+    assert Path(got).resolve() == expected.resolve()
+    again = ensure_workspace_project_store(str(repo))
+    assert Path(again).resolve() == Path(got).resolve()
+
+
 def test_foreign_candidates_skip_host_scratch(tmp_path, monkeypatch):
     from harness.cli_job_merge import _foreign_state_dir_candidates
 

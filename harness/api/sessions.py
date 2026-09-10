@@ -227,6 +227,12 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
         svc.diag("server.session_relocate_swarm_adapter", e)
     svc.note_boot_repo(target_repo)
     try:
+        from ..cli_job_merge import ensure_workspace_project_store
+
+        ensure_workspace_project_store(target_repo)
+    except Exception as e:
+        svc.diag("server.session_relocate_project_store", e)
+    try:
         svc.record_recent_workspace(target_repo)
     except Exception as e:
         svc.diag("server.session_relocate_record_recent", e)
@@ -391,6 +397,12 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
             except Exception as e:
                 svc.diag("server.session_switch_swarm_adapter", e)
             svc.note_boot_repo(target_repo)
+            try:
+                from ..cli_job_merge import ensure_workspace_project_store
+
+                ensure_workspace_project_store(target_repo)
+            except Exception as e:
+                svc.diag("server.session_switch_project_store", e)
             # Session-switch repoints must land in recents too, or the
             # dir only exists in the projects list while it is current
             # and vanishes the moment the workspace moves elsewhere.

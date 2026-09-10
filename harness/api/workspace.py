@@ -294,6 +294,12 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
         pass
     if svc.note_boot_repo is not None:
         svc.note_boot_repo(target_repo)
+    try:
+        from ..cli_job_merge import ensure_workspace_project_store
+
+        ensure_workspace_project_store(target_repo)
+    except Exception as e:
+        svc.diag("workspace.open_project_store", e)
 
     # Restore the model last used in this workspace (if any + still
     # available), so each dir remembers its model across switches.
