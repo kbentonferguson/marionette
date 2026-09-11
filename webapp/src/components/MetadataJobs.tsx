@@ -23,7 +23,7 @@ import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { dashboardLocateError, dashboardUnavailableMessage, jobsListEmptyTruth } from '../lib/jobsDashboard';
 import { lastSelectedProjectRoot } from '../lib/panelTransition';
 import { openAgentUrlExternal } from '../lib/agentLinks';
-import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
+import { canonicalExpertSelection, expertLookupKey, metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalRoute, LocalSummary } from '../lib/localJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
@@ -107,9 +107,14 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   const listedSummary = listed?.row;
   const selectedSummary = local && state.localDetail && localKey(state.localDetail.selection) === localKey(local) ? state.localDetail.observation?.summary : null;
   const nativeSummary = selectedSummary && (!listedSummary || selectedSummary.revision >= listedSummary.revision) ? selectedSummary : listedSummary;
-  const pm = [...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].find(o => metadataSelectionKey(o.row.selection) === job.metadata_key);
-  const detail = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === job.metadata_key
-    ? state.detail : job.metadata_key ? state.detailCache[job.metadata_key] ?? null : null;
+  const canonical = nativeSummary?.canonical;
+  const canonicalSelection = canonical && state.view.kind === 'view'
+    ? canonicalExpertSelection(canonical, state.view.context.repo)
+    : null;
+  const detailKeys = [job.metadata_key, canonicalSelection ? metadataSelectionKey(canonicalSelection) : ''].filter(Boolean);
+  const pm = [...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].find(o => detailKeys.includes(metadataSelectionKey(o.row.selection)));
+  const detail = state.detail.kind === 'selected' && detailKeys.includes(metadataSelectionKey(state.detail.selection))
+    ? state.detail : detailKeys.map(key => state.detailCache[key]).find(Boolean) ?? null;
   const candidatePM = pm?.row.selection ?? detail?.selection;
   const previewSelection = state.view.kind === 'view' ? selectJobRef(job, state.view.context.repo, state.view.context.session_id) : null;
   const selectedPM = candidatePM && previewSelection && jobArtifactKey(candidatePM) === jobArtifactKey(previewSelection) ? candidatePM : null;
@@ -129,12 +134,17 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       void store.readDetail();
     }
   };
+  const hydratePM = selectedPM ?? canonicalSelection;
   useEffect(() => {
-    if (deferAutoRead || initialPMRead.current || local || !selectedPM || detail?.observation || state.working || state.view.kind !== 'view') return;
+    if (deferAutoRead || initialPMRead.current || !hydratePM || detail?.observation || state.working || state.view.kind !== 'view') return;
     initialPMRead.current = true;
-    store.select(selectedPM);
-    void store.readDetail();
-  }, [local, selectedPM, state.working, state.view, store]);
+    try {
+      store.select(hydratePM);
+      void store.readDetail();
+    } catch {
+      initialPMRead.current = false;
+    }
+  }, [hydratePM, detail?.observation, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
   const initialRoutingRead = useRef(false);
   useEffect(() => {
@@ -165,7 +175,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     store.select(selectedPM);
     void store.readDetail();
   }, [compact, deferAutoRead, navigation, selectedPM, state.working, state.view, store]);
-  const observation = selectedPM ? detail?.observation : undefined;
+  const observation = hydratePM ? detail?.observation : undefined;
   const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
   const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:
@@ -207,7 +217,12 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   };
   const stopNotice = stopAcknowledged && nativeFresh && nativeSummary && !nativeActiveStatuses.includes(nativeSummary.lifecycle)
     ? `Stop request accepted; observed lifecycle: ${nativeSummary.lifecycle}.` : notice;
-  const expert = currentExpert(state, job.metadata_key ?? '');
+  const expertKey = expertLookupKey(
+    job.metadata_key,
+    canonical,
+    state.view.kind === 'view' ? state.view.context.repo : undefined,
+  );
+  const expert = currentExpert(state, expertKey);
   const nativeRows = native?.tasks?.rows ?? [];
   const expertRows = nativeRows.length === 0 && expert && expert.kind !== 'unavailable' ? expert.tasks : [];
   const taskStatusById = new Map((observation?.tasks.rows ?? []).map(task => [task.id, task.status ?? 'unknown']));
@@ -221,7 +236,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     request: () => void nativeStop(),
   } : undefined;
   const costHeader = (expert && expert.kind !== 'unavailable' ? expert.live_economics ?? expert.header : null)
-    ?? (job.metadata_key ? currentHeader(state, job.metadata_key) : null)
+    ?? (expertKey ? currentHeader(state, expertKey) : null)
     ?? null;
   const nativeRouteCoverage = native?.routing
     ? native.summaryFreshness === 'observed' && nativeFresh
@@ -280,7 +295,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     {workerCount > 0 && <CompactSwarmDashboard
       title={jobDisplayTitle(job)} lifecycle={nativeSummary?.lifecycle ?? job.status}
       workerStatuses={taskStatusById} expert={expert && expert.kind !== 'unavailable' ? expert : undefined}
-      headerModel={expertHeaderModel(currentHeader(state, job.metadata_key ?? '')) ?? nativeSummary?.display?.model ?? undefined}
+      headerModel={expertHeaderModel(currentHeader(state, expertKey)) ?? nativeSummary?.display?.model ?? undefined}
       nativeTasks={nativeRows} nativeRoutes={nativeRouteByTask} routeCoverage={nativeRows.length ? nativeRouteCoverage : undefined}
       artifactCount={nativeSummary?.artifact_count ?? observation?.artifact_count ?? null}
       workerCount={nativeSummary?.task_count ?? observation?.task_count ?? job.task_count ?? null}

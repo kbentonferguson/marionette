@@ -323,6 +323,45 @@ def test_workspace_open_case_alias_adopts_real_git_toplevel(tmp_path):
         assert payload["repo"] != str(alias)
 
 
+def test_workspace_open_archived_only_creates_blank_session(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    cfg = SimpleNamespace(repo="", driver="m1")
+    created = []
+
+    class _Sessions:
+        active = "s-archived"
+
+        def list(self):
+            return [
+                {
+                    "id": "s-archived",
+                    "created": 9,
+                    "repo": str(repo),
+                    "archived": True,
+                }
+            ]
+
+        def create(self, title="", repo="", branch=""):
+            created.append({"title": title, "repo": repo})
+            self.active = "s-new"
+            return {"id": "s-new", "title": title}
+
+        def switch(self, sid):
+            raise AssertionError("must not switch to an archived session")
+
+    sessions = _Sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    _bind_workspace_open(svc, sessions, tmp_path)
+
+    code, payload = post_workspace_open({"path": str(repo)}, svc)
+    assert code == 200
+    assert payload["created_session"] is True
+    assert payload["active_session"] == "s-new"
+    assert sessions.active == "s-new"
+    assert created == [{"title": "proj", "repo": str(repo)}]
+
+
 def test_workspace_open_existing_sessions_does_not_create(tmp_path):
     repo = tmp_path / "proj"
     repo.mkdir()

@@ -420,9 +420,9 @@ export class JobMetadataStore {
       const startup = this.hasInitialWork();
       const result = await this.tick(startup, { liveOnly: !startup });
       if (generation !== this.scheduleGeneration || epoch !== this.state.epoch || this.disposed) return;
-      if (result === 'failed' || this.state.streams.some(s => s.initialized && (s.state === 'cursor_expired' || s.state === 'unavailable'))
+      if (result === 'failed') return;
+      if (this.state.streams.some(s => s.initialized && (s.state === 'cursor_expired' || s.state === 'unavailable'))
         || (this.state.localActive.initialized && ['expired', 'unavailable'].includes(this.state.localActive.state))) {
-        this.publish({ ...this.state, startupStopped: true });
         return;
       }
       if (result !== 'applied' || !this.hasInitialWork()) return;
