@@ -1,16 +1,15 @@
 import { SessionWorkerUsage } from './SessionWorkerUsage';
 import { expertHeaderModel, expertJobModel } from '../lib/expertRoutingFacts';
-import { expertJobQuality, expertTaskOutcome } from '../lib/expertOutcomeFacts';
+import { expertJobQuality } from '../lib/expertOutcomeFacts';
 import { ExpertCost } from './ExpertCurrentFacts';
 import { failedOutcomeStatuses, MetadataOutcomeLabel, metadataOutcomeLabel } from './MetadataOutcomeChrome';
 import MetadataActivityIndicator from './MetadataActivityIndicator';
-import NativeTaskDisclosure from './NativeTaskDisclosure';
+import CompactSwarmDashboard from './CompactSwarmDashboard';
 import MetadataExpertPanels from './MetadataExpertPanels';
 import { navigationMatches, peekPendingSwarmNavigation, queuePendingSwarmNavigation, swarmNavigationTarget, takePendingSwarmNavigation } from '../lib/pendingSwarmOpenJob';
 import type { SwarmNavigationTarget } from '../lib/pendingSwarmOpenJob';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, ExternalLink, Loader2, Network, X, XCircle } from 'lucide-react';
-import type { ExpertTask } from '../lib/expertMetadata';
 import { selectNativeMetadataControl } from '../lib/jobControl';
 import { api } from '../lib/api';
 import { jobArtifactKey, selectJobRef } from '../lib/jobArtifacts';
@@ -26,7 +25,7 @@ import { lastSelectedProjectRoot } from '../lib/panelTransition';
 import { openAgentUrlExternal } from '../lib/agentLinks';
 import { metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
-import type { LocalDetail, LocalSummary } from '../lib/localJobMetadata';
+import type { LocalDetail, LocalRoute, LocalSummary } from '../lib/localJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
 
 const button = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
@@ -77,18 +76,6 @@ function relativeSince(ts: number | string | null | undefined, now: number): str
   const mins = Math.floor(secs / 60);
   if (mins < 60) return `${mins}m ago`;
   return `${Math.floor(mins / 60)}h ago`;
-}
-function expertAsLocalTask(task: ExpertTask, status: string) {
-  return {
-    task_id: task.id,
-    role: task.role,
-    instruction: task.instruction,
-    status,
-    adapter: task.adapter,
-    model: task.model ?? '',
-    model_kind: task.model ? 'assigned' as const : 'unavailable' as const,
-    truncated: task.instruction_truncated,
-  };
 }
 export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal }: {
   job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
@@ -222,6 +209,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const expert = currentExpert(state, job.metadata_key ?? '');
   const nativeRows = native?.tasks?.rows ?? [];
   const expertRows = nativeRows.length === 0 && expert && expert.kind !== 'unavailable' ? expert.tasks : [];
+  const taskStatusById = new Map((observation?.tasks.rows ?? []).map(task => [task.id, task.status ?? 'unknown']));
   const adapter = nativeSummary?.display?.adapter || nativeRows[0]?.adapter || expertRows[0]?.adapter || '';
   const activityAt = nativeSummary && nativeActiveStatuses.includes(nativeSummary.lifecycle)
     ? nativeSummary.updated_at ?? nativeSummary.created_at : null;
@@ -234,6 +222,20 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const costHeader = (expert && expert.kind !== 'unavailable' ? expert.live_economics ?? expert.header : null)
     ?? (job.metadata_key ? currentHeader(state, job.metadata_key) : null)
     ?? null;
+  const nativeRouteCoverage = native?.routing
+    ? native.summaryFreshness === 'observed' && nativeFresh
+      && native.routing.page.outcome === 'complete' && native.routing.page.revision === nativeSummary?.revision
+      && native.routing.page.revision === native.tasks?.page.revision
+      && !native.routing.missing.includes('frontend_routing_limit') ? 'complete' as const : 'partial' as const
+    : 'unavailable' as const;
+  const nativeRouteByTask = useMemo(() => {
+    const routes = new Map<string, LocalRoute>();
+    if (nativeRouteCoverage !== 'complete') return routes;
+    for (const route of native?.routing?.rows ?? []) {
+      if (route.task_id && route.association !== 'unavailable') routes.set(route.task_id, route);
+    }
+    return routes;
+  }, [native?.routing?.rows, nativeRouteCoverage]);
   const dump = showDump ? <>
       <p className="break-all">{job.source} / {local ? `native ${local.incarnation}` : job.job_ref?.state_id} / {job.id}</p>
       {nativeSummary && <p>Native {nativeSummary.kind.replaceAll('_', ' ')} · Actions {nativeSummary.action_count ?? 'unknown'} · Children {nativeSummary.child_count ?? 'unknown'}{nativeSummary.parent_ref ? ` · Parent ${nativeSummary.parent_ref.job_id} / ${nativeSummary.parent_ref.incarnation}` : ' · Parent relationship unknown'}. Receipt presence: {Object.entries(nativeSummary.receipts).filter(([, present]) => present).map(([name]) => name).join(', ') || 'none observed'}.</p>}
@@ -275,23 +277,19 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
         {since}
       </div>}
     </div>
-    {workerCount > 0 && <div className="border-t border-edge/25 pt-2 flex flex-col gap-1.5">
-      <span className="text-[8.5px] uppercase tracking-[0.14em] text-faint font-medium">Workers ({workerCount})</span>
-      <div className="flex flex-col divide-y divide-edge/20 mt-0.5">
-        {nativeRows.map((task, index) => {
-          const routing = native?.routing;
-          const route = native && native.summaryFreshness === 'observed' && task.task_id && routing?.page.outcome === 'complete' && routing.page.revision === native.tasks?.page.revision
-            && routing.page.revision === nativeSummary?.revision && !routing.missing.includes('frontend_routing_limit')
-            ? routing.rows.filter(row => row.task_id === task.task_id && row.association !== 'unavailable').at(-1) : undefined;
-          return <div key={`${task.task_id}:${index}`} data-task-id={task.task_id ?? undefined}>
-            <NativeTaskDisclosure task={task} route={route} kill={workerKill} onInspect={() => inspect('tasks')} />
-          </div>;
-        })}
-        {expertRows.map(task => <div key={task.id} data-task-id={task.id} data-quality={expert ? expertTaskOutcome(expert, task.id) : undefined}>
-          <NativeTaskDisclosure task={expertAsLocalTask(task, job.status)} usage={task.usage} onInspect={() => inspect()} />
-        </div>)}
-      </div>
-    </div>}
+    {workerCount > 0 && <CompactSwarmDashboard
+      title={jobDisplayTitle(job)} lifecycle={nativeSummary?.lifecycle ?? job.status}
+      workerStatuses={taskStatusById} expert={expert && expert.kind !== 'unavailable' ? expert : undefined}
+      headerModel={expertHeaderModel(currentHeader(state, job.metadata_key ?? '')) ?? undefined}
+      nativeTasks={nativeRows} nativeRoutes={nativeRouteByTask} routeCoverage={nativeRows.length ? nativeRouteCoverage : undefined}
+      artifactCount={nativeSummary?.artifact_count ?? observation?.artifact_count ?? null}
+      workerCount={nativeSummary?.task_count ?? observation?.task_count ?? job.task_count ?? null}
+      workerCoverage={local ? nativeFresh && native?.tasks?.page.outcome === 'complete'
+        && native.tasks.page.revision === nativeSummary?.revision ? 'complete' : 'partial'
+        : expert?.coverage.tasks === 'complete' ? 'complete' : 'partial'}
+      usage={costHeader?.usage?.tokens ?? (nativeSummary?.usage?.kind === 'reported' ? nativeSummary.usage.tokens : null)}
+      cancel={nativeRows.length ? workerKill : undefined}
+    />}
     <div className="flex flex-wrap gap-1">
       <button className={button} disabled={!local && !selectedPM} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}

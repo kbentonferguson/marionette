@@ -1251,7 +1251,7 @@ class LocalJobsMixin:
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
                             cwd: str = "", engine: str = "", model: str = "",
                             *, skip_routing_preview: bool = False,
-                            initial_status: str = "") -> None:
+                            initial_status: str = "", dispatch_id: str = "") -> None:
         """Record a dispatched in-process edit worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
         jobs). Shaped like a store job: a single synthesized worker task carries
@@ -1344,7 +1344,7 @@ class LocalJobsMixin:
                 "model": display_model,
                 "session_id": session_id,
                 "cwd": effective_cwd,
-                "label": job_label_for_session(session_id),
+                "label": job_label_for_session(session_id, dispatch_id=dispatch_id),
                 "created_at": now,
                 "updated_at": now,
                 "task_count": 1,
@@ -1383,6 +1383,34 @@ class LocalJobsMixin:
                     )
                 except Exception:
                     pass
+
+    def _associate_local_job_with_pm(self, job_id: str, association: dict) -> None:
+        """Bind a placeholder to the exact PM v2 reference created for its dispatch."""
+        from harness.job_scoping import parse_job_dispatch_id
+
+        if not isinstance(association, dict):
+            return
+        ref = association.get("job_ref")
+        if (association.get("source") != "harness" or not isinstance(ref, dict)
+                or ref.get("version") != 2
+                or not all(isinstance(ref.get(key), str) and ref[key]
+                           for key in ("job_id", "state_id", "incarnation"))):
+            return
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not isinstance(job, dict):
+                return
+            session_id = self.harness_session_id or ""
+            dispatch_id = parse_job_dispatch_id(job.get("label"))
+            if (not session_id or job.get("session_id") != session_id
+                    or association.get("session_id") != session_id
+                    or not dispatch_id or association.get("dispatch_id") != dispatch_id):
+                return
+            job["canonical"] = dict(
+                source="harness", job_ref=dict(ref), session_id=session_id,
+                dispatch_id=dispatch_id,
+            )
+            self._persist_local_jobs_locked()
 
     def _mark_local_job_started(self, job_id: str) -> None:
         """Flip queued/registered children to running when the worker thread starts."""
@@ -2443,4 +2471,3 @@ class LocalJobsMixin:
                 snap["actions"] = snapshot_actions(snap.get("actions"))
                 out.append(snap)
             return out
-

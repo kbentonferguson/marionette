@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { JobMetadataStore, useJobMetadata } from './useJobMetadata';
 import type { JobMetadataState } from './useJobMetadata';
 import type { Job } from './api';
-import { metadataSelectionKey } from './jobMetadata';
+import { canonicalPMReplacesLocal, metadataSelectionKey } from './jobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
 import { isCommandJob } from './jobClassification';
 
@@ -34,7 +34,8 @@ export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapt
 export function metadataActivity(state: JobMetadataState): { count: number; label: string } {
   const active = new Set(nativeActiveStatuses);
   const count = state.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle ?? '')).length
-    + state.local.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle)).length;
+    + state.local.observations.filter(o => o.freshness === 'observed' && active.has(o.row.lifecycle)
+      && !canonicalPMReplacesLocal(o, state.observations)).length;
   return { count, label: count ? `At least ${count} active jobs; coverage incomplete` : 'Job activity unknown; coverage incomplete' };
 }
 /** Current selected facts are valid only for this exact source and revision. */
@@ -89,7 +90,9 @@ export function metadataJobs(state: JobMetadataState): Job[] {
   const nativeObserved = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o]));
   const selectedSummary = state.localDetail?.observation?.summary;
   if (selectedSummary && !nativeObserved.has(localKey(selectedSummary.local_ref))) nativeObserved.set(localKey(selectedSummary.local_ref), { row: selectedSummary, freshness: 'stale', observedAt: 0 });
-  const local: Job[] = [...nativeObserved.values()].map(({ row, freshness }) => ({
+  const local: Job[] = [...nativeObserved.values()]
+    .filter(local => !canonicalPMReplacesLocal(local, [...observed.values()]))
+    .map(({ row, freshness }) => ({
     id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local', metadata_only: true,
     metadata_key: localKey(row.local_ref), goal: (row.display ? `${row.display.label}${row.display.model ? ` · ${row.display.model}` : ''}` : row.kind.replaceAll('_', ' ')),
     status: row.lifecycle, session_id: row.session_id, job_kind: row.kind, role: row.kind,

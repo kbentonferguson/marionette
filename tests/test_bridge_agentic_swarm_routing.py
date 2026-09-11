@@ -51,7 +51,7 @@ class _FakeOrchestrator:
     def __init__(self, store: Any) -> None:
         self.store = store
 
-    def run(self, goal: str, specs=None, worker_mode=None, label=None):
+    def run(self, goal: str, specs=None, worker_mode=None, label=None, **_kwargs):
         type(self).last_worker_mode = worker_mode
         return _FakeResult()
 
@@ -123,7 +123,7 @@ def test_execute_intent_system_exit_does_not_kill_backend(monkeypatch, tmp_path)
         def __init__(self, store):
             self.store = store
 
-        def run(self, goal, specs=None, worker_mode=None, label=None):
+        def run(self, goal, specs=None, worker_mode=None, label=None, **_kwargs):
             raise SystemExit(77)
 
     _CapturingWorkerSpec._last_captured = []
@@ -540,7 +540,7 @@ class _RoutingOrchestrator:
     def __init__(self, store: Any) -> None:
         self.store = store
 
-    def run(self, goal: str, specs=None, worker_mode=None, label=None):
+    def run(self, goal: str, specs=None, worker_mode=None, label=None, **_kwargs):
         from puppetmaster.model_registry import default_registry_path, load_registry
         from puppetmaster.router import route_task, signals_from_worker_spec
 

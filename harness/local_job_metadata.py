@@ -57,6 +57,20 @@ def count(value):
     return len(value) if isinstance(value, (list, tuple)) else None
 
 
+def canonical(value, session_id):
+    if not isinstance(value, dict) or value.get('source') != 'harness':
+        return None
+    ref = value.get('job_ref')
+    if (not isinstance(ref, dict) or ref.get('version') != 2
+            or value.get('session_id') != session_id
+            or not identity(value.get('dispatch_id'))
+            or not all(identity(ref.get(key)) for key in ('job_id', 'state_id', 'incarnation'))):
+        return None
+    return dict(source='harness', job_ref=dict(job_id=ref['job_id'], state_id=ref['state_id'],
+                version=2, incarnation=ref['incarnation']), session_id=session_id,
+                dispatch_id=value['dispatch_id'])
+
+
 def envelope(outcome='unavailable', *, revision=0, checkpoint=0, scanned=0):
     return dict(version=1, page=dict(outcome=outcome, revision=revision,
                 checkpoint=checkpoint, scanned=scanned, next_cursor=None), rows=[],
@@ -230,6 +244,7 @@ class LocalMetadataIndex:
                     'parallel_wave': 'parallel_wave'}.get(role, 'provider')
         parent = row.get('parent_wave_id') or row.get('batch_id')
         status = row.get('status')
+        canonical_ref = canonical(row.get('canonical'), sid)
         lifecycle = status if isinstance(status, str) and len(status) <= 40 and status in LIFECYCLES else 'unknown'
         return dict(local_ref=self.ref(jid), lifecycle=lifecycle,
                     activity='active' if lifecycle in ACTIVE else 'attention' if lifecycle in ATTENTION else 'terminal',
@@ -242,7 +257,9 @@ class LocalMetadataIndex:
                                   launch=isinstance(row.get('launch_checkpoint'), dict),
                                   recovery=isinstance(row.get('recovery_receipt'), dict),
                                   child=isinstance(row.get('child_launch_receipt'), dict)),
-                    **operator_facts(jid, row, kind), deleted=False)
+                    **operator_facts(jid, row, kind),
+                    **({'canonical': canonical_ref} if canonical_ref is not None else {}),
+                    deleted=False)
 
     def publish(self, jid, row, *, force=False):
         try:

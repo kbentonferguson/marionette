@@ -4,6 +4,7 @@ import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import type { LocalRoute, LocalTask } from '../lib/localJobMetadata';
 import type { ExpertUsageFacts } from '../lib/expertEconomicsFacts';
 import { ExpertWorkerUsage } from './ExpertUsageDetails';
+import WorkerInstruction from './WorkerInstruction';
 
 const PILL = 'composer-family inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2/80 border border-edge/80 text-[9px] shrink-0';
 
@@ -50,7 +51,6 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
           <span className="shrink-0 text-faint/60 group-hover:text-faint">{open ? <ChevronDown size={9} /> : <ChevronRight size={9} />}</span>
         </div>
         <div className="mt-0.5 flex items-center gap-1 min-w-0 flex-wrap">
-          <span className={`${PILL} font-semibold text-txt truncate max-w-[9rem]`}>{title}</span>
           <span className={`${PILL} ${nativeActiveStatuses.includes(task.status) ? 'text-accent/80' : 'text-muted'}`}>{task.status}</span>
           {task.model_kind === 'assigned' && <span title={`Model: ${task.model}`} className={`${PILL} min-w-0 max-w-full font-mono text-accent/85`}>
             <Cpu size={9} className="shrink-0 text-accent/65" />
@@ -69,7 +69,7 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
         {onInspect && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" onKeyUp={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onInspect(); }}>Inspect</button>}
         {kill && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" aria-label="Cancel this job"
           disabled={kill.disabled} onKeyUp={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); kill.request(); }}>Kill</button>}
-        <p>{task.instruction}</p>
+        <WorkerInstruction text={task.instruction} truncated={task.truncated} />
         <p>Task: {task.task_id ?? 'identity unavailable'}. Adapter: {task.adapter || 'unavailable'}.</p>
         {task.model_kind === 'unavailable' && <p>Assigned task model unavailable.</p>}
         {task.truncated && <p>Task fields truncated.</p>}

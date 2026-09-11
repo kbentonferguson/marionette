@@ -327,13 +327,13 @@ describe('original worker routing requirements through the selected store', () =
     render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
     await expandAndInspect(/Audit auth flow/);
     expect(await screen.findByText('Findings (1)')).toBeVisible();
-    expect(screen.getByText(headline, { exact: false })).toBeVisible();
+    expect(inspected().getByText(headline, { exact: false })).toBeVisible();
     expect(screen.getByText('looks like prompt echo')).toBeVisible();
     expect(screen.queryByText('Findings (4)')).toBeNull();
     fireEvent.click(screen.getByText('Findings (1)'));
-    expect(screen.getByText(headline, { exact: false })).not.toBeVisible();
+    expect(inspected().getByText(headline, { exact: false })).not.toBeVisible();
     fireEvent.click(screen.getByText('Findings (1)'));
-    expect(screen.getByText(headline, { exact: false })).toBeVisible();
+    expect(inspected().getByText(headline, { exact: false })).toBeVisible();
   });
   it('does not paint workers degraded from job-level degraded without a task-scoped artifact', async () => {
     const f = await setup(); const expert = facts(); expert.quality = 'degraded';

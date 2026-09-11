@@ -1,8 +1,9 @@
 import backend from './jobMetadata.backend.json';
 import { describe, expect, it } from 'vitest';
-import { advanceMetadataStream, initialMetadataStream, mergeMetadataRows, metadataListPath, metadataSelectionKey,
+import { advanceMetadataStream, canonicalPMReplacesLocal, initialMetadataStream, mergeMetadataRows, metadataListPath, metadataSelectionKey,
   metadataStreams, validateMetadataTarget, parseMetadataDetail, parseMetadataList, parseMetadataPins, parseMetadataView } from '../lib/jobMetadata';
 import type { MetadataObservation, MetadataStreamState, MetadataView, MetadataRemoval } from '../lib/jobMetadata';
+import type { LocalObservation } from '../lib/localJobMetadata';
 import { context, detail, initial, list, selection, stream, summary, token, view } from './jobMetadata.fixtures';
 
 describe('version 1 boundary', () => {
@@ -133,6 +134,24 @@ describe('bounded reducer', () => {
     expect(metadataStreams(parsed, 'repo')).toHaveLength(14);
     expect(() => parseMetadataView({ ...v, sources: [...v.sources, v.sources[0]] }, context)).toThrow();
   });
+});
+
+it('replaces a local placeholder only with its fresh exact canonical PM identity', () => {
+  const local = {
+    freshness: 'observed', observedAt: 1,
+    row: { local_ref: { job_id: 'local-swarm-call', incarnation: 'local-incarnation' }, revision: 1, deleted: false,
+      session_id: context.session_id, lifecycle: 'running', kind: 'provider', parent_ref: null,
+      task_count: 1, action_count: 0, artifact_count: 0, child_count: 0, created_at: 1, updated_at: 1,
+      receipts: { terminal: false, launch: false, recovery: false, child: false }, economics: { kind: 'unavailable' },
+      canonical: { source: 'harness', session_id: context.session_id, dispatch_id: 'call_01',
+        job_ref: { job_id: 'job_canonical', state_id: 'store-A', version: 2, incarnation: 'pm-incarnation' } },
+    },
+  } satisfies LocalObservation;
+  const canonical = { row: { ...summary(), selection: { ...selection(), job_ref: { job_id: 'job_canonical', state_id: 'store-A', version: 2, incarnation: 'pm-incarnation' } } }, freshness: 'observed' } satisfies MetadataObservation;
+  expect(canonicalPMReplacesLocal(local, [canonical])).toBe(true);
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale' }])).toBe(false);
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, row: { ...canonical.row, ownership: { ...canonical.row.ownership, session_id: 'foreign' } } }])).toBe(false);
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, row: { ...canonical.row, selection: { ...canonical.row.selection, job_ref: { ...canonical.row.selection.job_ref, incarnation: 'other' } } } }])).toBe(false);
 });
 
 it('sibling status departures do not erase an equally recent successor status', () => {
