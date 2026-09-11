@@ -900,7 +900,6 @@ def _stamp_settings_model_allowlist(payload: dict) -> dict:
     balanced routing and returned empty managed worktrees.
     """
     try:
-        from harness.model_visibility import get_enabled
         from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
 
         allow = resolve_swarm_worker_allowlist()
@@ -909,14 +908,15 @@ def _stamp_settings_model_allowlist(payload: dict) -> dict:
             for item in (allow.get("allowed_model_ids") or [])
             if str(item).strip()
         ]
-        if ids:
-            payload["allowed_model_ids"] = ids
-        elif get_enabled():
-            payload["allowed_model_ids"] = [
-                str(spec).strip() for spec in get_enabled() if str(spec).strip()
-            ]
+        payload["allowed_adapters"] = ["agentic"]
+        payload["allowed_model_ids"] = ids
     except Exception as exc:
         _diag("edit_engines.settings_model_allowlist", exc)
+        # An allowlist lookup failure must never widen routing to the whole
+        # registry or permit a provider/CLI adapter outside the product
+        # contract. An explicit empty list makes Puppetmaster fail closed.
+        payload["allowed_adapters"] = ["agentic"]
+        payload["allowed_model_ids"] = []
     return payload
 
 
@@ -1019,9 +1019,9 @@ def run_implement(
     job_id: str = "", session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
     agentic_pin: Optional["AgenticModelPin"] = None,
-    strict_adapter: bool = False,
+    strict_adapter: bool = True,
 ) -> "WorkerResult":
-    """Dispatch a single implement worker (agentic or native)."""
+    """Dispatch a product implement worker through the agentic adapter."""
     return run_edit_worker(
         config, goal, requested_adapter=requested_adapter,
         job_id=job_id, session_id=session_id, cwd=cwd,
@@ -1036,9 +1036,9 @@ def run_parallel(
     session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
     agentic_pin: Optional["AgenticModelPin"] = None,
-    strict_adapter: bool = False,
+    strict_adapter: bool = True,
 ) -> list["WorkerResult"]:
-    """Run several implement workers sequentially (caller fans out concurrency)."""
+    """Run product implement workers through the agentic adapter."""
     results = []
     for goal in goals or []:
         if not (goal or "").strip():

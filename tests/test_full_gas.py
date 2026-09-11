@@ -125,7 +125,7 @@ def _wait_for_swarms(session, timeout=10.0):
         _t.sleep(0.05)
     return list(session.drain_swarm_results())
 
-def test_executor_smoke_run_implement():
+def test_executor_smoke_run_implement(monkeypatch):
     import os
     import shutil
     import subprocess
@@ -200,25 +200,28 @@ def test_executor_smoke_run_implement():
             mock_run.side_effect = side_effect
             
             session = ConversationalSession(cfg)
+            from harness.worker import WorkerResult
+            monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+            monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+            monkeypatch.setattr(
+                "harness.edit_engines.run_agentic_edit",
+                lambda config, goal, **kwargs: WorkerResult(
+                    ok=True,
+                    patch="diff --git a/src/main.py b/src/main.py\nnew file mode 100644\n--- /dev/null\n+++ b/src/main.py\n@@ -0,0 +1 @@\n+print('hello')\n",
+                    files_changed=["src/main.py"],
+                    summary="agentic patch",
+                ),
+            )
             
-            # We inject our detect function mock to always return "cursor"
-            session._detect_default_implement_adapter = MagicMock(return_value="cursor")
-            # This smoke test exercises the EXTERNAL puppetmaster-CLI dispatch path,
-            # so force puppetmaster availability and request an external adapter
-            # explicitly (the default path is now the provider-native worker, which
-            # does not Popen the CLI -- covered by test_run_implement_provider.py).
+            # Keep the old process probes installed so this test proves the
+            # agentic path does not launch a provider CLI.
             import harness.conversation as _convmod
-            session_pm_orig = getattr(_convmod, "_puppetmaster_available", None)
-            _convmod._puppetmaster_available = lambda: True
-            # Force the external CLI adapter to read as available so this test keeps
-            # exercising the external dispatch path (the requested CLI is not installed
-            # in CI; without this the implement correctly falls back to the
-            # provider-native worker, which is covered separately).
+            monkeypatch.setattr(_convmod, "_puppetmaster_available", lambda: True)
             session._external_adapter_available = lambda adapter: True
             
-            # Send a prompt triggering a pilot action (explicit external adapter)
+            # Send a prompt triggering an explicit agentic action.
             from harness.pilot import PilotAction
-            action = PilotAction(kind="run_implement", goal="Add print statement", adapter="cursor")
+            action = PilotAction(kind="run_implement", goal="Add print statement", adapter="agentic")
             
             # Directly invoke our send logic or trigger actions processing
             class FakePilot:
@@ -229,7 +232,7 @@ def test_executor_smoke_run_implement():
                     from pmharness.drivers.openai_compat import DriverResponse
                     self.calls += 1
                     if self.calls == 1:
-                        txt = '{"say": "Starting implement worker.", "actions": [{"kind": "run_implement", "goal": "Add print statement", "adapter": "cursor"}]}'
+                        txt = '{"say": "Starting implement worker.", "actions": [{"kind": "run_implement", "goal": "Add print statement", "adapter": "agentic"}]}'
                     else:
                         txt = '{"say": "Done.", "actions": []}'
                     return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
@@ -245,8 +248,12 @@ def test_executor_smoke_run_implement():
             # patch applies in a background future.
             assert "swarm_pending" in kinds
             
-            # Verify mock_popen was called at least once
-            assert mock_popen.call_count >= 1
+            # Product dispatch is agentic and must not launch a provider CLI.
+            assert not any(
+                any("puppetmaster" in str(arg) for arg in call.args[0])
+                for call in mock_popen.call_args_list
+                if call.args
+            )
             
             # Wait for the background apply to complete, then assert the file landed.
             _wait_for_swarms(session)
@@ -260,7 +267,7 @@ def test_executor_smoke_run_implement():
         shutil.rmtree(temp_repo, ignore_errors=True)
 
 
-def test_executor_smoke_run_parallel():
+def test_executor_smoke_run_parallel(monkeypatch):
     import os
     import shutil
     import subprocess
@@ -350,9 +357,20 @@ def test_executor_smoke_run_parallel():
             mock_run.side_effect = side_effect
             
             session = ConversationalSession(cfg)
+            from harness.worker import WorkerResult
+            monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+            monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+            def fake_agentic(config, goal, **kwargs):
+                name = "job_abcdef111111" if goal == "Audit auth" else "job_abcdef222222"
+                filename = f"src/{name}.py"
+                return WorkerResult(
+                    ok=True,
+                    patch=f"diff --git a/{filename} b/{filename}\nnew file mode 100644\n--- /dev/null\n+++ b/{filename}\n@@ -0,0 +1 @@\n+print('{name}')\n",
+                    files_changed=[filename], summary="agentic patch",
+                )
+            monkeypatch.setattr("harness.edit_engines.run_agentic_edit", fake_agentic)
             session._detect_default_implement_adapter = MagicMock(return_value="hermes")
-            # Keep exercising the external dispatch path even though the requested
-            # CLI is not installed in CI (otherwise it falls back to provider-native).
+            # An available provider CLI must not change agentic dispatch.
             session._external_adapter_available = lambda adapter: True
             
             class FakeParallelPilot:
@@ -363,7 +381,7 @@ def test_executor_smoke_run_parallel():
                     from pmharness.drivers.openai_compat import DriverResponse
                     self.calls += 1
                     if self.calls == 1:
-                        txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "adapter": "cursor", "goals": ["Audit auth", "Audit cache"], "mode": "implement"}]}'
+                        txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "adapter": "agentic", "goals": ["Audit auth", "Audit cache"], "mode": "implement"}]}'
                     else:
                         txt = '{"say": "Done.", "actions": []}'
                     return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
@@ -371,8 +389,8 @@ def test_executor_smoke_run_parallel():
             session.pilot = FakeParallelPilot()
             events = list(session.send("Run parallel checks!"))
             
-            # Let's verify our processes were fanned out
-            assert len(p_calls) == 2
+            # Workers run through agentic without spawning provider CLIs.
+            assert len(p_calls) == 0
             # Verify aggregate result is returned
             kinds = [e.kind for e in events]
             assert "action_result" in kinds
@@ -400,7 +418,7 @@ def test_executor_smoke_run_parallel():
 @patch("shutil.rmtree")
 @patch("subprocess.Popen")
 @patch("subprocess.run")
-def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp, mock_which, tmp_path):
+def test_run_parallel_explicit_cursor_is_rejected(mock_run, mock_popen, mock_rmtree, mock_mkdtemp, mock_which, tmp_path):
     mock_which.return_value = None
     mock_mkdtemp.side_effect = ["/tmp/pmh-par-1", "/tmp/pmh-par-2"]
 
@@ -458,8 +476,7 @@ def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, 
     
     session = ConversationalSession(cfg)
     session._detect_default_implement_adapter = MagicMock(return_value="hermes")
-    # Keep exercising the external dispatch path even though the requested CLI is
-    # not installed in CI (otherwise it falls back to the provider-native worker).
+    # Explicit unsupported adapters fail even when their CLI is available.
     session._external_adapter_available = lambda adapter: True
     
     class FakeParallelPilot:
@@ -477,34 +494,9 @@ def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, 
             
     session.pilot = FakeParallelPilot()
     events = list(session.send("Run parallel checks!"))
-    # New offload model: dispatch (Popen) is synchronous in-turn, but await/artifacts/last/rmtree
-    # run in the background futures -- wait for them before asserting on those calls.
+    # Explicit CLI adapters are unsupported product inputs and fail closed.
     kinds = [e.kind for e in events]
-    assert "swarm_pending" in kinds
-    _wait_for_swarms(session)
-    
-    assert mock_popen.call_count == 2
-    args1 = mock_popen.call_args_list[0][0][0]
-    args2 = mock_popen.call_args_list[1][0][0]
-    
-    assert args1[1:5] == ["-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-1"]
-    assert args2[1:5] == ["-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-2"]
-    
-    last_calls = [c[0][0] for c in mock_run.call_args_list if "last" in c[0][0]]
-    assert len(last_calls) == 1
-    assert last_calls[0] == [sys.executable, "-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-2", "last"]
-    
-    await_calls = [c[0][0] for c in mock_run.call_args_list if "await" in c[0][0]]
-    assert len(await_calls) == 2
-    assert ["--state-dir", "/tmp/pmh-par-1"] in [await_calls[0][3:5], await_calls[1][3:5]]
-    assert ["--state-dir", "/tmp/pmh-par-2"] in [await_calls[0][3:5], await_calls[1][3:5]]
-    
-    art_calls = [c[0][0] for c in mock_run.call_args_list if "artifacts" in c[0][0]]
-    assert len(art_calls) == 2
-    assert ["--state-dir", "/tmp/pmh-par-1"] in [art_calls[0][3:5], art_calls[1][3:5]]
-    assert ["--state-dir", "/tmp/pmh-par-2"] in [art_calls[0][3:5], art_calls[1][3:5]]
-    
-    assert mock_rmtree.call_count == 2
-    mock_rmtree.assert_any_call("/tmp/pmh-par-1", ignore_errors=True)
-    mock_rmtree.assert_any_call("/tmp/pmh-par-2", ignore_errors=True)
-
+    assert "swarm_pending" not in kinds
+    results = [e for e in events if e.kind == "action_result"]
+    assert results and "unsupported" in (results[-1].data.get("error") or "").lower()
+    assert mock_popen.call_count == 0

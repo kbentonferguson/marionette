@@ -341,8 +341,8 @@ def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_p
     assert payload.get("allowed_adapters") == ["agentic"]
 
 
-def test_agentic_swarm_unknown_model_pin_demotes_to_auto_route(monkeypatch, tmp_path):
-    """Unknown/pilot-session pins must not fail the swarm — demote to auto-route."""
+def test_agentic_swarm_unknown_model_pin_fails_without_dispatch(monkeypatch, tmp_path):
+    """An unavailable explicit pin must not dispatch a different model."""
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
@@ -369,20 +369,15 @@ def test_agentic_swarm_unknown_model_pin_demotes_to_auto_route(monkeypatch, tmp_
         roles=["explore"],
         model="cursor/gpt-5-6-luna",
     )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    assert _CapturingWorkerSpec._last_captured
-    payload = _CapturingWorkerSpec._last_captured[0].payload
-    assert payload.get("auto_route") is True
-    assert not payload.get("pinned_model")
-    assert not payload.get("model")
-    assert payload.get("allowed_adapters") == ["agentic"]
+    with pytest.raises(ValueError, match="Choose an exact Models-enabled"):
+        bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert _CapturingWorkerSpec._last_captured == []
 
 
-def test_swarm_falls_back_to_platform_cursor_when_no_agentic_keys(
+def test_swarm_keeps_agentic_constraints_when_no_agentic_keys(
     monkeypatch, tmp_path,
 ):
-    """CURSOR_API_KEY alone must still drive real swarms (not agentic-empty fail)."""
+    """Cursor credentials do not grant permission to a different worker adapter."""
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
@@ -402,12 +397,12 @@ def test_swarm_falls_back_to_platform_cursor_when_no_agentic_keys(
     )
     result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
     assert result is not None
-    assert result.adapter == "cursor"
+    assert result.adapter == "agentic"
     assert _CapturingWorkerSpec._last_captured
     spec = _CapturingWorkerSpec._last_captured[0]
-    assert spec.adapter == "cursor"
-    assert spec.payload.get("allowed_adapters") == ["cursor"]
-    assert spec.payload.get("prefer_plan_billed") is True
+    assert spec.adapter == "agentic"
+    assert spec.payload["allowed_adapters"] == []
+    assert spec.payload["allowed_model_ids"] == []
 
 
 def test_swarm_cursor_model_pin_uses_cursor_adapter_in_union(monkeypatch, tmp_path):
@@ -648,7 +643,11 @@ def _install_two_tier_product_path(monkeypatch, tmp_path):
     _RoutingOrchestrator.last_decisions = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
+    monkeypatch.setattr("harness.auto_registry.keyed_agentic_providers", lambda: {"openai-codex"})
+    monkeypatch.setattr("harness.swarm_worker_allowlist._platform_locked_adapters", lambda: frozenset({"agentic"}))
+    monkeypatch.setattr("harness.swarm_worker_allowlist._enabled_or_visible_specs", lambda: [
+        "openai-codex:gpt-5.6-luna", "openai-codex:gpt-5.6-sol",
+    ])
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _RoutingOrchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)

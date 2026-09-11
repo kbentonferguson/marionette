@@ -5,8 +5,9 @@ import sys
 import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
-from harness.worker import ProviderWorker, WorkerResult
+from harness.worker import WorkerResult
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.config import HarnessConfig
 
@@ -31,13 +32,11 @@ def test_run_implement_provider_default(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
 
-        # Pin the native engine so this exercises Marionette's own pilot + the
-        # apply pipeline deterministically regardless of which provider keys the
-        # test host happens to have (agentic is the default only when a key exists).
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        # Supply an available agentic worker independently of host credentials.
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
-        # Mock ProviderWorker.run to return a canned patch
+        # Return a patch at the agentic worker boundary.
         canned_patch = (
             "diff --git a/test.txt b/test.txt\n"
             "--- a/test.txt\n"
@@ -64,7 +63,7 @@ def test_run_implement_provider_default(monkeypatch):
             assert self.goal == "Add world to test.txt"
             return canned_result
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo)))
 
         # Mock pilot completing and returning run_implement action with NO adapter
         mock_pilot = MagicMock()
@@ -87,7 +86,7 @@ def test_run_implement_provider_default(monkeypatch):
         # The specific action_start should be the last one
         specific_start = action_starts[-1]
         assert specific_start.data["kind"] == "run_implement"
-        assert specific_start.data["mode"] == "native"
+        assert specific_start.data["mode"] == "agentic"
 
         swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
         assert len(swarm_pendings) == 1
@@ -122,7 +121,7 @@ def test_run_implement_provider_default(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
-def test_run_implement_external_fallback(monkeypatch):
+def test_run_implement_explicit_external_adapter_is_rejected(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
         cfg = HarnessConfig()
@@ -131,9 +130,7 @@ def test_run_implement_external_fallback(monkeypatch):
 
         # Mock puppetmaster available (dispatch lives in send_loop after the peel)
         monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_available", lambda: True)
-        # Mock the external adapter CLI as available so this test exercises the
-        # external dispatch path (cursor is not installed in CI; without this it
-        # would correctly fall back to the provider-native worker).
+        # CLI availability must not authorize an unsupported product adapter.
         monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: True)
 
         # Mock puppetmaster cmd
@@ -160,20 +157,17 @@ def test_run_implement_external_fallback(monkeypatch):
         # Send a message to start the action
         events = list(session.send("start implement"))
 
-        # Assert action_start is emitted and DOES NOT have mode="provider" (meaning it took the external path)
+        # Explicit non-agentic adapters fail closed; no CLI fallback is allowed.
         action_starts = [e for e in events if e.kind == "action_start"]
         assert len(action_starts) >= 1
         specific_start = action_starts[-1]
         assert specific_start.data["kind"] == "run_implement"
         assert "mode" not in specific_start.data
 
-        # Assert correct swarm_pending is emitted with the mocked job_id from puppetmaster CLI output
-        swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
-        assert len(swarm_pendings) == 1
-        assert swarm_pendings[0].data["job_ids"] == ["job_123456789012"]
-
-        assert len(pm_cmd_called) > 0
-        assert "cursor" in pm_cmd_called[0]
+        results = [e for e in events if e.kind == "action_result"]
+        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results)
+        assert not any(e.kind == "swarm_pending" for e in events)
+        assert not pm_cmd_called
 
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -194,9 +188,9 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_available", lambda: True)
         # The external adapter CLI is NOT available.
         monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: False)
-        # Pin the native engine so the in-process fallback is deterministic here.
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        # An available agentic engine must not silently replace an explicit pin.
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         # If the external path were taken it would call the pm CLI; assert it does NOT.
         pm_cmd_called = []
@@ -218,17 +212,17 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
 
         events = list(session.send("start implement"))
 
-        # The in-process fallback path emits action_start with the engine label.
+        # Rejection starts no worker and emits no engine label.
         action_starts = [e for e in events if e.kind == "action_start" and e.data.get("kind") == "run_implement"]
         assert len(action_starts) >= 1
-        assert action_starts[-1].data.get("mode") == "native"
+        assert "mode" not in action_starts[-1].data
 
         # The external CLI must NOT have been invoked for the implement dispatch.
         assert not any("cursor" in c for c in pm_cmd_called)
 
-        # A swarm_pending should still be emitted (the in-process worker is dispatched).
-        swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
-        assert len(swarm_pendings) == 1
+        results = [e for e in events if e.kind == "action_result"]
+        assert any("unsupported" in (e.data.get("error") or "").lower() for e in results)
+        assert not any(e.kind == "swarm_pending" for e in events)
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 

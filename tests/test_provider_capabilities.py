@@ -43,7 +43,7 @@ def test_annotate_provider_row_stamps_labels():
     assert "workers" in row["worker_capability_hint"].lower()
 
 
-def test_product_worker_adapter_falls_back_to_cursor(monkeypatch):
+def test_product_worker_adapter_does_not_fall_back_to_cursor(monkeypatch):
     monkeypatch.setattr(
         "harness.auto_registry.keyed_agentic_providers",
         lambda: set(),
@@ -58,7 +58,7 @@ def test_product_worker_adapter_falls_back_to_cursor(monkeypatch):
     )
     from harness.swarm_worker_route import resolve_product_worker_adapter
 
-    assert resolve_product_worker_adapter() == "cursor"
+    assert resolve_product_worker_adapter() == "agentic"
 
 
 def test_product_worker_adapter_prefers_keyed_agentic(monkeypatch):

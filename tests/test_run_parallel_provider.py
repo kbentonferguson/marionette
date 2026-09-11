@@ -4,8 +4,9 @@ import shutil
 import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
-from harness.worker import ProviderWorker, WorkerResult
+from harness.worker import WorkerResult
 from harness.conversation import ConversationalSession, ConvEvent
 from harness.config import HarnessConfig
 
@@ -30,10 +31,9 @@ def test_run_parallel_provider_default(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
 
-        # Pin the native engine so the parallel apply pipeline is deterministic
-        # regardless of provider keys on the test host.
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        # Supply an available agentic worker independently of host credentials.
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         goals_seen = []
         def mock_worker_run(self):
@@ -71,7 +71,7 @@ def test_run_parallel_provider_default(monkeypatch):
             else:
                 return WorkerResult(ok=False, error="unknown goal")
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo, expects_diff=kwargs.get("expects_diff", True))))
 
         # Mock pilot to complete and return run_parallel action with NO adapter
         mock_pilot = MagicMock()
@@ -93,7 +93,7 @@ def test_run_parallel_provider_default(monkeypatch):
         assert len(action_starts) >= 1
         specific_start = action_starts[-1]
         assert specific_start.data["kind"] == "run_parallel"
-        assert specific_start.data["mode"] == "native"
+        assert specific_start.data["mode"] == "agentic"
         assert specific_start.data["goals"] == ["Goal A", "Goal B"]
 
         # Assert a single swarm_pending with 2 job_ids is emitted
@@ -143,8 +143,8 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         cfg = HarnessConfig()
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         expects_seen = []
         substantive = (
@@ -161,7 +161,7 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
                 summary=substantive,
             )
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo, expects_diff=kwargs.get("expects_diff", True))))
 
         mock_pilot = MagicMock()
         first_resp = MagicMock()
@@ -243,8 +243,8 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
         cfg = HarnessConfig()
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         finding_line = (
             "FINDING: harness/auth.py:42 token refresh never validates expiry"
@@ -271,7 +271,7 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
                 }],
             )
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo, expects_diff=kwargs.get("expects_diff", True))))
 
         mock_pilot = MagicMock()
         first_resp = MagicMock()
@@ -351,8 +351,8 @@ def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
         cfg = HarnessConfig()
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         def mock_worker_run(self):
             return WorkerResult(
@@ -362,7 +362,7 @@ def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
                 summary="Last assistant message: Audit findings: none.",
             )
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo, expects_diff=kwargs.get("expects_diff", True))))
 
         mock_pilot = MagicMock()
         first_resp = MagicMock()
@@ -416,8 +416,8 @@ def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
         cfg = HarnessConfig()
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
-        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
-        monkeypatch.setattr("harness.edit_engines.cursor_platform_available", lambda: False)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
 
         def mock_worker_run(self):
             assert getattr(self, "expects_diff", True) is True
@@ -427,7 +427,7 @@ def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
                 summary="no changes captured in the worktree diff (worktree=/tmp/x)",
             )
 
-        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+        monkeypatch.setattr("harness.edit_engines.run_agentic_edit", lambda config, goal, **kwargs: mock_worker_run(SimpleNamespace(goal=goal, repo=config.repo, expects_diff=kwargs.get("expects_diff", True))))
 
         mock_pilot = MagicMock()
         first_resp = MagicMock()

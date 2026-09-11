@@ -117,6 +117,16 @@ def force_throwaway_harness_state_dir() -> str:
 
 
 force_throwaway_harness_state_dir()
+# Registry sync uses its own path, independently of HARNESS_STATE_DIR.
+# Bind it before collection so pin tests cannot rewrite the running app's rows.
+os.environ["PUPPETMASTER_MODELS_PATH"] = os.path.join(
+    os.environ["HARNESS_STATE_DIR"], "marionette-models.json",
+)
+from harness import model_visibility as _model_visibility
+
+_model_visibility._store_path = lambda: os.path.join(
+    os.environ["HARNESS_STATE_DIR"], "models.json",
+)
 
 # Checkpoint metadata uses Path.home independently of HARNESS_STATE_DIR.
 # Bind only that module's path facade before collection constructs any stores.
@@ -376,6 +386,7 @@ def _isolate_provider_state(monkeypatch, tmp_path_factory):
 
     d = tmp_path_factory.mktemp("pmstate")
     monkeypatch.setenv("HARNESS_STATE_DIR", str(d))
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(d / "marionette-models.json"))
 
     server_mod = sys.modules.get("harness.server")
     test_store = None

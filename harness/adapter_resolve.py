@@ -178,35 +178,21 @@ class AdapterResolveMixin:
         return "", note
 
     def _active_adapters_system_note(self) -> str:
-        """Live platform-lock snapshot injected each turn so the pilot cannot
-        keep requesting a previously-enabled adapter after the operator flips
-        Settings > Platform."""
+        """Report the product worker adapter without advertising CLI fallbacks."""
         try:
             from puppetmaster.platform_lock import enabled_adapters
-
-            enabled = sorted(enabled_adapters())
+            enabled = set(enabled_adapters())
         except Exception:
-            return ""
-        if not enabled:
+            enabled = set()
+        if "agentic" not in enabled:
             return (
-                "ACTIVE IMPLEMENT PLATFORMS (live): none enabled. "
-                "Omit adapter on run_implement (standalone agentic/native only)."
+                "PRODUCT WORKERS: agentic is not enabled by the platform lock. "
+                "Worker dispatch is unavailable; do not substitute another adapter."
             )
-        preferred = "agentic" if "agentic" in enabled else enabled[0]
-        disabled_hint = ""
-        try:
-            from puppetmaster.platform_lock import KNOWN_ADAPTERS
-
-            disabled = sorted(set(KNOWN_ADAPTERS) - set(enabled))
-            if disabled:
-                disabled_hint = (
-                    f" Do NOT pass adapter={{{', '.join(disabled)}}} — those are disabled."
-                )
-        except Exception:
-            pass
         return (
-            f"ACTIVE IMPLEMENT PLATFORMS (live, re-read every turn): {', '.join(enabled)}. "
-            f"Default run_implement MUST omit adapter or use '{preferred}'.{disabled_hint}"
+            "PRODUCT WORKERS: use only agentic. Omit adapter or set adapter=agentic. "
+            "Auto-routing uses enabled, available provider/model pairs; an explicit "
+            "model pin must identify one of those pairs."
         )
 
     def _detect_default_implement_adapter(self) -> str:

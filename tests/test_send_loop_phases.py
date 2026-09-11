@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from harness.pilot import PilotAction
 from harness.send_loop import SendLoopMixin
 from harness.send_loop_phases import (
@@ -32,6 +34,7 @@ from harness.send_loop_phases import (
     StreamIdleStuckError,
     meter_pilot_step,
     promote_trailing_reasoning_to_say,
+    resolve_emit_say_texts,
     read_stdout_thread,
     run_auto_verify,
     run_parallel_prefetch,
@@ -850,6 +853,47 @@ def test_promote_trailing_reasoning_empty_say():
         )
         == body
     )
+
+
+def test_resolve_emit_does_not_promote_non_cursor_reasoning():
+    resp = SimpleNamespace(
+        text="",
+        assistant_phase="final_answer",
+        meta={
+            "reasoning": "private planning, not an answer",
+            "tool_calls": [{"id": "c1"}],
+        },
+    )
+    assert resolve_emit_say_texts(cleaned_say_text="", resp=resp) == ("", "", "")
+
+
+def test_resolve_emit_keeps_real_answer_and_cursor_legacy_promotion():
+    cursor = SimpleNamespace(
+        text="",
+        assistant_phase="final_answer",
+        meta={"reasoning": "Cursor final readout", "cursor_cli": True},
+    )
+    assert resolve_emit_say_texts(cleaned_say_text="", resp=cursor)[2] == "Cursor final readout"
+
+    answer = SimpleNamespace(
+        text="",
+        assistant_phase="final_answer",
+        meta={"reasoning": "private planning", "cursor_cli": True},
+    )
+    assert resolve_emit_say_texts(cleaned_say_text="Answer", resp=answer)[2] == ""
+
+
+def test_resolve_emit_never_fabricates_final_from_pure_thinking_with_tools():
+    resp = SimpleNamespace(
+        text="",
+        assistant_phase="final_answer",
+        meta={
+            "reasoning": "private planning",
+            "tool_calls": [{"id": "c1"}],
+            "cursor_acp": True,
+        },
+    )
+    assert resolve_emit_say_texts(cleaned_say_text="", resp=resp) == ("", "", "")
 
 
 def test_promote_trailing_reasoning_short_preamble():
@@ -1837,6 +1881,29 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output(tmp_
     assert "completed with exit code 1" in receipt["output"]
     assert long_output in receipt["output"]
     assert session._append_action_result.call_args.kwargs["ok"] is False
+
+
+@pytest.mark.parametrize("status,exit_code", [("ok", 0), ("ok", 1), ("truncated", 0)])
+def test_command_receipt_does_not_echo_script_as_output(tmp_path, status, exit_code):
+    command = "python3 - <<'PY'\nprint('=== RESULT ===')\n" + "# padding\n" * 300 + "PY"
+    output = "=== RESULT ===\nactual result\n"
+    act = PilotAction(kind="run_command", command=command)
+    session = _durable_command_session(
+        tmp_path,
+        _do_run_command=MagicMock(return_value=(True, "success", {
+            "output": output, "exit_code": exit_code, "status": status,
+        })),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "receipt-id", True, []))
+    assert events[0].data["command"] == command
+    receipt = session._append_action_result.call_args[0][2]
+    if status != "ok" or exit_code != 0:
+        receipt = json.loads(receipt)["output"]
+    assert command not in receipt
+    assert receipt.count("=== RESULT ===") == 1
+    assert output in receipt
+    assert f"exit code {exit_code}" in receipt
 
 
 def test_dispatch_local_action_run_command_folds_validate_gate(tmp_path):

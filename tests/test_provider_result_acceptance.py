@@ -150,7 +150,7 @@ def test_foreground_command_call_sites_preserve_outcome(tmp_path, monkeypatch, e
     assert receipt['status'] == status
     assert receipt.get('is_error') is error
     if error is False:
-        assert receipt['content'].startswith("(run_command 'echo done' completed with exit code 0)")
+        assert receipt['content'].startswith("(run_command foreground-call completed with exit code 0)")
 
 
 @pytest.mark.parametrize('status', ['ok', 'success', 'completed', 'done', 'no_op', 'native_image'])

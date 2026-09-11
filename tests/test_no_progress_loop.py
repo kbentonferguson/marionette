@@ -328,10 +328,8 @@ def test_bare_run_implement_forces_analysis_for_audit_goal(monkeypatch):
         "harness.implement_guards.check_oversized_single_file_rewrite",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr(
-        "harness.edit_engines.select_edit_engine",
-        lambda *a, **k: "native",
-    )
+    monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+    monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
     monkeypatch.setattr(
         "harness.send_loop_dispatch._puppetmaster_available",
         lambda: False,
@@ -357,8 +355,10 @@ def test_bare_run_implement_forces_analysis_for_audit_goal(monkeypatch):
     role = kw.get("role") or (args[2] if len(args) > 2 else None)
     assert role == "analysis"
     submit_args = session._submit_swarm.call_args.args
-    # (fn, job_id, goal, adapter, repo, expects_diff)
-    assert submit_args[-1] is False
+    # (fn, job_id, goal, adapter, repo, expects_diff, agentic_pin, strict_adapter)
+    assert submit_args[4] == "/tmp/repo"
+    assert submit_args[5] is False
+    assert submit_args[7] is True
 
 
 def test_failed_objective_resume_cap_suppresses_pilot_resume():
