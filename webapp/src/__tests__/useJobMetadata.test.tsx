@@ -17,6 +17,12 @@ beforeEach(() => {
 });
 afterEach(() => { store.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it('selectLocalIfCurrent refuses a mismatched incarnation without throwing', () => {
+  expect(store.selectLocalIfCurrent({ job_id: 'local-z-zero', incarnation: 'replacement' })).toBe(false);
+  expect(store.getSnapshot().localDetail).toBeNull();
+  expect(() => store.selectLocal({ job_id: 'local-z-zero', incarnation: 'replacement' })).toThrowError('invalid_request');
+});
+
 it('restores the last observation page when hopping back to a visited session', async () => {
   await open();
   await store.advance();

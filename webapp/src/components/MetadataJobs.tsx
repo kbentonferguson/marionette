@@ -93,8 +93,7 @@ function expertAsLocalTask(task: ExpertTask, status: string) {
 export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal }: {
   job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
 }) {
-  const { state } = useSharedJobMetadata();
-  const identity = JSON.stringify([job.metadata_key, job.local_ref, state.contextEpoch]);
+  const identity = job.local_ref ? JSON.stringify(['local', job.local_ref.job_id]) : (job.metadata_key ?? job.id);
   return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} />;
 }
 function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
@@ -113,7 +112,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 1000);
+    const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 10000);
     return () => clearInterval(clock);
   }, []);
   const local = job.local_ref;
@@ -135,7 +134,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const inspect = (lane: LocalDetail['lane'] = 'actions') => {
     revealInspection();
     if (state.view.kind !== 'view') return;
-    if (local) { if (!native || native.lane !== lane) store.selectLocal(local, lane); void store.readLocalDetail(); }
+    if (local) { if (!native || native.lane !== lane) store.selectLocalIfCurrent(local, lane); void store.readLocalDetail(); }
     else if (selectedPM) {
       initialPMRead.current = true;
       if (state.detail.kind !== 'selected' || metadataSelectionKey(state.detail.selection) !== metadataSelectionKey(selectedPM)) store.select(selectedPM);
@@ -149,20 +148,26 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     void store.readDetail();
   }, [inspectionOpen, local, selectedPM, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
-  useEffect(() => {
-    if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working || state.view.kind !== 'view') return;
-    if (local.incarnation !== state.view.view.local?.incarnation) return;
-    initialNativeRead.current = true;
-    store.selectLocal(local, 'tasks');
-    void store.readLocalDetail();
-  }, [local, nativeSummary?.kind, state.working, state.view, store]);
   const initialRoutingRead = useRef(false);
   useEffect(() => {
-    if (initialRoutingRead.current || !local || !native?.tasks || state.working) return;
-    initialRoutingRead.current = true;
-    store.selectLocal(local, 'routing');
+    initialNativeRead.current = false;
+    initialRoutingRead.current = false;
+    setStopping(false);
+    setStopAcknowledged(false);
+    setNotice('');
+  }, [local?.incarnation]);
+  useEffect(() => {
+    if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working) return;
+    if (!store.selectLocalIfCurrent(local, 'tasks')) return;
+    initialNativeRead.current = true;
     void store.readLocalDetail();
-  }, [local, native?.tasks, state.working, store]);
+  }, [local, nativeSummary?.kind, state.working, state.view, store]);
+  useEffect(() => {
+    if (initialRoutingRead.current || !local || !native?.tasks || state.working) return;
+    if (!store.selectLocalIfCurrent(local, 'routing')) return;
+    initialRoutingRead.current = true;
+    void store.readLocalDetail();
+  }, [local, native?.tasks, state.working, state.view, store]);
   const attemptedNavigation = useRef<SwarmNavigationTarget | null>(null);
   useEffect(() => {
     if (!navigation?.artifactId || navigation.kind !== 'pm' || !selectedPM || state.working
@@ -183,7 +188,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const nativeSelection = local && view.kind === 'view' ? selectNativeMetadataControl(local, view.context) : null;
   const nativeStop = async () => {
     if (!local || !nativeSelection || view.kind !== 'view' || state.working || stopping || job.session_id !== view.context.session_id) return;
-    if (!native) store.selectLocal(local);
+    if (!native) store.selectLocalIfCurrent(local);
     const captured = store.getSnapshot();
     const current = () => mounted.current && store.getSnapshot().contextEpoch === captured.contextEpoch;
     setStopping(true);
@@ -566,7 +571,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   }
   return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
     <div className="shrink-0 flex items-center justify-between h-[var(--shell-rail-row-height)] px-2 border-b border-[var(--shell-panel-border)] select-none">
-      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
+      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-normal text-faint font-medium">
         <span className="relative inline-flex">
           <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
           {anyRunning ? <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse" title={`${runningCount} running`} aria-hidden /> : null}

@@ -35,6 +35,76 @@ def test_preview_pin_uses_explicit_pin_policy(monkeypatch):
     assert out["model_id"] == "pinned-model"
 
 
+def test_preview_stamps_settings_allowlist_and_rejects_mimo(monkeypatch):
+    """Tracker forecast used the unconstrained catalog; MIMO won on price."""
+    captured = {}
+
+    class FakeModel:
+        id = "agentic/deepseek-v4-flash"
+
+    decision = SimpleNamespace(
+        model=FakeModel(),
+        estimated_cost_usd=0.0028,
+        estimated_tokens_in=1000,
+        estimated_tokens_out=200,
+        reason="allowlist pick",
+        rejected=[],
+        baseline_cost_usd=0.01,
+        baseline_model_id="agentic/google/gemini-3.8-flash",
+        policy="balanced",
+    )
+
+    def fake_route(task, specs, policy="balanced"):
+        captured["allowed"] = set(getattr(task, "allowed_model_ids", None) or [])
+        captured["policy"] = policy
+        return decision
+
+    monkeypatch.delenv("HARNESS_IMPLEMENT_PROVIDER", raising=False)
+    monkeypatch.delenv("HARNESS_IMPLEMENT_MODEL", raising=False)
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        lambda: {
+            "allowed_model_ids": [
+                "agentic/deepseek-v4-flash",
+                "agentic/google/gemini-3.8-flash",
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.default_registry_path",
+        lambda: "/tmp/unused-registry",
+    )
+    monkeypatch.setattr(
+        "harness.registry_wizard.get_models_file_path",
+        lambda: "/tmp/unused-registry",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.load_registry",
+        lambda _p: [
+            SimpleNamespace(id="agentic/mimo-v2-5-pro"),
+            SimpleNamespace(id="agentic/deepseek-v4-flash"),
+        ],
+    )
+    monkeypatch.setattr(
+        "puppetmaster.platform_lock.active_allowlist",
+        lambda: None,
+    )
+    monkeypatch.setattr("puppetmaster.router.route_task", fake_route)
+    monkeypatch.setattr(
+        "pmharness.bridge._router_supports_max_capability",
+        lambda: True,
+        raising=False,
+    )
+
+    out = preview_agentic_route("assess operational readiness", role="explore")
+    assert captured["allowed"]
+    assert not any("mimo" in item.lower() for item in captured["allowed"])
+    assert "agentic/deepseek-v4-flash" in captured["allowed"]
+    assert out["model_id"] == "agentic/deepseek-v4-flash"
+    assert "mimo" not in str(out.get("artifact") or {}).lower()
+
+
 def test_preview_router_decision_forwards_policy_and_estimated_basis(monkeypatch):
     monkeypatch.delenv("HARNESS_IMPLEMENT_PROVIDER", raising=False)
     monkeypatch.delenv("HARNESS_IMPLEMENT_MODEL", raising=False)

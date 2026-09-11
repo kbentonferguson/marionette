@@ -22,6 +22,7 @@ import {
   taskProfileTitle,
   type TaskProfileChip,
 } from "../lib/taskProfileChrome";
+import { toastDurationMs } from "../lib/harnessToast";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
 
@@ -161,7 +162,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       const snapshot = next;
       window.setTimeout(
         () => setToast((cur) => (cur?.message === snapshot.message ? null : cur)),
-        4000,
+        toastDurationMs(snapshot.message),
       );
     };
     window.addEventListener("harness-toast", onToast);

@@ -1209,6 +1209,54 @@ def test_opencode_go_explicit_enabled_ox_stays_when_live(monkeypatch, tmp_path):
     assert "agentic/deepseek-v4-flash" not in ids
 
 
+def test_opencode_go_live_mimo_stays_out_unless_explicitly_enabled(
+    monkeypatch, tmp_path,
+):
+    """Curated∩live still lists MIMO; worker sync must not hire it unsolicited."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-go" if provider.name == "opencode-go" else None
+
+    live = ["mimo-v2.5-pro", "mimo-v2-5-pro", "deepseek-v4-flash"]
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert not any("mimo" in mid.lower() for mid in ids)
+    assert "agentic/deepseek-v4-flash" in ids
+
+
+def test_opencode_go_explicit_enabled_mimo_stays(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-go" if provider.name == "opencode-go" else None
+
+    live = ["mimo-v2.5-pro", "deepseek-v4-flash"]
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch(
+             "harness.auto_registry._enabled_picker_models",
+             lambda name: ["mimo-v2.5-pro"] if name == "opencode-go" else [],
+         ):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert any("mimo" in mid.lower() for mid in ids)
+    assert "agentic/deepseek-v4-flash" not in ids
+
+
 def test_opencode_zen_live_non_curated_ox_does_not_restore_stale_curated(
     monkeypatch, tmp_path,
 ):

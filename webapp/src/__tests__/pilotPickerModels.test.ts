@@ -6,6 +6,7 @@ import {
   modelLabelOf,
   organizePilotModels,
   pinCurrentPilot,
+  providerLabelOf,
   providerOf,
 } from "../lib/pilotPickerModels";
 
@@ -21,6 +22,15 @@ describe("providerOf", () => {
   it("returns the prefix before ':'", () => {
     expect(providerOf("anthropic:claude-opus-4-8")).toBe("anthropic");
     expect(providerOf("stub-oracle")).toBe("stub-oracle");
+  });
+});
+
+describe("providerLabelOf", () => {
+  it("uses product names instead of raw slugs", () => {
+    expect(providerLabelOf("opencode-go")).toBe("OpenCode Go");
+    expect(providerLabelOf("openai-codex")).toBe("Codex");
+    expect(providerLabelOf("openrouter")).toBe("OpenRouter");
+    expect(providerLabelOf("local")).toBe("Local");
   });
 });
 

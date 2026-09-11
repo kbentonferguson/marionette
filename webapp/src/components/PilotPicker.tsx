@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { fallbackPilot, modelLabelOf, organizePilotModels } from "../lib/pilotPickerModels";
+import { fallbackPilot, modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
@@ -149,7 +149,7 @@ export default function PilotPicker({ config }: {
           isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
         }`}
       >
-        <span className="truncate max-w-[200px]" title={m}>{label}</span>
+        <span className="min-w-0 flex-1 leading-snug" title={m}>{label}</span>
         {isSelected && <Check size={11} className="shrink-0 ml-2" />}
       </div>
     );
@@ -187,7 +187,7 @@ export default function PilotPicker({ config }: {
             role="dialog"
             aria-modal="true"
             aria-label="Pilot model picker"
-            className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-w-[280px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+            className="absolute left-0 bottom-full mb-1 z-50 w-[min(20rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
           >
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
               <Search size={12} className="text-faint shrink-0" />
@@ -208,8 +208,8 @@ export default function PilotPicker({ config }: {
                   {organized.current && renderRow(organized.current)}
                   {organized.groups.map((g) => (
                     <div key={g.provider}>
-                      <div className="px-3 pt-1.5 pb-0.5 text-[9.5px] uppercase tracking-wider text-faint font-semibold select-none">
-                        {g.provider}
+                      <div className="px-3 pt-1.5 pb-0.5 text-[10px] text-faint font-medium select-none">
+                        {providerLabelOf(g.provider)}
                       </div>
                       {g.items.map((m) => renderRow(m))}
                     </div>
