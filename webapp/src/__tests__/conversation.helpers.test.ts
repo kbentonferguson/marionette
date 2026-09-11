@@ -1107,7 +1107,7 @@ describe("streamBubbles module", () => {
     expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(-1);
     expect(typewriterCharsPerFrame(0, false)).toBe(0);
     expect(typewriterCharsPerFrame(3, false)).toBe(3);
-    expect(typewriterCharsPerFrame(40, false)).toBe(40);
+    expect(typewriterCharsPerFrame(40, false)).toBe(7);
     expect(typewriterCharsPerFrame(40, true)).toBe(40);
     expect(STREAM_PAINT_MS).toBe(33);
   });
@@ -3828,9 +3828,9 @@ describe("streamTypewriter first reveal", () => {
     const chunks: string[] = [];
     let cancelled = 0;
     startTypewriterLoop(refs, (c) => chunks.push(c), () => 3);
-    // Codex/Hermes paint: first reveal drains the arrived chunk.
-    expect(refs.typeBufRef.current).toBe("");
-    expect(chunks.join("")).toBe(text);
+    const first = typewriterCharsPerFrame(text.length, false);
+    expect(chunks.join("")).toBe(text.slice(0, first));
+    expect(refs.typeBufRef.current).toBe(text.slice(first));
     flushTypewriterBuffer(refs, (c) => chunks.push(c), () => {
       cancelled += 1;
     });
@@ -3851,16 +3851,17 @@ describe("streamTypewriter first reveal", () => {
     expect(cancelled).toBe(2);
   });
 
-  it("scheduled pump on leftover buffer drains the rest in one take", () => {
+  it("scheduled pump continues catch-up until the buffer is empty", () => {
     const text = "Hello world, this is buffered prose.";
     const refs = makeRefs(text);
     const chunks: string[] = [];
     startTypewriterLoop(refs, (c) => chunks.push(c), () => 11);
-    expect(chunks).toEqual([text]);
-    expect(refs.typeBufRef.current).toBe("");
+    const first = typewriterCharsPerFrame(text.length, false);
+    expect(chunks).toEqual([text.slice(0, first)]);
+    expect(refs.typeBufRef.current).toBe(text.slice(first));
     pumpTypewriterFrame(refs, (c) => chunks.push(c), () => 12);
-    expect(chunks).toEqual([text]);
-    expect(refs.typeBufRef.current).toBe("");
+    expect(chunks.join("").length).toBeGreaterThan(first);
+    expect(chunks.join("").length).toBeLessThanOrEqual(text.length);
   });
 
   it("empty-buffer pump with typeDone false reschedules without appending", () => {

@@ -265,12 +265,19 @@ export function finalizeOpenPilotBubble(items: Item[]): Item[] {
 }
 
 /**
- * Paint whatever arrived this tick. Codex and Hermes flush the queued
- * chunk in one commit — a /8 drip on top of SSE coalescing is what made
- * Kimi (and every other bursty provider) look like spurts.
- *
- * ``done`` stays in the signature so callers and tests keep a stable API.
+ * Velocity-limited reveal with catch-up. Drain-all painted provider bursts
+ * at whatever size they arrived; a fixed /8 drip made Kimi look like spurts.
+ * Small backlogs stay near a floor; large backlogs accelerate up to a cap.
+ * ``done`` flushes the remainder so the last tokens do not trail the seal.
  */
-export function typewriterCharsPerFrame(bufLen: number, _done: boolean): number {
-  return bufLen > 0 ? bufLen : 0;
+export const TYPEWRITER_MIN_CHARS = 4;
+export const TYPEWRITER_MAX_CHARS = 96;
+export const TYPEWRITER_CATCHUP_DIVISOR = 6;
+
+export function typewriterCharsPerFrame(bufLen: number, done: boolean): number {
+  if (bufLen <= 0) return 0;
+  if (done) return bufLen;
+  const catchup = Math.ceil(bufLen / TYPEWRITER_CATCHUP_DIVISOR);
+  const paced = Math.max(TYPEWRITER_MIN_CHARS, Math.min(TYPEWRITER_MAX_CHARS, catchup));
+  return Math.min(bufLen, paced);
 }

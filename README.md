@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.12` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.465, deliberately pre-1.0. Pin stays `puppetmaster-ai==1.27.12`. Opening a project with only archived sessions lands on a blank New session instead of resurrecting an archive. Swarm Tracker keeps discovering after a bad metadata page, treats an empty post-switch view as retryable, and hydrates named worker roster and routes from the bound Puppetmaster job onto the local placeholder. Compact remains compact-only. Runtime pin: `puppetmaster-ai==1.27.12`.
+> Status: v0.9.466, deliberately pre-1.0. Pin stays `puppetmaster-ai==1.27.12`. Submit pins the feed so a new prompt is not buried in the composer gap. Streaming uses velocity-limited catch-up with rAF on visible tabs and a caret on live markdown. read_file slice bounds are computed once so hash anchors cannot disagree with the header. Runtime pin: `puppetmaster-ai==1.27.12`.
 
 ## Documentation
 
