@@ -1672,17 +1672,8 @@ def execute_intent(
         #   demo (no-repo / ALLOW_DEMO only) -> built-in local substrate for eval.
         # A live repo NEVER silently falls through to demo -- that produces
         # generic placeholder findings that read as a successful audit.
-        try:
-            from harness.swarm_worker_route import resolve_product_worker_adapter
-            swarm_adapter = resolve_product_worker_adapter()
-        except Exception:
-            try:
-                from harness.swarm_adapter import resolve_bridge_swarm_adapter
-                swarm_adapter = resolve_bridge_swarm_adapter(repo_cwd=repo_cwd)
-            except Exception:
-                swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
-                if repo_cwd and swarm_adapter not in ("agentic", "openai", "cursor"):
-                    swarm_adapter = "agentic"
+        from harness.swarm_worker_route import resolve_product_worker_adapter
+        swarm_adapter = resolve_product_worker_adapter()
 
         if swarm_adapter == "cursor" and repo_cwd:
             # Platform Cursor SDK workers (CURSOR_API_KEY). Used when no agentic
@@ -1725,13 +1716,7 @@ def execute_intent(
             )
             adapter = "cursor"
         elif swarm_adapter == "agentic" and repo_cwd:
-            # Product swarm path: Settings + platform driven worker allowlist.
-            # Agentic (OpenRouter / OpenCode Go / Codex OAuth / …) stays the
-            # default primary when keyed, but Models-enabled Cursor
-            # Grok/Composer must also be reachable — never hard-lock
-            # allowed_adapters=['agentic'] when the union includes cursor.
-            # prefer_plan_billed=False whenever any API-billed agentic model
-            # is eligible so $0 plan picks do not starve OR cash models.
+            # Settings constrain exact provider/model pairs within agentic.
             _warn_if_unindexed(repo_cwd)
             from puppetmaster.workers import WorkerSpec
             try:
@@ -1741,13 +1726,15 @@ def execute_intent(
                 _allow = resolve_swarm_worker_allowlist()
             except Exception:
                 _allow = {
-                    "allowed_adapters": ["agentic"],
+                    # Resolution failures are fail-closed. Omitting the
+                    # allowlist would silently widen routing to the whole PM
+                    # catalog and violate the Settings contract.
+                    "allowed_adapters": [],
                     "prefer_plan_billed": False,
                     "primary_adapter": "agentic",
+                    "allowed_model_ids": [],
                 }
-            allowed_adapters = list(
-                _allow.get("allowed_adapters") or ["agentic"]
-            )
+            allowed_adapters = list(_allow.get("allowed_adapters") or [])
             prefer_plan_billed = bool(_allow.get("prefer_plan_billed"))
             primary_adapter = str(
                 _allow.get("primary_adapter") or "agentic"
@@ -1763,8 +1750,7 @@ def execute_intent(
             pin_fields: dict = {}
             pin_adapter = primary_adapter
             if pinned_model:
-                # Resolve against the Settings/platform worker adapter union
-                # (not agentic-only remap). Unknown pins demote to auto-route.
+                # Resolve against an exact Models-enabled live agentic row.
                 from harness.swarm_model_pin import resolve_swarm_model_pin
 
                 resolved = resolve_swarm_model_pin(
@@ -1772,8 +1758,11 @@ def execute_intent(
                 )
                 pin_fields = dict(resolved.get("pin_fields") or {})
                 if resolved.get("demoted"):
-                    pin_fields = {}
-                    pin_adapter = primary_adapter
+                    raise ValueError(
+                        str(resolved.get("reason") or (
+                            f"model pin {pinned_model!r} is unavailable"
+                        )) + ". Choose an exact Models-enabled live worker model."
+                    )
                 elif pin_fields.get("pinned_model"):
                     pin_fields["auto_route"] = False
                     pin_adapter = (
@@ -1787,9 +1776,8 @@ def execute_intent(
                     "read_only": True, "no_edit": True, "dry_run": True,
                     "cwd": repo_cwd, "prompt": intent.goal,
                     "auto_route": True,
-                    # Settings+platform union (agentic / cursor / openai),
-                    # never a hard agentic-only lock that rejects Cursor
-                    # Grok when Models toggles enable it.
+                    # Product workers are always agentic; provider/model is
+                    # selected inside that adapter.
                     "allowed_adapters": list(allowed_adapters),
                     # False whenever API-billed agentic is eligible so OR
                     # cash models are not starved by plan-billed Cursor.
@@ -1820,9 +1808,9 @@ def execute_intent(
                     "routing_policy": "balanced",
                     **_analysis_capability_payload(),
                 }
-                if allowed_model_ids and not pin_fields:
-                    # Fail-closed to Settings Models toggles. A global
-                    # intent.model pin still wins via pin_fields below.
+                if not pin_fields:
+                    # Always stamp this field, including empty, so no eligible
+                    # model cannot widen routing back to the whole catalog.
                     base_payload["allowed_model_ids"] = list(allowed_model_ids)
                 if pin_fields:
                     base_payload.update(pin_fields)

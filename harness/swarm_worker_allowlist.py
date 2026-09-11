@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-"""Settings + platform driven worker adapter allowlist for product swarms.
+"""Models-enabled allowlist for product swarms.
 
-Product bar: any Models-enabled / catalog-visible worker-capable model must be
-reachable as a swarm worker. The bridge must not hardcode ``allowed_adapters=
-['agentic']`` when Settings also enables Cursor Grok/Composer (or other
-platform-locked adapters).
+Product workers use the agentic adapter. Provider credentials and model names
+remain choices inside that adapter; they are not alternate worker adapters.
 
 Rules:
-  * Union adapters for Models-enabled (or full catalog-visible when unset)
-    worker-capable providers.
-  * Intersect with Puppetmaster platform lock when restricted.
-  * Prefer ``prefer_plan_billed=False`` whenever any API-billed agentic model
-    is eligible so OpenRouter cash models are not starved by $0 plan picks.
-  * Do not exclude Cursor when Settings enables Grok/Composer and platform
-    cursor workers are ready + unlocked.
+  * Canonicalize allowlisted IDs against the live registry.
+  * Fail closed when no exact enabled/live row exists.
 """
 
 from typing import Any, Optional
@@ -22,7 +15,7 @@ from typing import Any, Optional
 from .diag import note as _diag
 
 # Adapters Marionette can actually drive for product analysis swarms.
-_PRODUCT_WORKER_ADAPTERS = ("agentic", "cursor", "openai")
+_PRODUCT_WORKER_ADAPTERS = ("agentic",)
 
 
 def _enabled_or_visible_specs() -> list[str]:
@@ -42,6 +35,15 @@ def _enabled_or_visible_specs() -> list[str]:
             for spec in (_mv.get_enabled() or [])
             if str(spec or "").strip()
         ]
+        # Empty is meaningful when the user explicitly saved an empty
+        # selection. Only an absent setting gets the legacy available-model
+        # fallback.
+        try:
+            stored = _mv._load()
+            if isinstance(stored, dict) and "enabled" in stored:
+                return curated
+        except Exception:
+            pass
         if curated:
             # Models toggles are the only discretionary allowlist. Do not
             # union enabled_pilots() here — that function falls back to every
@@ -167,25 +169,39 @@ def adapters_from_visibility(specs: Optional[list[str]] = None) -> set[str]:
 def allowed_model_ids_from_specs(
     specs: Optional[list[str]] = None,
 ) -> list[str]:
-    """Map Models-enabled specs to Puppetmaster ``allowed_model_ids``.
+    """Return only exact IDs present in the live agentic registry.
 
-    Uses the same alias expansion as ``run_swarm`` pins so
-    ``openai-codex:gpt-5.6-luna`` matches ``agentic/openai-codex/gpt-5.6-luna``.
-    An empty result must be omitted from the worker payload (empty array
-    fails closed in Puppetmaster).
+    Provider and model strings are opaque. Matching is deliberately against
+    registry payload fields, not aliases or sibling provider IDs.
     """
-    from .swarm_model_pin import pin_candidates
-
+    from .swarm_model_pin import _usable_registry_rows
     rows = list(specs) if specs is not None else _enabled_or_visible_specs()
-    out = []
-    seen = set()
+    # An explicit specs argument is the caller's Settings snapshot and must
+    # override the process-global snapshot used by normal dispatch/tests.
+    registry = _usable_registry_rows(adapters={"agentic"}, enabled_specs=rows)
+    by_pair: dict[tuple[str, str], str] = {}
+    for row in registry:
+        defaults = row.get("payload_defaults")
+        if not isinstance(defaults, dict):
+            continue
+        provider = str(defaults.get("provider") or "").strip().lower()
+        model = str(row.get("adapter_model_name") or "").strip()
+        if not model:
+            # Legacy rows used payload_defaults.model before the adapter field
+            # became mandatory; retain compatibility only for that same row.
+            model = str(defaults.get("model") or "").strip()
+        model_id = str(row.get("id") or "").strip()
+        if provider and model and model_id:
+            by_pair.setdefault((provider, model.lower()), model_id)
+    out: list[str] = []
+    seen: set[str] = set()
     for spec in rows:
-        for cand in pin_candidates(spec):
-            key = cand.strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            out.append(cand.strip())
+        provider = _provider_of_spec(spec)
+        model = _model_of_spec(spec)
+        hit = by_pair.get((provider, model.strip().lower()))
+        if hit and hit.lower() not in seen:
+            seen.add(hit.lower())
+            out.append(hit)
     return out
 
 
@@ -202,81 +218,26 @@ def resolve_swarm_worker_allowlist(
         "primary_adapter": str,         # WorkerSpec.adapter default
         "visibility_adapters": list[str],
         "platform_lock": list[str] | None,
-        "allowed_model_ids": list[str], # empty => do not constrain catalog
+        "allowed_model_ids": list[str], # always explicit; empty fails closed
       }
     """
-    visibility = adapters_from_visibility(specs)
-
-    # Live credentials also enlarge the union: a keyed agentic provider must
-    # stay eligible even when Models curation is empty/stale, and CURSOR_API_KEY
-    # keeps platform cursor reachable when Settings enabled Grok/Composer OR
-    # when visibility already selected cursor.
-    if _agentic_eligible():
-        visibility.add("agentic")
-    cursor_ready = _cursor_platform_ready()
-    if cursor_ready and ("cursor" in visibility or _cursor_intent_from_specs(specs)):
-        visibility.add("cursor")
-
-    # Fallback when visibility yielded nothing but credentials exist.
-    if not visibility:
-        if _agentic_eligible():
-            visibility.add("agentic")
-        elif cursor_ready:
-            visibility.add("cursor")
-
+    allowed_ids = allowed_model_ids_from_specs(specs)
+    visibility = {"agentic"} if (_agentic_eligible() or allowed_ids) else set()
+    allowed = {"agentic"} if visibility else set()
     lock = _platform_locked_adapters()
-    if lock is None:
-        allowed = {a for a in visibility if a in _PRODUCT_WORKER_ADAPTERS}
-    else:
-        allowed = {
-            a for a in visibility
-            if a in _PRODUCT_WORKER_ADAPTERS and a in lock
-        }
-        # Platform may still allow openai/codex under alternate names.
-        if "codex" in lock and "openai" in visibility:
-            allowed.add("openai")
-
-    # Never return an empty allowlist when we know a real adapter is ready —
-    # fail open to agentic (or cursor-only fallback) so routing can still run.
-    if not allowed:
-        if _agentic_eligible() and (lock is None or "agentic" in lock):
-            allowed = {"agentic"}
-        elif cursor_ready and (lock is None or "cursor" in lock):
-            allowed = {"cursor"}
-        elif lock:
-            allowed = {a for a in _PRODUCT_WORKER_ADAPTERS if a in lock}
-        else:
-            allowed = {"agentic"}
-
-    ordered = [a for a in _PRODUCT_WORKER_ADAPTERS if a in allowed]
-    for a in sorted(allowed):
-        if a not in ordered:
-            ordered.append(a)
-
-    has_agentic = "agentic" in allowed
-    # API-billed agentic eligible → never prefer $0 plan-billed Cursor first.
-    prefer_plan = False if has_agentic else ("cursor" in allowed)
-
-    if has_agentic:
-        primary = "agentic"
-    elif "cursor" in allowed:
-        primary = "cursor"
-    elif "openai" in allowed:
-        primary = "openai"
-    else:
-        primary = ordered[0]
+    if lock is not None and "agentic" not in lock:
+        allowed = set()
+    ordered = ["agentic"] if allowed else []
 
     return {
         "allowed_adapters": ordered,
-        "prefer_plan_billed": prefer_plan,
-        "primary_adapter": primary,
+        "prefer_plan_billed": False,
+        "primary_adapter": "agentic",
         "visibility_adapters": sorted(visibility),
         "platform_lock": sorted(lock) if lock is not None else None,
-        # Empty means "do not constrain the live catalog" (two-tier among
-        # keyed rows). Non-empty is fail-closed to Models toggles so a
-        # disabled gpt-5-3-codex cannot win auto-route while Luna is the
-        # only enabled picker row.
-        "allowed_model_ids": allowed_model_ids_from_specs(specs),
+        # Always present, including empty, so an empty eligible set fails
+        # closed instead of removing the router constraint.
+        "allowed_model_ids": allowed_ids,
     }
 
 

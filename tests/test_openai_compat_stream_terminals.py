@@ -73,6 +73,28 @@ def test_clean_stop_succeeds(monkeypatch):
     assert resp.meta["malformed_sse_chunks"] == 0
 
 
+@pytest.mark.parametrize("answer,with_tool", [("", True), ("Answer", False), ("", False)])
+def test_deepseek_sse_reasoning_never_becomes_spoken_answer(monkeypatch, answer, with_tool):
+    from harness.send_loop_phases import resolve_emit_say_texts
+
+    reasoning = "fixture private planning"
+    delta = {"content": answer}
+    if with_tool:
+        delta["tool_calls"] = [{"index": 0, "id": "call-1", "type": "function", "function": {
+            "name": "read_file", "arguments": '{"path":"fixture.txt"}',
+        }}]
+    seen = []
+    resp = _run_stream(monkeypatch, _driver(model="deepseek-flash"), [
+        _data({"choices": [{"delta": {"reasoning_content": reasoning}}]}),
+        _data({"choices": [{"delta": delta, "finish_reason": "tool_calls" if with_tool else "stop"}]}),
+        b"data: [DONE]\n",
+    ], on_reasoning_delta=seen.append)
+    assert "".join(seen) == reasoning
+    assert resolve_emit_say_texts(cleaned_say_text=resp.text or "", resp=resp) == (answer, "", "")
+    if with_tool:
+        assert resp.meta["tool_calls"][0]["function"]["name"] == "read_file"
+
+
 def test_duplicate_content_snapshot_does_not_double_text(monkeypatch):
     phrase = "Received—single response."
     seen = []

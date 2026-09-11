@@ -79,7 +79,7 @@ def test_await_and_apply_job_characterization(tmp_path):
     assert file_path.read_text() == "Hello World\nHello New World\n"
 
 
-def test_queue_drains_while_swarm_pending(tmp_path):
+def test_queue_drains_while_swarm_pending(tmp_path, monkeypatch):
     # Set up a git repo in tmp_path
     subprocess.run(["git", "init"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
@@ -88,6 +88,8 @@ def test_queue_drains_while_swarm_pending(tmp_path):
     cfg = HarnessConfig()
     cfg.repo = str(tmp_path)
     session = ConversationalSession(cfg)
+    monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+    monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
     
     # Mock puppetmaster being available
     with patch("harness.send_loop_dispatch._puppetmaster_available", return_value=True), \
@@ -97,7 +99,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         first_resp = MagicMock()
         first_resp.text = json.dumps({
             "say": "I will run implement now.",
-            "actions": [{"kind": "run_implement", "goal": "Apply fix to hello.txt", "adapter": "cursor"}]
+            "actions": [{"kind": "run_implement", "goal": "Apply fix to hello.txt", "adapter": "agentic"}]
         })
         first_resp.meta = {}
         first_resp.error = None
@@ -143,6 +145,15 @@ def test_queue_drains_while_swarm_pending(tmp_path):
             }
         
         session._await_and_apply_job = mock_await_and_apply
+
+        # Agentic local jobs enter the same background pool; hold the worker
+        # boundary so the second user turn can run while the first is pending.
+        from harness.worker import WorkerResult
+        def blocked_worker(*args, **kwargs):
+            block_event.wait()
+            return WorkerResult(ok=True, patch="", files_changed=[], summary="completed")
+
+        monkeypatch.setattr(session, "_run_edit_worker_bounded", blocked_worker)
         
         with patch("subprocess.Popen", return_value=mock_proc):
             events_one = list(session.send("turn one"))
@@ -150,7 +161,8 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         # Assert a swarm_pending event was emitted
         pending_events = [e for e in events_one if e.kind == "swarm_pending"]
         assert len(pending_events) == 1
-        assert pending_events[0].data["job_ids"] == ["job_123456789012"]
+        assert len(pending_events[0].data["job_ids"]) == 1
+        assert pending_events[0].data["job_ids"][0].startswith("local-")
         assert pending_events[0].data["objective"] == "Apply fix to hello.txt"
         
         # After send returns, self._busy is NOT held!
@@ -175,7 +187,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         drain_events = list(session.drain_swarm_results())
         swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
         assert len(swarm_results) == 1
-        assert swarm_results[0].data["job_id"] == "job_123456789012"
+        assert swarm_results[0].data["job_id"] == pending_events[0].data["job_ids"][0]
         
         # Check that history has exactly one follow-up assistant message for the result.
         # Model-visible drain is the complete delivery receipt; full summary stays on
@@ -345,4 +357,3 @@ def test_api_session_state_endpoint():
         assert data["pending_swarms"] is False
     finally:
         httpd.shutdown()
-

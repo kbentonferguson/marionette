@@ -789,6 +789,27 @@ def test_agentic_payload_stamps_settings_allowlist_not_glm(monkeypatch):
             ],
         )
         monkeypatch.setattr(
+            "harness.swarm_model_pin._registry_rows",
+            lambda **_: [
+                {
+                    "id": "agentic/openai-codex/gpt-5.6-luna",
+                    "adapter": "agentic",
+                    "adapter_model_name": "gpt-5.6-luna",
+                    "payload_defaults": {"provider": "openai-codex"},
+                },
+                {
+                    "id": "agentic/google/gemini-3.8-flash",
+                    "adapter": "agentic",
+                    "adapter_model_name": "google/gemini-3.8-flash",
+                    "payload_defaults": {"provider": "openrouter"},
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            "harness.auto_registry.keyed_agentic_providers",
+            lambda: {"openai-codex", "openrouter"},
+        )
+        monkeypatch.setattr(
             "harness.edit_engines.finalize_worktree_patch",
             lambda _wt: ("diff content", ["test.txt"]),
         )
@@ -826,6 +847,22 @@ def test_agentic_payload_token_budget_from_env(monkeypatch):
         assert captured[0]["token_budget"] == 77777
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_settings_allowlist_resolution_failure_fails_closed(monkeypatch):
+    from harness.edit_engines import _stamp_settings_model_allowlist
+
+    def explode():
+        raise RuntimeError("allowlist unavailable")
+
+    monkeypatch.setattr(
+        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+        explode,
+    )
+    payload = _stamp_settings_model_allowlist({"auto_route": True})
+
+    assert payload["allowed_adapters"] == ["agentic"]
+    assert payload["allowed_model_ids"] == []
 
 
 def test_agentic_edit_stamps_routed_model_from_routing_artifact(monkeypatch):

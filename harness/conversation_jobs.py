@@ -53,6 +53,15 @@ _EMPTY_WORKTREE_MARKERS = (
     "worker produced no changes",
 )
 
+_BACKGROUND_RESUME_CONTROL = (
+    "[Host control: background-job completion notice; not user input] "
+    "The latest real user request remains authoritative. Use only newly "
+    "completed job evidence that is relevant to that request; otherwise "
+    "continue the latest request without reviving the job's superseded "
+    "objective. Do not repeat a prior final summary or report unrelated "
+    "historical worker results."
+)
+
 
 def _non_generic_failure_reason(*candidates) -> str:
     """Prefer a specific reason over the generic incomplete-tasks string."""
@@ -1933,6 +1942,7 @@ class ConversationJobsMixin:
                     def _fail_resume(job_id: str, err: str) -> str:
                         if is_preflight_worker_error(err):
                             return (
+                                f"{_BACKGROUND_RESUME_CONTROL}\n"
                                 f"[background job {job_id} FAILED before work started] "
                                 f"Setup/preflight error — no patch was attempted: {err}. "
                                 "Tell the user clearly. Prefer Open Project / pass "
@@ -1941,6 +1951,7 @@ class ConversationJobsMixin:
                                 "claim a patch failed to land."
                             )
                         return (
+                            f"{_BACKGROUND_RESUME_CONTROL}\n"
                             f"[background job {job_id} FAILED] The swarm result above "
                             "did NOT land a patch. Report this failure to the user "
                             "clearly; do not pretend the patch was applied. Decide "
@@ -1963,6 +1974,7 @@ class ConversationJobsMixin:
                             resume_text = _fail_resume(job_id, err)
                         else:
                             resume_text = (
+                                f"{_BACKGROUND_RESUME_CONTROL}\n"
                                 f"[background job {job_id} finished] The result above is now "
                                 "available. Report the outcome to the user concisely and take "
                                 "the appropriate next step (validate, run tests, apply/fix, or "
@@ -1981,6 +1993,7 @@ class ConversationJobsMixin:
                                 else:
                                     fail_bits.append(jid)
                             resume_text = (
+                                f"{_BACKGROUND_RESUME_CONTROL}\n"
                                 f"[background jobs {ids} finished; FAILED: "
                                 f"{', '.join(fail_bits)}] "
                                 "One or more swarm results above FAILED. Report "
@@ -1991,6 +2004,7 @@ class ConversationJobsMixin:
                             )
                         else:
                             resume_text = (
+                                f"{_BACKGROUND_RESUME_CONTROL}\n"
                                 f"[background jobs {ids} finished] The results above are now "
                                 "available. Report the outcomes to the user concisely and take "
                                 "the appropriate next step (validate, run tests, apply/fix, or "
@@ -2026,12 +2040,14 @@ class ConversationJobsMixin:
                                     from harness.implement_guards import is_preflight_worker_error
                                     if is_preflight_worker_error(err):
                                         resume_text = (
+                                            f"{_BACKGROUND_RESUME_CONTROL}\n"
                                             f"[background job {job_id} FAILED before work started] "
                                             f"Setup/preflight error — no patch was attempted: {err}. "
                                             "Tell the user clearly; do not claim a patch failed to land."
                                         )
                                     else:
                                         resume_text = (
+                                            f"{_BACKGROUND_RESUME_CONTROL}\n"
                                             f"[background job {job_id} FAILED] The swarm result above "
                                             "did NOT land a patch. Report this failure to the user "
                                             "clearly; do not pretend the patch was applied. Decide "
@@ -2040,6 +2056,7 @@ class ConversationJobsMixin:
                                         )
                                 except Exception:
                                     resume_text = (
+                                        f"{_BACKGROUND_RESUME_CONTROL}\n"
                                         f"[background job {job_id} FAILED] The swarm result above "
                                         "did NOT land a patch. Report this failure to the user "
                                         "clearly; do not pretend the patch was applied. Decide "
@@ -2048,6 +2065,7 @@ class ConversationJobsMixin:
                                     )
                             else:
                                 resume_text = (
+                                    f"{_BACKGROUND_RESUME_CONTROL}\n"
                                     f"[background job {job_id} finished] The result above is now "
                                     "available. Report the outcome to the user concisely and take "
                                     "the appropriate next step (validate, run tests, apply/fix, or "

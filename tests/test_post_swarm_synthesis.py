@@ -322,10 +322,10 @@ def test_streamed_answer_does_not_get_a_second_synthesis(monkeypatch):
     assert events[-1].kind == "assistant_done"
 
 
-def test_reasoning_only_post_swarm_synthesis_is_promoted_before_done(monkeypatch):
+def test_cursor_reasoning_only_post_swarm_synthesis_is_promoted_before_done(monkeypatch):
     def reasoning_only(**kwargs: Any) -> DriverResponse:
         kwargs["on_reasoning_delta"]("The audit found one issue.")
-        return DriverResponse(text="")
+        return DriverResponse(text="", meta={"cursor_cli": True})
 
     pilot = _SequencePilot([
         _pilot_envelope(actions=[{"kind": "run_swarm", "goal": "audit findings"}]),

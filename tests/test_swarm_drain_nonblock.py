@@ -136,6 +136,27 @@ def test_drain_injects_pilot_resume_continuation():
     assert "without waiting for the user to ask" in resume[0]["content"]
 
 
+def test_drain_marks_completion_as_control_and_preserves_latest_user_priority():
+    """A late result must not turn an older worker objective into the new ask."""
+    s = _session()
+    latest_request = "Is the linked repo useful for this question?"
+    s._history.append({"role": "user", "content": latest_request})
+    s._history.append({"role": "assistant", "content": "I am checking that."})
+    s._swarm_results.put(_queued_result("old-job", "implement the superseded plan"))
+
+    events = list(s.drain_swarm_results())
+
+    assert any(event.kind == "pilot_resume" for event in events)
+    assert latest_request in s._history[1]["content"]
+    continuation = s._history[-1]
+    assert continuation["role"] == "user"
+    assert "[Host control: background-job completion notice; not user input]" in continuation["content"]
+    assert "latest real user request remains authoritative" in continuation["content"]
+    assert "only newly completed job evidence that is relevant" in continuation["content"]
+    assert "without reviving" in continuation["content"]
+    assert "do not repeat a prior final summary or report unrelated historical worker results" in continuation["content"].lower()
+
+
 def test_drain_coalesces_multiple_results_to_one_pilot_resume():
     """Three queued results emit per-job swarm_result badges but exactly one
     pilot_resume and one merged user continuation naming all finished job ids."""

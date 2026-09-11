@@ -874,7 +874,7 @@ def _coerce_actions(raw_actions) -> list:
 def _run_swarm_model_pin_description() -> str:
     """Tool-schema text for run_swarm.model, including live agentic catalog."""
     base = (
-        "Optional worker model pin (agentic registry id or adapter model name). "
+        "Optional worker model pin (canonical registry ID or exact provider:model). "
         "Pass it when the user names a swarm worker model. Omitting auto-routes "
         "only among Models-enabled workers, not the full agentic catalog. "
         "Prompt text alone does not pin a model. "
@@ -885,8 +885,8 @@ def _run_swarm_model_pin_description() -> str:
         return base + swarm_model_pin_hint()
     except Exception:
         return base + (
-            "Omit model to auto-route among Models-enabled workers. Session "
-            "pilot ids remap when a matching worker row exists."
+            "Omit model for routing among enabled, available agentic models. "
+            "Unavailable explicit pins fail without substitution."
         )
 
 
@@ -1680,7 +1680,7 @@ def build_tools_schema(
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "The coding objective / task description to implement"},
-                        "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."},
+                        "adapter": {"type": "string", "enum": ["agentic"], "description": "Optional adapter; the only supported value is 'agentic'. Omit it for normal routing among enabled provider/model pairs."},
                         "model": {"type": "string", "description": "Optional strict agentic worker model pin (registry id or provider/model, for example openrouter/stealth/ox-alpha). A model pin implies adapter=agentic, never falls back, and must be omitted for normal auto-routing."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (expects a patch; default) or 'analysis'/'review' (read-only report; empty diff is success)."},
                         "reasoning_effort": _worker_reasoning_effort_schema(),
@@ -1716,7 +1716,7 @@ def build_tools_schema(
                                 "Example: [\"Fix the flaky login test\", \"Update CONTRIBUTING.md setup steps\"]."
                             ),
                         },
-                        "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
+                        "adapter": {"type": "string", "enum": ["agentic"], "description": "Optional adapter; the only supported value is 'agentic'. Omit it for normal routing among enabled provider/model pairs."},
                         "model": {"type": "string", "description": "Optional strict agentic model pin shared by every child goal (registry id or provider/model). Implies adapter=agentic and disables fallback/auto-substitution."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
                         "reasoning_effort": _worker_reasoning_effort_schema(),
@@ -2825,8 +2825,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
 - `todo`: nested phased checklist for multi-step work. `init` a `{list:[{phase, items}]}` tree, then `start` / `done` / `append` / `block` / `view`. Address tasks by their full content text. One in_progress task at a time; the result names Next. Do not restate the whole plan in prose.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
-- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; session pilot ids (openai-codex:…, cursor/…, codex/…) remap to matching worker rows when present. Unknown pins demote to auto-route; they do not fail the swarm. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
-- `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
+- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; use an exact enabled provider:model pair or canonical registry ID. An unavailable explicit pin fails; it never authorizes choosing a different model. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
+- `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. The only worker adapter is `agentic`; omit `adapter` or set it to `agentic`. Providers and models are selected within that adapter from enabled, available pairs. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
 - Worker `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) on `run_swarm` / `run_implement` / `run_parallel` pins that one dispatch. Omit it to use Settings worker reasoning (factory medium). This is not the chat-pilot picker.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
@@ -2883,7 +2883,7 @@ TINY / STATIC WORKSPACE AFTER IMPLEMENT (mandatory): After a successful implemen
 
 NO DUPLICATE IMPLEMENT SWARMS (mandatory): One objective gets ONE in-flight implement/parallel worker. Do NOT emit two run_implement tool calls in the same turn for the same work, do NOT re-dispatch the same change while its worker is still running, and do NOT fan out multiple workers that edit the SAME files -- the first patch applies and every overlapping one then fails with "PATCH DID NOT APPLY" because the files already moved. Decompose parallel waves into DISJOINT file sets. When a "[background job ... finished]" continuation arrives you are already being resumed automatically to handle it -- assess it, do not fire a redundant copy.
 
-ADAPTERS FOLLOW THE LIVE PLATFORM LOCK (mandatory): Each turn's system prompt lists ACTIVE IMPLEMENT PLATFORMS. Omit `adapter` on run_implement/run_parallel unless you need a listed platform. Never request a disabled adapter (especially cursor when it is off) -- the harness remaps it, but requesting it wastes a turn.
+PRODUCT WORKER ROUTING (mandatory): run_swarm, run_implement, and run_parallel use only the agentic adapter. Omit `adapter` or pass `agentic`. Codex OAuth, OpenRouter, and OpenCode Go are providers beneath it. Auto-routing stays within enabled, available provider/model pairs; unsupported adapters and unavailable explicit pins fail without substitution.
 
 WHEN A PATCH DID NOT APPLY: If a result says "PATCH DID NOT APPLY", the stale diff is dead -- never re-apply or re-dispatch the identical change. The files moved (an overlapping edit landed, or the base shifted). Re-derive the change against the CURRENT file contents: read the target file(s) as they are now, confirm whether the intended change is already present (if so, report it as done), and only if it is genuinely missing dispatch a fresh run_implement scoped to the current state.
 

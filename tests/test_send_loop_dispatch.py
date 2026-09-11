@@ -284,119 +284,47 @@ def test_dispatch_implement_requires_workspace():
     session._append_action_result.assert_called_once()
 
 
-def test_dispatch_implement_keeps_target_repo_for_patch_landing(tmp_path, monkeypatch):
+def _check_agentic_target_repo(kind, tmp_path, monkeypatch):
     import subprocess
     import harness.send_loop_dispatch as dispatch
 
     target = tmp_path / "terraform"
     subprocess.run(["git", "init", str(target)], check=True, capture_output=True)
-    act = PilotAction(
-        kind="run_implement", goal="edit terraform", repo=str(target),
-        adapter="codex",
-    )
+    session = ConversationalSession(HarnessConfig(
+        repo=str(tmp_path), driver="stub-oracle-v2", state_dir=str(tmp_path / "state"),
+    ))
     submit = MagicMock(return_value=True)
     background = MagicMock()
-    session = SimpleNamespace(
-        config=SimpleNamespace(repo=str(tmp_path), driver="test"),
-        _session_job_ids=[],
-        _append_action_result=MagicMock(),
-        _validate_target_repo=MagicMock(return_value=(str(target), "")),
-        _resolve_requested_implement_adapter=MagicMock(return_value=("codex", "")),
-        _external_adapter_available=MagicMock(return_value=True),
-        _claim_objective=MagicMock(return_value=True),
-        _release_objective=MagicMock(),
-        _submit_swarm=submit,
-        _run_swarm_background=background,
-        _job_dispatch_label_args=MagicMock(return_value=[]),
-        _answer_remaining_tool_calls=MagicMock(return_value=iter(())),
-    )
-    proc = SimpleNamespace(
-        stdout=iter(["started job_abcdef123456\n"]),
-        wait=MagicMock(return_value=0),
-    )
-    monkeypatch.setattr(dispatch, "_puppetmaster_available", lambda: True)
-    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda _repo: None)
-    monkeypatch.setattr(dispatch.subprocess, "Popen", MagicMock(return_value=proc))
-    monkeypatch.setattr(
-        "harness.implement_guards.check_implement_workspace", lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
-        "harness.implement_guards.check_oversized_single_file_rewrite",
-        lambda *_a, **_k: None,
-    )
-
-    list(dispatch_implement_action(
-        session, act, "a-cross", True, turn_actions=[act], action_idx=0,
+    monkeypatch.setattr(session, "_submit_swarm", submit)
+    monkeypatch.setattr(session, "_run_provider_worker_background", background)
+    monkeypatch.setattr(session, "_register_local_job", MagicMock())
+    monkeypatch.setattr(session, "_validate_target_repo", lambda _: (str(target), ""))
+    monkeypatch.setattr(session, "_resolve_requested_implement_adapter", lambda _: ("agentic", ""))
+    monkeypatch.setattr("harness.conversation._prewarm_worker_imports", lambda: None)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda _: None)
+    monkeypatch.setattr("harness.implement_guards.check_implement_workspace", lambda *a, **k: None)
+    monkeypatch.setattr("harness.implement_guards.check_oversized_single_file_rewrite", lambda *a, **k: None)
+    act = PilotAction(kind=kind, goal="edit terraform", goals=["edit terraform"], repo=str(target))
+    call = dispatch_implement_action if kind == "run_implement" else dispatch_parallel_action
+    events = list(call(
+        session, act, "cross-repo", True, turn_actions=[act], action_idx=0,
         action_seq=1, step=0, swarms=0,
     ))
+    assert any(event.kind == "swarm_pending" for event in events)
+    submit.assert_called_once()
+    args, kwargs = submit.call_args
+    assert args[0] is background
+    assert args[2:8] == ("edit terraform", "agentic", str(target), True, None, True)
+    if kind == "run_parallel":
+        assert kwargs["admission_group"] == "parallel-cross-repo"
 
-    submit.assert_called_once_with(
-        background, "job_abcdef123456", "edit terraform", None, str(target),
-    )
+
+def test_dispatch_implement_keeps_target_repo_for_patch_landing(tmp_path, monkeypatch):
+    _check_agentic_target_repo("run_implement", tmp_path, monkeypatch)
 
 
 def test_dispatch_parallel_keeps_target_repo_for_patch_landing(tmp_path, monkeypatch):
-    import subprocess
-    import harness.send_loop_dispatch as dispatch
-
-    target = tmp_path / "terraform"
-    subprocess.run(["git", "init", str(target)], check=True, capture_output=True)
-    act = PilotAction(
-        kind="run_parallel",
-        goals=["edit terraform"],
-        repo=str(target),
-        adapter="codex",
-    )
-    submit = MagicMock(return_value=True)
-    background = MagicMock()
-    session = SimpleNamespace(
-        config=SimpleNamespace(repo=str(tmp_path), driver="test"),
-        _session_job_ids=[],
-        _append_action_result=MagicMock(),
-        _validate_target_repo=MagicMock(return_value=(str(target), "")),
-        _resolve_requested_implement_adapter=MagicMock(return_value=("codex", "")),
-        _external_adapter_available=MagicMock(return_value=True),
-        _submit_swarm=submit,
-        _run_swarm_background=background,
-        _job_dispatch_label_args=MagicMock(return_value=[]),
-        _swarm_submit_reject_message=MagicMock(return_value="at capacity"),
-        _last_swarm_submit_reason="",
-    )
-    proc = SimpleNamespace(
-        stdout=iter(["started job_abcdef123456\n"]),
-        wait=MagicMock(return_value=0),
-        returncode=0,
-        kill=MagicMock(),
-    )
-
-    def fake_read(p_info):
-        p_info["job_id"] = "job_abcdef123456"
-        p_info["lines"].append("started job_abcdef123456\n")
-
-    monkeypatch.setattr(dispatch, "_puppetmaster_available", lambda: True)
-    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda _repo: None)
-    monkeypatch.setattr(dispatch, "read_stdout_thread", fake_read)
-    monkeypatch.setattr(dispatch.subprocess, "Popen", MagicMock(return_value=proc))
-    monkeypatch.setattr(
-        "harness.implement_guards.check_implement_workspace", lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
-        "harness.implement_guards.check_oversized_single_file_rewrite",
-        lambda *_a, **_k: None,
-    )
-
-    list(dispatch_parallel_action(
-        session, act, "a-par", True, turn_actions=[act], action_idx=0,
-        action_seq=1, step=0, swarms=0,
-    ))
-
-    assert submit.call_args is not None
-    args, kwargs = submit.call_args
-    assert args[0] is background
-    assert args[1] == "job_abcdef123456"
-    assert args[2] == "edit terraform"
-    assert args[4] == str(target)
-    assert kwargs["admission_group"] == "parallel-a-par"
+    _check_agentic_target_repo("run_parallel", tmp_path, monkeypatch)
 
 
 def test_dispatch_parallel_requires_goals():
@@ -662,6 +590,29 @@ def test_model_pin_implies_strict_agentic_dispatch(monkeypatch):
     assert pin is expected
     assert strict is True
     assert error == ""
+
+
+def test_unpinned_product_dispatch_is_strict_agentic():
+    from harness.send_loop_dispatch import _strict_agentic_dispatch
+
+    pin, strict, error = _strict_agentic_dispatch(SimpleNamespace())
+
+    assert pin is None
+    assert strict is True
+    assert error == ""
+
+
+def test_product_dispatch_rejects_explicit_non_agentic_adapter():
+    from harness.send_loop_dispatch import _strict_agentic_dispatch
+
+    pin, strict, error = _strict_agentic_dispatch(
+        SimpleNamespace(model="", adapter="cursor")
+    )
+
+    assert pin is None
+    assert strict is True
+    assert "unsupported" in error
+    assert "agentic" in error
 
 
 def test_model_pin_rejects_conflicting_adapter():

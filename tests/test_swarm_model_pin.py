@@ -31,7 +31,7 @@ def test_pin_candidates_include_opencode_go_deepseek_aliases():
         assert "glm-5.2" not in blob
 
 
-def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
+def test_resolve_rejects_cursor_alias_when_only_agentic_is_allowed(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     models_path.write_text(
         json.dumps(
@@ -86,11 +86,11 @@ def test_resolve_demotes_unknown_pin_to_auto_route(monkeypatch, tmp_path):
     from harness.swarm_model_pin import resolve_swarm_model_pin
 
     out = resolve_swarm_model_pin("cursor/gpt-5-6-luna")
-    assert out["demoted"] is False
-    assert out["auto_route"] is False
-    assert out["resolved"] == "agentic/gpt-5.6-luna"
-    assert out["adapter"] == "agentic"
-    assert out["pin_fields"].get("provider") == "opencode-go"
+    assert out["demoted"] is True
+    assert out["auto_route"] is True
+    assert out["resolved"] == ""
+    assert out["adapter"] == ""
+    assert out["pin_fields"] == {}
 
 
 def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
@@ -152,13 +152,8 @@ def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path):
     from harness.swarm_model_pin import resolve_agentic_model_pin
 
     pin, error = resolve_agentic_model_pin("openrouter/stealth/ox-alpha")
-    assert error == ""
-    assert pin is not None
-    assert pin.provider == "openrouter"
-    assert pin.model == "stealth/ox-alpha"
-    assert pin.router_model_id == "agentic/openrouter/stealth/ox-alpha"
-    assert pin.payload_fields()["auto_route"] is False
-    assert pin.payload_fields()["allowed_adapters"] == ["agentic"]
+    assert pin is None
+    assert "not in keyed worker registry" in error
 
 
 def test_resolve_direct_agentic_pin_requires_keyed_provider(monkeypatch, tmp_path):
@@ -207,7 +202,7 @@ def test_run_swarm_model_description_mentions_live_catalog(monkeypatch):
 
     text = _run_swarm_model_pin_description()
     assert "agentic/gpt-5.6-luna" in text
-    assert "remap" in text.lower()
+    assert "unavailable pins fail without choosing a different model" in text.lower()
 
 
 def test_implement_and_parallel_tool_schemas_expose_model_pin():
@@ -318,20 +313,20 @@ def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path)
 
     from harness.swarm_model_pin import resolve_swarm_model_pin
 
-    for pin in (
-        "openai-codex:gpt-5.6-luna",
-        "codex/gpt-5.6-luna",
-        "cursor/gpt-5-6-luna",
-    ):
+    for pin in ("openai-codex:gpt-5.6-luna", "codex/gpt-5.6-luna"):
         out = resolve_swarm_model_pin(pin)
         assert out["demoted"] is False, pin
         assert out["auto_route"] is False, pin
         assert out["resolved"] == "agentic/openai-codex/gpt-5.6-luna", pin
         assert out["pin_fields"].get("provider") == "openai-codex", pin
 
+    cursor = resolve_swarm_model_pin("cursor/gpt-5-6-luna")
+    assert cursor["demoted"] is True
+    assert cursor["resolved"] == ""
 
-def test_resolve_cursor_pin_across_adapter_union(monkeypatch, tmp_path):
-    """Cursor Grok pins resolve on the cursor adapter when agentic lacks the id."""
+
+def test_resolve_cursor_pin_is_rejected_even_when_union_is_requested(monkeypatch, tmp_path):
+    """Product swarms reject the former cross-adapter Cursor fallback."""
     models_path = tmp_path / "models.json"
     models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
@@ -359,12 +354,12 @@ def test_resolve_cursor_pin_across_adapter_union(monkeypatch, tmp_path):
     out = resolve_swarm_model_pin(
         "cursor/grok-4-5", allowed_adapters=["agentic", "cursor"],
     )
-    assert out["demoted"] is False
-    assert out["adapter"] == "cursor"
-    assert out["resolved"] == "cursor/grok-4-5"
+    assert out["demoted"] is True
+    assert out["adapter"] == ""
+    assert out["resolved"] == ""
 
 
-def test_settings_enabled_pin_specs_maps_astra_generation_not_sol():
+def test_settings_enabled_pin_specs_requires_exact_astra_id():
     from harness.swarm_model_pin import settings_enabled_pin_specs
 
     enabled = [
@@ -372,9 +367,10 @@ def test_settings_enabled_pin_specs_maps_astra_generation_not_sol():
         "openai-codex:gpt-5.6-luna",
         "openai-codex:gpt-6-astra",
     ]
+    # A similarly named generation is not the requested model.
     assert settings_enabled_pin_specs(
         "agentic/openai-codex/gpt-5.6-astra", enabled=enabled,
-    ) == ["openai-codex:gpt-6-astra"]
+    ) == []
     assert settings_enabled_pin_specs(
         "openai-codex:gpt-6-astra", enabled=enabled,
     ) == ["openai-codex:gpt-6-astra"]
@@ -387,8 +383,8 @@ def test_settings_enabled_pin_specs_maps_astra_generation_not_sol():
     ]) == []
 
 
-def test_resolve_gpt56_astra_pin_to_enabled_gpt6_astra(monkeypatch, tmp_path):
-    """Pilot 'GPT 5.6 Astra' pins must resolve to the Settings-enabled wire id."""
+def test_resolve_gpt56_astra_pin_does_not_remap_to_gpt6_astra(monkeypatch, tmp_path):
+    """A GPT 5.6 Astra typo must not silently select GPT 6 Astra."""
     models_path = tmp_path / "models.json"
     models_path.write_text(
         json.dumps(
@@ -470,14 +466,16 @@ def test_resolve_gpt56_astra_pin_to_enabled_gpt6_astra(monkeypatch, tmp_path):
     from harness.swarm_model_pin import resolve_agentic_model_pin, resolve_swarm_model_pin
 
     out = resolve_swarm_model_pin("agentic/openai-codex/gpt-5.6-astra")
-    assert out["demoted"] is False
-    assert out["resolved"] == "agentic/openai-codex/gpt-6-astra"
-    assert out["pin_fields"].get("provider") == "openai-codex"
+    assert out["demoted"] is True
+    assert out["resolved"] == ""
+    assert out["pin_fields"] == {}
     pin, error = resolve_agentic_model_pin("agentic/openai-codex/gpt-5.6-astra")
-    assert error == ""
-    assert pin is not None
-    assert pin.model == "gpt-6-astra"
-    assert pin.router_model_id == "agentic/openai-codex/gpt-6-astra"
+    assert pin is None
+    assert "not in keyed worker registry" in error
+
+    exact = resolve_swarm_model_pin("agentic/openai-codex/gpt-6-astra")
+    assert exact["demoted"] is False
+    assert exact["resolved"] == "agentic/openai-codex/gpt-6-astra"
 
 
 def test_opencode_go_curated_bound_into_auto_registry():

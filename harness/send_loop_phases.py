@@ -700,8 +700,7 @@ def _run_command_artifact_headline(
 def _with_command_footer(history_text: str, payload: Dict[str, Any]) -> str:
     """Append cwd / recovery-hint / spill footer lines to model-visible history.
 
-    Kept as a footer so the existing ``(run_command '...' completed with exit
-    code N)`` header and raw output stay byte-identical for every consumer.
+    Keep execution metadata after the command status and process output.
     """
     footer = []
     cwd = payload.get("cwd")
@@ -1370,16 +1369,25 @@ def resolve_emit_say_texts(
     resp_meta = getattr(resp, "meta", None) or {}
     if not isinstance(resp_meta, dict):
         resp_meta = {}
-    promoted_say = promote_trailing_reasoning_to_say(
-        say_text=cleaned_say_text,
-        streamed_reasoning=str(resp_meta.get("streamed_reasoning") or ""),
-        stream_ended_on_reasoning=bool(
-            resp_meta.get("stream_ended_on_reasoning")
-        ),
-        meta_reasoning=str(
-            resp_meta.get("reasoning") or turn_thinking or ""
-        ),
+    # Only Cursor transports have the legacy contract that a thought-channel
+    # terminal may be rendered as the assistant's final readout. Other
+    # providers (including OpenAI-compatible DeepSeek) keep reasoning private.
+    is_cursor_transport = (
+        resp_meta.get("cursor_cli") is True
+        or resp_meta.get("cursor_acp") is True
     )
+    promoted_say = ""
+    if is_cursor_transport and not resp_meta.get("tool_calls"):
+        promoted_say = promote_trailing_reasoning_to_say(
+            say_text=cleaned_say_text,
+            streamed_reasoning=str(resp_meta.get("streamed_reasoning") or ""),
+            stream_ended_on_reasoning=bool(
+                resp_meta.get("stream_ended_on_reasoning")
+            ),
+            meta_reasoning=str(
+                resp_meta.get("reasoning") or turn_thinking or ""
+            ),
+        )
     if resp_phase == "commentary":
         promoted_say = ""
     if promoted_say:
@@ -3668,7 +3676,7 @@ def dispatch_local_action(
                     act,
                     aid,
                     _with_command_footer(
-                        f"(run_command '{command}' {run_status} with exit code {exit_code})\n{output}",
+                        f"(run_command {aid} {run_status} with exit code {exit_code})\n{output}",
                         val,
                     ),
                     is_native,
@@ -3728,13 +3736,13 @@ def dispatch_local_action(
         yield ConvEvent("action_result", result)
         if run_status == "ok":
             hist = (
-                f"(run_command '{command}' completed with exit code {exit_code})\n"
+                f"(run_command {aid} completed with exit code {exit_code})\n"
                 f"{output}"
             )
         else:
             # e.g. truncated: still a finished process, but not a clean ok.
             hist = (
-                f"(run_command '{command}' {run_status} with exit code {exit_code})\n"
+                f"(run_command {aid} {run_status} with exit code {exit_code})\n"
                 f"{output}"
             )
         session._append_action_result(

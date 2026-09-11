@@ -42,7 +42,7 @@ def test_allowlist_includes_cursor_when_settings_enable_grok(monkeypatch):
     from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
 
     out = resolve_swarm_worker_allowlist()
-    assert out["allowed_adapters"] == ["agentic", "cursor"]
+    assert out["allowed_adapters"] == ["agentic"]
     assert out["prefer_plan_billed"] is False
     assert out["primary_adapter"] == "agentic"
 
@@ -131,7 +131,7 @@ def test_enabled_specs_keep_cursor_cli_intent_when_pilots_drop_it(monkeypatch):
     specs = swa._enabled_or_visible_specs()
     assert "cursor-cli:cursor-grok-4.5-high-fast" in specs
     out = swa.resolve_swarm_worker_allowlist()
-    assert out["allowed_adapters"] == ["agentic", "cursor"]
+    assert out["allowed_adapters"] == ["agentic"]
     assert out["prefer_plan_billed"] is False
 
 
@@ -176,7 +176,20 @@ def test_enabled_specs_do_not_union_full_keyed_catalog_when_curated(monkeypatch)
     assert "glm-5-2" not in id_blob
 
 
-def test_singleton_enabled_spec_maps_luna_not_gpt53():
+def test_singleton_enabled_spec_maps_luna_not_gpt53(monkeypatch):
+    monkeypatch.setattr(
+        "harness.swarm_model_pin._registry_rows",
+        lambda **_: [{
+            "id": "agentic/openai-codex/gpt-5.6-luna",
+            "adapter": "agentic",
+            "adapter_model_name": "gpt-5.6-luna",
+            "payload_defaults": {"provider": "openai-codex"},
+        }],
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"openai-codex"},
+    )
     from harness.swarm_worker_allowlist import allowed_model_ids_from_specs
 
     ids = allowed_model_ids_from_specs(["openai-codex:gpt-5.6-luna"])
@@ -186,8 +199,30 @@ def test_singleton_enabled_spec_maps_luna_not_gpt53():
     assert "gpt-5.3" not in blob
 
 
-def test_cary_enabled_subset_never_aliases_mimo():
+def test_cary_enabled_subset_never_aliases_mimo(monkeypatch):
     """Live Go/OR catalogs list MIMO; Settings toggles must not expand to it."""
+    rows = []
+    for provider, model in (
+        ("opencode-go", "deepseek-v4-flash"),
+        ("openai-codex", "gpt-6-astra"),
+        ("openai-codex", "gpt-5.6-sol"),
+        ("openai-codex", "gpt-5.6-luna"),
+        ("openrouter", "google/gemini-3.8-flash"),
+        ("openrouter", "google/gemini-3.7-flash"),
+    ):
+        rows.append({
+            "id": f"agentic/{provider}/{model}",
+            "adapter": "agentic",
+            "adapter_model_name": model,
+            "payload_defaults": {"provider": provider},
+        })
+    monkeypatch.setattr(
+        "harness.swarm_model_pin._registry_rows", lambda **_: rows,
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"opencode-go", "openai-codex", "openrouter"},
+    )
     from harness.swarm_worker_allowlist import allowed_model_ids_from_specs
 
     ids = allowed_model_ids_from_specs([
@@ -227,6 +262,6 @@ def test_prefer_plan_billed_true_only_when_cursor_only(monkeypatch):
     from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
 
     out = resolve_swarm_worker_allowlist()
-    assert out["allowed_adapters"] == ["cursor"]
-    assert out["prefer_plan_billed"] is True
-    assert out["primary_adapter"] == "cursor"
+    assert out["allowed_adapters"] == []
+    assert out["prefer_plan_billed"] is False
+    assert out["primary_adapter"] == "agentic"

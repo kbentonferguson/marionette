@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-"""Resolve run_swarm model pins against the live worker adapter union.
-
-Pilots often pass their session model (``cursor/gpt-5-6-luna``,
-``openai-codex:gpt-5.6-luna``, ``cursor/grok-4-5``). Those aliases remap to
-keyed agentic rows when a matching worker auth exists, or to platform cursor
-rows when Settings/platform allow Cursor workers. Unresolved pins demote to
-auto-route across the live union catalog instead of failing.
-"""
+"""Resolve product worker pins to exact enabled agentic provider/model rows."""
 
 import re
 from dataclasses import dataclass
@@ -15,12 +8,6 @@ from typing import Any, Optional
 
 from .diag import note as _diag
 
-# Prefer agentic (API-billed) remaps before platform cursor when both match.
-_PIN_ADAPTER_ORDER = ("agentic", "cursor", "openai")
-_GENERIC_MODEL_TOKENS = frozenset({
-    "pro", "mini", "nano", "fast", "high", "low", "max", "latest",
-    "free", "exp", "preview", "flash", "plus", "chat", "code",
-})
 _PIN_PROVIDER_ALIASES = {
     "codex": "openai-codex",
     "chatgpt-codex": "openai-codex",
@@ -167,18 +154,6 @@ class AgenticModelPin:
         }
 
 
-def _model_family_token(model_id: str) -> str:
-    """Distinctive last token (``astra``, ``luna``), or empty for generic tails."""
-    bare = (model_id or "").rsplit("/", 1)[-1].strip().lower()
-    parts = [p for p in re.split(r"[-_.]+", bare) if p]
-    if not parts:
-        return ""
-    token = parts[-1]
-    if token.isdigit() or token in _GENERIC_MODEL_TOKENS or len(token) < 3:
-        return ""
-    return token
-
-
 def _normalize_pin_provider(provider: str) -> str:
     raw = (provider or "").strip().lower()
     return _PIN_PROVIDER_ALIASES.get(raw, raw)
@@ -215,12 +190,7 @@ def settings_enabled_pin_specs(
     *,
     enabled: Optional[list[str]] = None,
 ) -> list[str]:
-    """Settings specs for the same enabled model — never a different sibling.
-
-    ``gpt-5.6-astra`` maps to enabled ``openai-codex:gpt-6-astra``. It does
-    not map to Sol or Luna. Generic tails (``pro``, ``mini``) match exact ids
-    only.
-    """
+    """Settings specs matching the requested provider and exact model ID."""
     requested = (pin or "").strip()
     if not requested:
         return []
@@ -233,7 +203,6 @@ def settings_enabled_pin_specs(
             enabled = []
     pin_provider, pin_model = _parse_pin_provider_model(requested)
     pin_model_l = (pin_model or "").strip().lower()
-    pin_token = _model_family_token(pin_model or requested)
     out: list[str] = []
     seen: set[str] = set()
     for spec in enabled or []:
@@ -248,8 +217,7 @@ def settings_enabled_pin_specs(
         if pin_provider and prov != pin_provider:
             continue
         exact = bool(pin_model_l) and mid.lower() == pin_model_l
-        token = bool(pin_token) and _model_family_token(mid) == pin_token
-        if not (exact or token):
+        if not exact:
             continue
         key = raw.lower()
         if key in seen:
@@ -257,47 +225,6 @@ def settings_enabled_pin_specs(
         seen.add(key)
         out.append(raw)
     return out
-
-
-def _direct_agentic_provider_model(pin: str) -> Optional[AgenticModelPin]:
-    """Resolve ``provider/model`` when a keyed live model is not in the registry."""
-
-    requested = (pin or "").strip()
-    matches = settings_enabled_pin_specs(requested)
-    if len(matches) == 1:
-        provider, model = matches[0].split(":", 1)
-        provider = _normalize_pin_provider(provider)
-        model = model.strip()
-    else:
-        body = requested
-        if body.lower().startswith("agentic/"):
-            body = body.split("/", 1)[1].strip()
-        if ":" in body:
-            provider, model = body.split(":", 1)
-        elif "/" in body:
-            provider, model = body.split("/", 1)
-        else:
-            return None
-        provider = _normalize_pin_provider(provider)
-        model = model.strip()
-    if not provider or not model:
-        return None
-    try:
-        from .auto_registry import keyed_agentic_providers
-
-        keyed = {str(item).strip().lower() for item in keyed_agentic_providers()}
-    except Exception as exc:
-        _diag("swarm_model_pin.direct_keyed", exc)
-        keyed = set()
-    if provider not in keyed:
-        return None
-    return AgenticModelPin(
-        requested=requested,
-        provider=provider,
-        model=model,
-        router_model_id=f"agentic/{provider}/{model}",
-        reason="direct_provider_model",
-    )
 
 
 def _registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
@@ -337,12 +264,55 @@ def _row_is_keyed_agentic(row: dict, keyed: set) -> bool:
     provider = ""
     if isinstance(defaults, dict):
         provider = str(defaults.get("provider") or "").strip()
-    if keyed and provider and provider not in keyed:
+    # An empty keyed set is authoritative: an agentic row is never usable
+    # merely because it exists in the static registry.
+    return bool(provider) and provider in {
+        str(item).strip().lower() for item in (keyed or set()) if str(item).strip()
+    }
+
+
+def _settings_enabled_specs() -> Optional[list[str]]:
+    """Return curated settings, preserving the distinction from unset."""
+    try:
+        from . import model_visibility
+        current = model_visibility.get_enabled()
+        if current:
+            return [str(x).strip() for x in current if str(x).strip()]
+        data = model_visibility._load()
+        if isinstance(data, dict) and "enabled" in data:
+            enabled = data.get("enabled")
+            if isinstance(enabled, list):
+                return [str(x).strip() for x in enabled if str(x).strip()]
+            return []
+    except Exception as exc:
+        _diag("swarm_model_pin.settings_state", exc)
+        return []
+    return None
+
+
+def _row_matches_enabled_settings(row: dict, enabled: Optional[list[str]]) -> bool:
+    """Require an exact provider/model Settings pair when curated."""
+    if enabled is None:
+        return True
+    defaults = row.get("payload_defaults")
+    if not isinstance(defaults, dict):
         return False
-    return True
+    provider = str(defaults.get("provider") or "").strip().lower()
+    model = str(row.get("adapter_model_name") or defaults.get("model") or "").strip().lower()
+    if not provider or not model:
+        return False
+    return any(
+        _normalize_pin_provider(_provider) == provider and _model.strip().lower() == model
+        for spec in enabled
+        if ":" in str(spec)
+        for _provider, _model in [str(spec).split(":", 1)]
+    )
 
 
-def _usable_registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
+def _usable_registry_rows(
+    *, adapters: Optional[set[str]] = None,
+    enabled_specs: Optional[list[str]] = None,
+) -> list[dict]:
     try:
         from .auto_registry import keyed_agentic_providers
 
@@ -352,86 +322,31 @@ def _usable_registry_rows(*, adapters: Optional[set[str]] = None) -> list[dict]:
         keyed = set()
     out: list[dict] = []
     seen: set[str] = set()
+    enabled = _settings_enabled_specs() if enabled_specs is None else enabled_specs
     for row in _registry_rows(adapters=adapters):
         mid = str(row.get("id") or "").strip()
         if not mid or mid.lower() in seen:
             continue
         if not _row_is_keyed_agentic(row, keyed):
             continue
+        if row.get("enabled", True) is not True or row.get("retired", False) is True:
+            continue
+        if not _row_matches_enabled_settings(row, enabled):
+            continue
         seen.add(mid.lower())
         out.append(row)
     return out
 
 
-def _spec_preferred_registry_ids(spec: str) -> list[str]:
-    """Best registry ids for a Settings spec — agentic provider rows first."""
-    provider, model = _parse_pin_provider_model(spec)
-    out: list[str] = []
-    cursor_providers = {"cursor", "cursor-cli", "cursor-sdk"}
-    if provider and model:
-        if provider in cursor_providers:
-            out.append(f"cursor/{model}")
-        else:
-            out.append(f"agentic/{provider}/{model}")
-            out.append(f"agentic/{model}")
-    out.extend(pin_candidates(spec))
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for item in out:
-        key = item.lower()
-        if not item or key in seen:
-            continue
-        seen.add(key)
-        uniq.append(item)
-    return uniq
-
-
 def _enabled_registry_ids(rows: list[dict]) -> list[str]:
-    """Settings-enabled picker specs mapped onto ids that exist in *rows*."""
-    try:
-        from .model_visibility import get_enabled
-
-        enabled = get_enabled()
-    except Exception as exc:
-        _diag("swarm_model_pin.enabled_ids", exc)
-        return []
-    if not enabled:
-        return []
-    by_id = {}
-    for row in rows:
-        mid = str(row.get("id") or "").strip()
-        if mid:
-            by_id[mid.lower()] = mid
+    """Order eligible registry rows by their exact Settings provider/model pair."""
+    enabled = _settings_enabled_specs() or []
     out: list[str] = []
-    seen: set[str] = set()
     for spec in enabled:
-        hit = ""
-        for cand in _spec_preferred_registry_ids(spec):
-            found = by_id.get(cand.lower())
-            if found:
-                hit = found
-                break
-        if not hit:
-            provider, model = _parse_pin_provider_model(spec)
-            token = _model_family_token(model or spec)
-            if token and provider:
-                for row in rows:
-                    mid = str(row.get("id") or "").strip()
-                    if not mid or mid.lower() in seen:
-                        continue
-                    defaults = row.get("payload_defaults")
-                    row_prov = ""
-                    if isinstance(defaults, dict):
-                        row_prov = str(defaults.get("provider") or "").strip().lower()
-                    adapter = str(row.get("adapter") or "").strip().lower()
-                    if adapter != "agentic" or row_prov != provider:
-                        continue
-                    if _model_family_token(mid) == token:
-                        hit = mid
-                        break
-        if hit and hit.lower() not in seen:
-            seen.add(hit.lower())
-            out.append(hit)
+        for row in rows:
+            model_id = str(row.get("id") or "").strip()
+            if model_id and model_id not in out and _row_matches_enabled_settings(row, [spec]):
+                out.append(model_id)
     return out
 
 
@@ -471,27 +386,22 @@ def list_available_worker_models(
 
 
 def swarm_model_pin_hint(*, limit: int = 16) -> str:
-    """Short tool-schema suffix listing live worker models (or auto-route)."""
+    """Describe the exact model choices available to product workers."""
     try:
         from .swarm_worker_allowlist import resolve_swarm_worker_allowlist
-
         allow = set(resolve_swarm_worker_allowlist().get("allowed_adapters") or [])
     except Exception:
-        allow = {"agentic"}
-    available = list_available_worker_models(limit=limit, adapters=allow or None)
-    if not available:
-        return (
-            "Omit model to auto-route among Models-enabled workers "
-            "(OpenCode Go, OpenRouter, ChatGPT Codex OAuth, Cursor API, …). "
-            "Session pilot ids are remapped when a matching worker row exists."
-        )
-    shown = ", ".join(available)
-    return (
-        "Omit model to auto-route among Models-enabled workers. Live catalog: "
-        f"{shown}. Session pilot ids (openai-codex:…, cursor/…, codex/…) remap "
-        "to a matching row when present; unknown pins demote to auto-route "
-        "inside the enabled set."
+        allow = set()
+    available = list_available_worker_models(limit=limit, adapters=allow)
+    rule = (
+        "Workers use only adapter=agentic. Omit model for auto-routing within "
+        "enabled, available provider/model pairs. An explicit model must match "
+        "an enabled provider:model pair or registry ID; unavailable pins fail "
+        "without choosing a different model."
     )
+    if not available:
+        return rule + " No eligible worker models are currently available."
+    return rule + " Live catalog: " + ", ".join(available) + "."
 
 
 def pin_candidates(pin: str) -> list[str]:
@@ -573,48 +483,91 @@ def pin_candidates(pin: str) -> list[str]:
     return out
 
 
-def _try_apply_pin(candidate: str, *, adapter: str) -> Optional[dict]:
-    try:
-        from puppetmaster.model_registry import (
-            AmbiguousModelPinError,
-            apply_model_pin,
-        )
-    except Exception as e:
-        _diag("swarm_model_pin.apply_import", e)
+def _exact_registry_pin(pin: str, rows: list[dict]) -> Optional[dict[str, Any]]:
+    """Return payload fields for one exact agentic registry row."""
+    requested = (pin or "").strip()
+    wanted_id = requested.lower()
+    # Canonical ids are opaque. In particular, agentic/vendor/model must not
+    # be interpreted as provider=vendor when the registry row says the wire
+    # provider is something else (OpenRouter and OpenCode Go do this).
+    for row in rows:
+        row_id = str(row.get("id") or "").strip()
+        if row_id and row_id.lower() == wanted_id:
+            defaults = row.get("payload_defaults")
+            if not isinstance(defaults, dict):
+                return None
+            provider = str(defaults.get("provider") or "").strip().lower()
+            model = str(row.get("adapter_model_name") or defaults.get("model") or "").strip()
+            if provider and model:
+                return {
+                    "provider": provider,
+                    "model": model,
+                    "pinned_model": row_id,
+                    "pinned_adapter_model_name": model,
+                    "_registry_row": row,
+                }
+            return None
+    body = requested
+    if body.lower().startswith("agentic/"):
+        body = body[8:].strip()
+    provider = ""
+    model = body
+    if ":" in body:
+        provider, model = body.split(":", 1)
+    elif "/" in body:
+        provider, model = body.split("/", 1)
+    provider = _normalize_pin_provider(provider)
+    model = model.strip()
+    matches: list[dict] = []
+    for row in rows:
+        defaults = row.get("payload_defaults")
+        if not isinstance(defaults, dict):
+            continue
+        row_provider = str(defaults.get("provider") or "").strip().lower()
+        row_model = str(row.get("adapter_model_name") or "").strip()
+        if not row_model:
+            row_model = str(defaults.get("model") or "").strip()
+        row_id = str(row.get("id") or "").strip()
+        if not row_id or row_model != model:
+            continue
+        if provider and row_provider != provider:
+            continue
+        matches.append({
+            "provider": row_provider,
+            "model": row_model,
+            "pinned_model": row_id,
+            "pinned_adapter_model_name": row_model,
+            "_registry_row": row,
+        })
+    if len(matches) != 1:
         return None
-    try:
-        stamped = apply_model_pin({}, candidate, adapter=adapter)
-    except AmbiguousModelPinError as exc:
-        _diag("swarm_model_pin.ambiguous", msg=f"pin={candidate!r} err={exc}")
-        return None
-    except Exception as e:
-        _diag("swarm_model_pin.apply", e, msg=f"pin={candidate!r} adapter={adapter}")
-        return None
-    if not isinstance(stamped, dict) or not stamped.get("pinned_model"):
-        return None
-    stamped = dict(stamped)
-    stamped["pinned_adapter"] = adapter
+    return matches[0]
+
+
+def _apply_exact_registry_pin(row: dict) -> dict[str, Any]:
+    """Stamp the same eligible registry snapshot used to resolve the pin."""
+    from puppetmaster.model_registry import ModelSpec, apply_model_pin
+
+    spec = ModelSpec(**{
+        key: value for key, value in row.items()
+        if key in ModelSpec.__dataclass_fields__
+    })
+    stamped = apply_model_pin({}, spec.id, adapter="agentic", registry=[spec])
+    if stamped.get("pinned_model") != spec.id:
+        raise ValueError(f"Could not stamp selected worker model {spec.id!r}")
     return stamped
 
 
 def _allowed_pin_adapters(
     allowed_adapters: Optional[list[str] | set[str] | tuple[str, ...]],
 ) -> list[str]:
-    if allowed_adapters:
-        ordered = [a for a in _PIN_ADAPTER_ORDER if a in set(allowed_adapters)]
-        for a in allowed_adapters:
-            name = str(a or "").strip().lower()
-            if name and name not in ordered:
-                ordered.append(name)
-        return ordered or ["agentic"]
-    try:
-        from .swarm_worker_allowlist import resolve_swarm_worker_allowlist
-
-        return list(
-            resolve_swarm_worker_allowlist().get("allowed_adapters") or ["agentic"]
-        )
-    except Exception:
-        return ["agentic"]
+    if allowed_adapters is None:
+        try:
+            from .swarm_worker_allowlist import resolve_swarm_worker_allowlist
+            allowed_adapters = resolve_swarm_worker_allowlist().get("allowed_adapters") or []
+        except Exception:
+            return []
+    return ["agentic"] if "agentic" in allowed_adapters else []
 
 
 def resolve_swarm_model_pin(
@@ -622,11 +575,10 @@ def resolve_swarm_model_pin(
     *,
     allowed_adapters: Optional[list[str] | set[str] | tuple[str, ...]] = None,
 ) -> dict[str, Any]:
-    """Resolve a swarm model pin or demote to auto-route.
+    """Resolve a swarm model pin against one exact live agentic row.
 
-    Tries each adapter in the Settings/platform union (agentic first, then
-    cursor, then openai) so a Cursor Grok pin is not rejected just because the
-    agentic catalog lacks that id.
+    An unavailable explicit pin is returned as demoted for callers that need
+    to render an actionable error; product dispatch must not auto-route it.
 
     Returns:
       {
@@ -665,22 +617,15 @@ def resolve_swarm_model_pin(
         _diag("swarm_model_pin.health", e)
 
     adapters = _allowed_pin_adapters(allowed_adapters)
-    candidates = list(pin_candidates(requested))
-    seen_cands = {c.lower() for c in candidates}
-    for spec in settings_enabled_pin_specs(requested):
-        for extra in pin_candidates(spec):
-            key = extra.lower()
-            if key in seen_cands:
-                continue
-            seen_cands.add(key)
-            candidates.append(extra)
-    for candidate in candidates:
-        for adapter in adapters:
-            stamped = _try_apply_pin(candidate, adapter=adapter)
-            if not stamped:
-                continue
-            resolved = str(stamped.get("pinned_model") or "").strip()
-            pin_fields = {**stamped, "auto_route": False}
+    if "agentic" in adapters:
+        exact = _exact_registry_pin(requested, _usable_registry_rows(adapters={"agentic"}))
+        if exact:
+            row = exact.pop("_registry_row", {})
+            pin_fields = {
+                **_apply_exact_registry_pin(row),
+                "auto_route": False,
+                "pinned_adapter": "agentic",
+            }
             # Fail closed: never dispatch ChatGPT Codex OAuth *-pro ids.
             for key in ("model", "pinned_adapter_model_name"):
                 cur = str(pin_fields.get(key) or "").strip()
@@ -690,11 +635,7 @@ def resolve_swarm_model_pin(
                     _diag("swarm_model_pin.codex_pro_remap_fields", msg=f"{key}:{reason}")
             if norm_meta.get("reasoning_effort_hint") and not pin_fields.get("reasoning_effort"):
                 pin_fields["reasoning_effort"] = norm_meta["reasoning_effort_hint"]
-            reason = (
-                "exact"
-                if candidate == original
-                else f"alias:{candidate}"
-            )
+            reason = "exact_registry_row"
             if norm_meta.get("normalize"):
                 reason = f"{norm_meta['normalize']};{reason}"
             elif norm_meta.get("codex_pro_remap"):
@@ -703,17 +644,17 @@ def resolve_swarm_model_pin(
                 "pin_fields": pin_fields,
                 "auto_route": False,
                 "requested": original,
-                "resolved": str(pin_fields.get("pinned_model") or resolved).strip(),
+                "resolved": str(pin_fields["pinned_model"]).strip(),
                 "demoted": False,
                 "reason": reason,
-                "adapter": adapter,
+                "adapter": "agentic",
             }
 
     available = list_available_worker_models(limit=8, adapters=set(adapters))
     reason = (
         f"pin {original!r} not in keyed worker registry "
         f"(adapters={adapters}); "
-        f"auto-routing among {available or ['(none keyed)']}"
+        f"choose an enabled model from {available or ['(none keyed)']}"
     )
     _diag("swarm_model_pin.demote", msg=reason)
     return {
@@ -757,10 +698,6 @@ def resolve_agentic_model_pin(pin: str) -> tuple[Optional[AgenticModelPin], str]
                 router_model_id=router_model_id,
                 reason=str(resolved.get("reason") or "exact"),
             ), ""
-
-    direct = _direct_agentic_provider_model(requested)
-    if direct is not None:
-        return direct, ""
 
     available = list_available_agentic_worker_models(limit=8)
     reason = str(resolved.get("reason") or "").strip()

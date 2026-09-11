@@ -118,10 +118,11 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
             )
             if str(item).strip()
         ]
-        if preview_ids:
-            signals_kwargs["allowed_model_ids"] = frozenset(preview_ids)
+        signals_kwargs["allowed_model_ids"] = frozenset(preview_ids)
     except Exception:
-        pass
+        # Do not forecast against the unrestricted registry when Settings
+        # allowlist resolution fails; the live dispatch path is fail-closed.
+        signals_kwargs["allowed_model_ids"] = frozenset()
     if max_cap is not None:
         try:
             from pmharness.bridge import _router_supports_max_capability

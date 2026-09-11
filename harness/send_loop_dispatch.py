@@ -34,23 +34,30 @@ DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
 
 
 def _strict_agentic_dispatch(act) -> tuple[object, bool, str]:
-    """Resolve an explicit action model/agentic adapter before any fallback."""
+    """Resolve the product action's agentic pin before any fallback.
+
+    Product implement/parallel actions have one adapter contract: agentic.
+    Providers and models are selected beneath that adapter, so an omitted
+    adapter is still strict rather than permission to select another engine.
+    """
 
     requested_model = str(getattr(act, "model", "") or "").strip()
     requested_adapter = str(getattr(act, "adapter", "") or "").strip().lower()
-    strict_agentic = bool(
-        requested_model or requested_adapter == "agentic"
-    )
-    if not strict_agentic:
-        return None, False, ""
-    if requested_model and requested_adapter not in ("", "agentic"):
+    if requested_adapter not in ("", "agentic"):
+        if requested_model:
+            return (
+                None,
+                True,
+                (
+                    f"model={requested_model!r} is an agentic worker pin and "
+                    f"cannot be combined with adapter={requested_adapter!r}"
+                ),
+            )
         return (
             None,
             True,
-            (
-                f"model={requested_model!r} is an agentic worker pin and "
-                f"cannot be combined with adapter={requested_adapter!r}"
-            ),
+            f"adapter={requested_adapter!r} is unsupported for product "
+            "implement/parallel actions; use adapter='agentic'",
         )
     if not requested_model:
         return None, True, ""
