@@ -3406,6 +3406,7 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
 function StreamingMarkdown({ text }: { text: string }) {
   const buf = splitStreamingMarkdown(text || "");
   const deferredFlushed = useDeferredValue(buf.flushed);
+  const caret = <span className="transcript-stream-caret" aria-hidden="true" />;
   // Never paint flushed-as-markdown plus a sibling lag <span>. That remounts
   // the trailing sentence as <p> then <span> then <p> again — the blink.
   if (buf.open) {
@@ -3419,6 +3420,7 @@ function StreamingMarkdown({ text }: { text: string }) {
         >
           {buf.open.body + buf.hold}
         </pre>
+        {caret}
       </>
     );
   }
@@ -3428,6 +3430,7 @@ function StreamingMarkdown({ text }: { text: string }) {
       {buf.hold ? (
         <span data-md-hold className="font-mono">{buf.hold}</span>
       ) : null}
+      {caret}
     </>
   );
 }
