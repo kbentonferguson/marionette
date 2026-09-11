@@ -5,21 +5,44 @@
  * Hermes measured 33ms as the floor that batches ~2 tokens per React
  * commit at typical 60 tok/s without visible lag (30 fps of text growth).
  * They use a timer, not rAF: Chromium parks rAF on hidden/minimized
- * renderers, so a finished answer sits queued until refocus. Codex paints
- * the arrived chunk — no char drip. We do both.
+ * renderers, so a finished answer sits queued until refocus. Visible
+ * paints use rAF; hidden tabs keep the timeout fallback.
  */
 
 import { typewriterCharsPerFrame } from "./streamBubbles";
 
-/** Hermes ``STREAM_DELTA_FLUSH_MS`` — coalesce without a fake typewriter. */
+/** Hidden-tab fallback only. Visible paints use rAF so ticks land on vsync. */
 export const STREAM_PAINT_MS = 33;
 
+type PaintHandle = { kind: "raf" | "timeout"; id: number };
+const paintHandles = new Map<number, PaintHandle>();
+let nextPaintToken = 1;
+
 export function scheduleStreamPaint(cb: () => void): number {
-  return window.setTimeout(cb, STREAM_PAINT_MS);
+  const token = nextPaintToken++;
+  const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+  if (hidden || typeof requestAnimationFrame !== "function") {
+    const id = window.setTimeout(() => {
+      paintHandles.delete(token);
+      cb();
+    }, STREAM_PAINT_MS);
+    paintHandles.set(token, { kind: "timeout", id });
+    return token;
+  }
+  const id = requestAnimationFrame(() => {
+    paintHandles.delete(token);
+    cb();
+  });
+  paintHandles.set(token, { kind: "raf", id });
+  return token;
 }
 
 export function cancelStreamPaint(id: number): void {
-  window.clearTimeout(id);
+  const handle = paintHandles.get(id);
+  if (!handle) return;
+  paintHandles.delete(id);
+  if (handle.kind === "raf") cancelAnimationFrame(handle.id);
+  else clearTimeout(handle.id);
 }
 
 export type TypewriterRefs = {
