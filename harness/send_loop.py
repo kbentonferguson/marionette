@@ -1596,6 +1596,8 @@ class SendLoopMixin:
             assistant_msg: dict[str, Any] = {"role": "assistant"}
             if is_native:
                 assistant_msg["content"] = _history_text or ""
+                if "reasoning_content" in (resp.meta or {}):
+                    assistant_msg["reasoning_content"] = resp.meta["reasoning_content"]
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
             else:

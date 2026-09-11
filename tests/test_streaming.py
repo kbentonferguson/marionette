@@ -38,6 +38,7 @@ class FakeStreamingDriver:
                         }
                     ],
                     "reasoning": "Let me read the file first.",
+                    "reasoning_content": "Let me read the file first.",
                     "finish_reason": "tool_calls",
                     "stream_terminal": "tool_calls",
                 }
@@ -81,6 +82,7 @@ class FakeStreamingDriver:
                         }
                     ],
                     "reasoning": "Let me read the file first.",
+                    "reasoning_content": "Let me read the file first.",
                     "finish_reason": "tool_calls",
                     "stream_terminal": "tool_calls",
                     "stream_started": True,
@@ -374,6 +376,7 @@ def test_conversational_loop_streaming():
         item for item in s._history if item.get("role") == "assistant"
     ]
     assert assistant_history[0]["content"] == "Reading..."
+    assert assistant_history[0]["reasoning_content"] == "Let me read the file first."
     assert assistant_history[0]["phase"] == "commentary"
     assert assistant_history[-1]["content"] == "Done."
     assert assistant_history[-1]["phase"] == "final_answer"

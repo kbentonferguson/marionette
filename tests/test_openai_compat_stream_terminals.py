@@ -306,6 +306,172 @@ def test_truncated_args_with_tool_calls_finish_still_withheld(monkeypatch):
     assert resp.meta["incomplete_tool_calls"][0]["function"]["name"] == "read_file"
 
 
+def test_opencode_go_retries_incomplete_tool_stream_without_reemitting_text(monkeypatch):
+    """A Go relay cutoff may emit text/name, then no complete tool JSON.
+
+    The retry is silent so the first visible announcement is not duplicated;
+    only the complete second response may reach the action parser.
+    """
+    first = [
+        _data({"choices": [{"delta": {"content": "Fanning out..."}}]}),
+        _data({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_partial",
+            "type": "function",
+            "function": {"name": "run_parallel", "arguments": '{"goals": ['},
+        }]}, "finish_reason": "tool_calls"}]}),
+        b"data: [DONE]\n",
+    ]
+    second = {
+        "choices": [{
+            "message": {"content": "", "tool_calls": [{
+                "id": "call_recovered",
+                "type": "function",
+                "function": {"name": "run_parallel", "arguments": '{"goals": []}'},
+            }]},
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+    }
+
+    class _JsonResp:
+        def __init__(self, payload):
+            self._data = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    calls = []
+
+    def urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append(body)
+        if body.get("stream"):
+            return _SseResp(first)
+        return _JsonResp(second)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    seen = []
+    resp = _driver(
+        base_url="https://opencode.ai/zen/go/v1", model="deepseek-flash",
+    ).chat_stream(
+        [{"role": "user", "content": "do the protocol test"}],
+        tools=[{"type": "function", "function": {
+            "name": "run_parallel", "parameters": {"type": "object"},
+        }}],
+        on_delta=seen.append,
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["stream"] is True
+    assert "stream" not in calls[1]
+    assert seen == ["Fanning out..."]
+    assert resp.error is None
+    assert resp.text == ""
+    assert resp.meta["tool_calls"][0]["function"]["name"] == "run_parallel"
+    assert resp.meta["incomplete_retry_recovered"] is True
+
+
+def test_opencode_go_retries_tool_finish_without_assembled_call(monkeypatch):
+    """A relay can report tool_calls after dropping every tool delta."""
+    first = [
+        _data({"choices": [{"delta": {"content": "Working"}}]}),
+        _data({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        b"data: [DONE]\n",
+    ]
+    second = {
+        "choices": [{
+            "message": {"content": "", "tool_calls": [{
+                "id": "call_recovered",
+                "type": "function",
+                "function": {"name": "run_parallel", "arguments": "{}"},
+            }]},
+            "finish_reason": "tool_calls",
+        }],
+    }
+
+    class _JsonResp:
+        def read(self):
+            return json.dumps(second).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    calls = []
+
+    def urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append(body)
+        return _SseResp(first) if body.get("stream") else _JsonResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    resp = _driver(
+        base_url="https://opencode.ai/zen/go/v1", model="deepseek-flash",
+    ).chat_stream(
+        [{"role": "user", "content": "do the protocol test"}],
+        tools=[{"type": "function", "function": {
+            "name": "run_parallel", "parameters": {"type": "object"},
+        }}],
+        on_delta=lambda _text: None,
+    )
+
+    assert len(calls) == 2
+    assert resp.error is None
+    assert resp.meta["incomplete_retry_recovered"] is True
+    assert resp.meta["tool_calls"][0]["function"]["name"] == "run_parallel"
+
+
+def test_reasoning_content_presence_survives_stream_parser(monkeypatch):
+    """DeepSeek's native field must remain distinct from normalized reasoning."""
+    lines = [
+        _data({"choices": [{"delta": {"reasoning_content": "plan"}}]}),
+        _data({"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ]
+    resp = _run_stream(monkeypatch, _driver(model="deepseek-flash"), lines)
+
+    assert resp.meta["reasoning"] == "plan"
+    assert resp.meta["reasoning_content"] == "plan"
+
+
+def test_empty_reasoning_content_field_is_preserved_in_sync_response(monkeypatch):
+    class _JsonResp:
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "reasoning_content": "",
+                    },
+                    "finish_reason": "stop",
+                }],
+            }).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _JsonResp())
+    resp = _driver(model="deepseek-flash").chat(
+        [{"role": "user", "content": "hi"}],
+    )
+
+    assert resp.meta["reasoning"] == ""
+    assert resp.meta["reasoning_content"] == ""
+
+
 def test_duplicate_and_out_of_order_index_assembly(monkeypatch):
     lines = [
         _data({

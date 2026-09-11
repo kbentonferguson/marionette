@@ -216,6 +216,8 @@ class _OpenAIChatSseAccumulator:
         self.end_on_finish = bool(end_on_finish)
         self.full_text = ""
         self.reasoning_pieces: list = []
+        self.reasoning_content_pieces: list[str] = []
+        self.reasoning_content_seen = False
         self.assembled_tool_calls: dict = {}
         self.last_tool_call_index = None
         self.finish_reason = ""
@@ -301,16 +303,17 @@ class _OpenAIChatSseAccumulator:
                 if visible and self.on_delta is not None:
                     self.on_delta(visible)
 
-        reasoning_delta = (
-            delta.get("reasoning")
-            or delta.get("reasoning_content")
-            or ""
-        )
+        if "reasoning_content" in delta:
+            self.reasoning_content_seen = True
+            raw_reasoning_content = delta.get("reasoning_content")
+            if raw_reasoning_content is not None:
+                self.reasoning_content_pieces.append(str(raw_reasoning_content))
+        reasoning_delta = delta.get("reasoning") or delta.get("reasoning_content") or ""
         if reasoning_delta:
             self.stream_started = True
-            self.reasoning_pieces.append(reasoning_delta)
+            self.reasoning_pieces.append(str(reasoning_delta))
             if self.on_reasoning_delta is not None:
-                self.on_reasoning_delta(reasoning_delta)
+                self.on_reasoning_delta(str(reasoning_delta))
 
         delta_tool_calls = delta.get("tool_calls") or []
         if delta_tool_calls:
@@ -373,7 +376,10 @@ class _OpenAIChatSseAccumulator:
         accumulated_reasoning = "".join(self.reasoning_pieces)
         if accumulated_reasoning:
             message_obj["reasoning"] = accumulated_reasoning
-            message_obj["reasoning_content"] = accumulated_reasoning
+        reasoning_content = None
+        if self.reasoning_content_seen:
+            reasoning_content = "".join(self.reasoning_content_pieces)
+            message_obj["reasoning_content"] = reasoning_content
         reasoning = extract_reasoning(message_obj)
         pure_text = strip_think_blocks(self.full_text)
         executable = _executable_stream_tool_calls(
@@ -394,6 +400,7 @@ class _OpenAIChatSseAccumulator:
         return {
             "text": pure_text,
             "reasoning": reasoning,
+            "reasoning_content": reasoning_content,
             "tool_calls": executable,
             "incomplete_tool_calls": incomplete_tools,
             "finish_reason": finish,
@@ -553,6 +560,31 @@ class OpenAICompatDriver:
             return False
         path = (parsed.path or "").lower()
         return "/zen/go" in path
+
+    def _incomplete_tool_retry_eligible(
+        self, resp: DriverResponse, *, tools: list | None,
+    ) -> bool:
+        """Allow one silent Go-relay retry when a tool turn ends mid-call.
+
+        OpenCode Go can close a streamed tool turn after emitting text or a
+        partial call. The first response is already visible, so only the
+        follow-up ``chat`` call may be used for execution. Keep this narrow to
+        the known relay and to tool-bearing responses; other providers retain
+        their fail-closed terminal behavior.
+        """
+        if not tools or not self._is_opencode_go_host():
+            return False
+        meta = resp.meta if isinstance(resp.meta, dict) else {}
+        stream_terminal = _norm_chat_finish(meta.get("stream_terminal"))
+        finish_reason = _norm_chat_finish(meta.get("finish_reason"))
+        if stream_terminal in {"error", "transport_error"}:
+            return False
+        if meta.get("incomplete_tool_calls"):
+            return (
+                stream_terminal == "incomplete"
+                or finish_reason in _TOOL_CHAT_FINISH
+            )
+        return finish_reason in _TOOL_CHAT_FINISH and not meta.get("tool_calls")
 
     def _apply_openrouter_parallel_tool_calls(self, body: dict, tools) -> None:
         """OpenRouter accepts parallel_tool_calls; OpenCode Go/unknown relays do not."""
@@ -1235,6 +1267,12 @@ class OpenAICompatDriver:
                 "finish_reason": finish_reason,
                 "stream_terminal": stream_terminal,
             })
+            if "reasoning_content" in message_obj:
+                raw_reasoning_content = message_obj.get("reasoning_content")
+                meta["reasoning_content"] = (
+                    "" if raw_reasoning_content is None
+                    else str(raw_reasoning_content)
+                )
             if incomplete_tools:
                 meta["incomplete_tool_calls"] = incomplete_tools
             served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
@@ -1286,6 +1324,8 @@ class OpenAICompatDriver:
                 "malformed_sse_chunks": parsed["malformed_sse_chunks"],
                 "saw_done": parsed["saw_done"],
             }
+            if parsed["reasoning_content"] is not None:
+                meta["reasoning_content"] = parsed["reasoning_content"]
             if parsed["incomplete_tool_calls"]:
                 meta["incomplete_tool_calls"] = parsed["incomplete_tool_calls"]
             if parsed["stream_has_cache_read"]:
@@ -1384,6 +1424,43 @@ class OpenAICompatDriver:
             return with_retry(_call)
 
         first = _one_stream(list(messages))
+        if self._incomplete_tool_retry_eligible(first, tools=tools):
+            retry = self.chat(
+                messages,
+                tools=tools,
+                system=system,
+                session_id=session_id,
+            )
+            first_meta = dict(first.meta or {})
+            first_meta["incomplete_retry_attempted"] = True
+            recovered_tool_calls = (
+                retry.error is None
+                and isinstance(retry.meta, dict)
+                and bool(retry.meta.get("tool_calls"))
+            )
+            first_meta["incomplete_retry_recovered"] = recovered_tool_calls
+            if recovered_tool_calls:
+                retry_meta = dict(retry.meta or {})
+                retry_meta["incomplete_retry_attempted"] = True
+                retry_meta["incomplete_retry_recovered"] = True
+                return DriverResponse(
+                    text="" if first.text else retry.text,
+                    tokens_in=first.tokens_in + retry.tokens_in,
+                    tokens_out=first.tokens_out + retry.tokens_out,
+                    latency_ms=first.latency_ms + retry.latency_ms,
+                    model=retry.model or first.model,
+                    error=None,
+                    meta=retry_meta,
+                )
+            return DriverResponse(
+                text=first.text,
+                tokens_in=first.tokens_in,
+                tokens_out=first.tokens_out,
+                latency_ms=first.latency_ms,
+                model=first.model,
+                error=first.error,
+                meta=first_meta,
+            )
         if not _length_continue_eligible(first):
             return first
 
@@ -1441,4 +1518,3 @@ class OpenAICompatDriver:
             ),
             meta=meta,
         )
-
