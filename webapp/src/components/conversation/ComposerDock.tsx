@@ -30,6 +30,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { api, type Config, type ContextUsageResponse, type Job } from "../../lib/api";
+import { forgetResolvedMemoryProposal, rememberResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 import PilotPicker from "../PilotPicker";
 import SwarmReasoningPicker from "../SwarmReasoningPicker";
 import WorkspaceChip from "./WorkspaceChip";
@@ -373,6 +374,7 @@ export default function ComposerDock({
                 </div>
                 <button
                   onClick={async () => {
+                    rememberResolvedMemoryProposal(sessionId, prop.id);
                     onSetMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
                     try {
                       const res = prop.refine
@@ -382,8 +384,12 @@ export default function ComposerDock({
                         const notice = prop.refine ? "Harness refine saved" : "Memory saved";
                         onSetDistillNotice(notice);
                         setSafeTimeout(() => onSetDistillNotice((cur) => (cur === notice ? null : cur)), 4000);
+                      } else {
+                        throw new Error(res.error || "save failed");
                       }
                     } catch {
+                      forgetResolvedMemoryProposal(sessionId, prop.id);
+                      onSetMemoryProposals((prev) => (prev.some((p) => p.id === prop.id) ? prev : [...prev, prop]));
                       onSetDistillNotice(prop.refine ? "Refine save failed" : "Memory save failed");
                     }
                   }}
@@ -393,6 +399,7 @@ export default function ComposerDock({
                 </button>
                 <button
                   onClick={async () => {
+                    rememberResolvedMemoryProposal(sessionId, prop.id);
                     onSetMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
                     try {
                       if (prop.refine) {

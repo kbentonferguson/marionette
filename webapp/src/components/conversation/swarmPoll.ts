@@ -11,6 +11,7 @@ import { jobInActiveSession } from "../../lib/jobScope";
 import { isTerminalJobStatus } from "./nestedActionBounds";
 import { isSwarmPendingTerminal } from "./swarmPendingIdentity";
 import { formatDistilledNotice, formatWikiAutoIngestNotice } from "./streamApply";
+import { getActiveMemoryProposalSession, isResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 
 /** One row from `/api/swarm/live` (id field names vary by store). */
 export type SwarmLiveJobRow = {
@@ -334,10 +335,13 @@ export function classifySwarmPollEvent(evt: any): SwarmPollChrome {
   return { kind: "ignore" };
 }
 
-/** Deduplicate memory proposals by id. */
+/** Deduplicate memory proposals by id, and never resurrect a saved/skipped card. */
 export function appendMemoryProposal<T extends { id: string }>(
   prev: T[],
   proposal: T,
 ): T[] {
+  if (isResolvedMemoryProposal(getActiveMemoryProposalSession(), proposal.id)) {
+    return prev;
+  }
   return prev.some((p) => p.id === proposal.id) ? prev : [...prev, proposal];
 }

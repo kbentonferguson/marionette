@@ -138,13 +138,18 @@ export class JobMetadataStore {
     const sameIds = previous.kind !== 'idle'
       && previous.target.repo === nextTarget.repo
       && previous.target.session_id === nextTarget.session_id;
-    // Same-target reopen is a blank incarnation. Restore only a different visited session.
-    const page = sameIds ? undefined : this.restoreSessionPage(nextTarget);
+    const page = this.restoreSessionPage(nextTarget);
     this.publish({
       ...blank(this.state.epoch + 1, { kind: 'target', target: nextTarget, reason: 'not_opened' }),
       contextEpoch: this.state.contextEpoch + 1,
       working: this.inFlight,
-      ...(page ? { observations: page.observations, local: page.local, headers: page.headers, pins: page.pins, startupStopped: true } : {}),
+      ...(page ? {
+        observations: page.observations,
+        local: page.local,
+        headers: page.headers,
+        pins: page.pins,
+        startupStopped: !sameIds,
+      } : {}),
     });
   }
   invalidate = (): void => {

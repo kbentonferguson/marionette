@@ -443,3 +443,19 @@ def test_memory_propose_accept_missing(tmp_path, monkeypatch):
     assert session.accept_memory_proposal("nope")["ok"] is False
     assert session.dismiss_memory_proposal("nope")["ok"] is False
 
+
+def test_memory_propose_accept_is_idempotent(tmp_path, monkeypatch):
+    temp_mem_path = tmp_path / "idempotent_memory.json"
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
+    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    session._turn_memory_queue = [{"text": "Remember this kit", "category": "fact"}]
+    props = session._flush_turn_memory_proposals()
+    assert len(props) == 1
+    first = session.accept_memory_proposal(props[0]["id"])
+    second = session.accept_memory_proposal(props[0]["id"])
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert len(session._memory.list()) == 1
+

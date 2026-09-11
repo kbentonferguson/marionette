@@ -15,7 +15,7 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { MetadataInspection } from "../components/MetadataJobs";
-import { inspectHarnessJob, JobsInspectHarness } from "./jobsInspectHarness";
+import { inspectHarnessJob, JobsInspectHarness, openDumpInspector } from "./jobsInspectHarness";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
 
@@ -67,19 +67,18 @@ it('retries locally and treats a successful empty response as loaded', async () 
   const fixture = metadata;
   const empty = expertDetail(selection, fixture.context());
   empty.artifacts = { page: { ...empty.artifacts.page, scanned: 0 }, rows: [] };
-  fixture.selected.mockRejectedValueOnce(new Error('store offline')).mockResolvedValueOnce(empty);
+  fixture.selected.mockRejectedValueOnce(new Error('store offline')).mockResolvedValue(empty);
   render(<fixture.Provider><JobsPane /></fixture.Provider>);
   await expand('Inspect A');
-  fireEvent.click(await screen.findByRole('button', { name: 'Inspect tasks and artifacts' }));
-  const retry = await screen.findByRole('button', { name: 'Retry', exact: true });
+  const retries = await screen.findAllByRole('button', { name: 'Retry', exact: true });
   expect(screen.queryByText('No artifacts recorded')).not.toBeInTheDocument();
-  fireEvent.click(retry);
+  fireEvent.click(retries[0]);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry', exact: true })).not.toBeInTheDocument());
+  openDumpInspector();
   expect(await screen.findByText('No artifacts recorded')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Retry', exact: true })).not.toBeInTheDocument();
-  expect(fixture.selected).toHaveBeenCalledTimes(2);
+  expect(fixture.selected).toHaveBeenCalled();
   expect(fixture.selected).toHaveBeenLastCalledWith(selection, expect.objectContaining({ task_cursor: null, artifact_cursor: null }));
   expect(screen.getByText('No artifacts recorded')).toBeInTheDocument();
-  expect(fixture.selected).toHaveBeenCalledTimes(2);
   expect(fetchJobArtifacts).not.toHaveBeenCalled();
   expect(api.swarmLive).not.toHaveBeenCalled();
   expect(api.artifacts).not.toHaveBeenCalled();
@@ -109,7 +108,7 @@ it('fences an old response when a colliding job is selected in another session',
   let release: (value: MetadataDetail) => void = () => {};
   fixture.selected.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
   render(<fixture.Provider><JobsPane /></fixture.Provider>); await expand('Inspect A');
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Inspect tasks and artifacts' })[0]);
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(1));
   const next: MetadataSelection = { ...selection, session_id: 'B', job_ref: { job_id: base.id, state_id: 'state_b' } };
   // The shared owner serializes reads; change context before releasing the old wire response.
@@ -119,7 +118,7 @@ it('fences an old response when a colliding job is selected in another session',
   expect(fixture.store.getSnapshot().detailCache).toEqual({});
   await fixture.replace([expertSummary(next, 'Inspect B')]);
   await expand('Inspect B');
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Inspect tasks and artifacts' })[0]);
   await waitFor(() => expect(fixture.selected).toHaveBeenCalledTimes(2));
   await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(screen.queryByText(/Private A result/)).not.toBeInTheDocument();

@@ -211,6 +211,10 @@ def _opencode_go_curated() -> list[tuple[str, str, str]]:
         if not bare:
             continue
         n = bare.lower()
+        # Live Go id is deepseek-flash; keep one worker row under the curated
+        # slug so Settings pins of either id resolve to the same catalog entry.
+        if n == "deepseek-flash":
+            continue
         if any(tok in n for tok in ("kimi-k3", "grok-4.6", "grok-4.5", "gpt-5.6-sol", "glm-5.3", "glm-5.2")):
             tier = "frontier"
         elif "flash" in n or n.endswith("-plus") or n in ("hy3", "mimo-v2.5"):
@@ -442,11 +446,17 @@ def _in_live_catalog(name: str, slug: str, live_models: list[str]) -> bool:
         return False
     live = [str(m or "").strip() for m in live_models if str(m or "").strip()]
     live_set = {m.lower() for m in live}
+    try:
+        from .opencode_go import flash_model_keys
+    except Exception:
+        flash_model_keys = lambda model: frozenset({str(model or "").strip().lower()} - {""})
     for key in (name, slug):
         raw = str(key or "").strip()
         if not raw:
             continue
         if raw.lower() in live_set:
+            return True
+        if flash_model_keys(raw) & live_set:
             return True
         promoted = _newest_dated_snapshot(raw, live)
         if promoted.lower() in live_set:

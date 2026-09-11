@@ -64,6 +64,7 @@ import {
 import { turnHasLiveInvestigation, turnHasLiveProgressSignal } from "../../lib/turnProgress";
 import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
+import { getActiveMemoryProposalSession, isResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
 import { waitHintForAssistantDone } from "./swarmPoll";
 import { publishSessionTodos } from "../../lib/sessionTodos";
@@ -240,7 +241,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
               }
             : undefined;
         setMemoryProposals((prev) => (
-          prev.some((p) => p.id === id)
+          prev.some((p) => p.id === id) || isResolvedMemoryProposal(getActiveMemoryProposalSession(), id)
             ? prev
             : [...prev, { id, text, category: d.category || "general", refine }]
         ));

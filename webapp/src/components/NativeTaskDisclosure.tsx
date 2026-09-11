@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, Circle, Cpu, Loader2, XCircle 
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import type { LocalRoute, LocalTask } from '../lib/localJobMetadata';
 import type { ExpertUsageFacts } from '../lib/expertEconomicsFacts';
+import { rosterRoleName } from '../lib/expertRoutingFacts';
 import { ExpertWorkerUsage } from './ExpertUsageDetails';
 import WorkerInstruction from './WorkerInstruction';
 
@@ -22,10 +23,7 @@ function workerGlyph(status: string) {
 }
 
 function workerTitle(task: LocalTask): string {
-  const role = task.role || task.task_id || 'Task identity unavailable';
-  const adapter = task.adapter.trim();
-  if (!adapter) return role;
-  return role.toLowerCase().includes(`(${adapter.toLowerCase()})`) ? role : `${role} (${adapter})`;
+  return rosterRoleName(task.role || task.task_id || 'Worker', task.adapter);
 }
 
 export default function NativeTaskDisclosure({ task, route, kill, usage, onInspect }: {
@@ -71,7 +69,7 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
           disabled={kill.disabled} onKeyUp={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); kill.request(); }}>Kill</button>}
         <WorkerInstruction text={task.instruction} truncated={task.truncated} />
         <p>Task: {task.task_id ?? 'identity unavailable'}. Adapter: {task.adapter || 'unavailable'}.</p>
-        {task.model_kind === 'unavailable' && <p>Assigned task model unavailable.</p>}
+        {task.model_kind === 'unavailable' && !nativeActiveStatuses.includes(task.status) && <p>No assigned task model recorded.</p>}
         {task.truncated && <p>Task fields truncated.</p>}
         {route && <dl>
           <dt>Recorded routing policy</dt><dd>{route.policy || 'unavailable'}</dd>

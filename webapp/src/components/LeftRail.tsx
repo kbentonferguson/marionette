@@ -60,6 +60,7 @@ export {
   projectSessionsEmptyState,
   preferLastGoodSessionList,
   writeSessionListCache,
+  shouldOpenBlankSessionAfterRemove,
 } from "./leftRailSessions";
 
 import {
@@ -83,6 +84,7 @@ import {
   projectSessionsEmptyState,
   preferLastGoodSessionList,
   writeSessionListCache,
+  shouldOpenBlankSessionAfterRemove,
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
@@ -1018,12 +1020,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setSessionsCacheEpoch((n) => n + 1);
 
     try {
-      const res = await api.deleteSession(id);
+      const viewingId = sessions.find((session) => session.active)?.id || "";
+      await api.deleteSession(id);
       await refreshSessionsRef.current();
-      if (res.active) {
-        await switchSession(res.active);
-      } else {
-        onSessionChange?.(null, id);
+      if (shouldOpenBlankSessionAfterRemove(id, viewingId)) {
+        await newSession(currentRepo);
       }
     } catch (err) {
       await refreshSessionsRef.current();
@@ -1139,10 +1140,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       ?? !archived;
     patchSessionArchivedInCaches(roots, sid, archived);
     setSessionsCacheEpoch((n) => n + 1);
+    const viewingId = sessions.find((session) => session.active)?.id || "";
     try {
       await api.archiveSession(sid, archived);
       await refreshSessionsRef.current();
       if (railTab === "sessions") void refreshBankSessions();
+      if (archived && shouldOpenBlankSessionAfterRemove(sid, viewingId)) {
+        await newSession(currentRepo);
+      }
     } catch (err) {
       console.error(err);
       patchSessionArchivedInCaches(roots, sid, !!prior);

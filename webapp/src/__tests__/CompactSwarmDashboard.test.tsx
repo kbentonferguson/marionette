@@ -85,6 +85,36 @@ it('keeps native forecasts distinct from an existing assignment', () => {
   expect(screen.getByText('Forecast: forecast-model. Projected choice')).toBeVisible();
 });
 
+it('never paints Model unavailable for a running native worker still waiting on a route', () => {
+  render(<CompactSwarmDashboard title="Native implement" lifecycle="running" nativeTasks={[producerTask()]}
+    workerStatuses={new Map()} />);
+  const roster = screen.getByRole('group', { name: 'Workers' });
+  expect(within(roster).getByText('implement')).toBeVisible();
+  expect(within(roster).queryByText(/implement \(agentic\)/)).toBeNull();
+  expect(within(roster).getByText('routing…')).toBeVisible();
+  expect(screen.queryByText(/unavailable/i)).toBeNull();
+  expect(screen.getByText('routing… · routing in progress')).toBeVisible();
+});
+
+it('shows a native forecast model instead of hiding the worker behind unavailable', () => {
+  const native = producerTask();
+  const route: LocalRoute = { ordinal: 1, task_id: native.task_id, association: 'explicit', model: 'gpt-5.6-luna',
+    model_kind: 'forecast', role: 'implement', policy: 'balanced', adapter: 'agentic', created_by: 'router',
+    detail: 'Projected choice', est_cost_usd: null, truncated: false };
+  render(<CompactSwarmDashboard title="Native forecast" lifecycle="running" nativeTasks={[native]}
+    nativeRoutes={new Map([[native.task_id!, route]])} routeCoverage="partial" workerStatuses={new Map()} />);
+  expect(within(screen.getByRole('group', { name: 'Workers' })).getByTitle('Model: gpt-5.6-luna')).toHaveTextContent('forecast');
+  expect(screen.queryByText(/unavailable/i)).toBeNull();
+});
+
+it('uses routing… for an active expert worker without a recorded model', () => {
+  const pending: ExpertMetadata = { ...expert, tasks: [{ ...task(1), model: '', adapter: 'codex' }], artifacts: [] };
+  render(<CompactSwarmDashboard title="Pending route" lifecycle="running" expert={pending}
+    workerStatuses={new Map([['task-1', 'running']])} />);
+  expect(screen.getByText('routing…')).toBeVisible();
+  expect(screen.queryByText(/unavailable/i)).toBeNull();
+});
+
 it('labels partial worker and token coverage without inventing a complete total', () => {
   const partial: ExpertMetadata = { ...expert, tasks: [{ ...task(1), usage: { ...task(1).usage, tokens_out: null } }],
     artifacts: [], coverage: { tasks: 'partial', artifacts: 'partial' } };

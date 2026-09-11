@@ -51,7 +51,21 @@ async function observe() {
   act(() => { store.restartTraversal(); });
   for (let i = 0; i < 48; i++) await act(async () => { await store.advance(); });
 }
-async function start() { await act(async () => { store.setTarget(target); expect(await store.readView()).toBe('applied'); }); await observe(); }
+async function applyView() {
+  await act(async () => {
+    let result: Awaited<ReturnType<typeof store.readView>> = 'skipped';
+    for (let i = 0; i < 8 && (result === 'skipped' || result === 'discarded'); i++) {
+      result = await store.readView();
+    }
+    expect(result).toBe('applied');
+  });
+}
+async function start() {
+  await act(async () => { store.setTarget(target); });
+  expect(store.getSnapshot().view.kind).not.toBe('idle');
+  await applyView();
+  await observe();
+}
 beforeEach(() => {
   localStorage.clear(); clearPendingSwarmOpenJob();
   target = { ...context, scope: 'all' }; incarnation = 'native_process_1'; revision = 1;
@@ -135,7 +149,7 @@ it('embeds a PM job when artifact navigation is requested', async () => {
   mount();
   await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
+  expect(peekPendingSwarmNavigation()).toBeNull();
   expect(queued.artifactId).toBe('artifact-missing');
 });
 it('holds an unobserved exact target until that exact row appears', async () => {
@@ -166,7 +180,11 @@ it('does not persist PM dashboard focus and isolates native dismissal with compa
   mounted.unmount(); await start(); mount();
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
-  incarnation = 'native_process_2'; await act(async () => { store.setTarget(target); await store.readView(); }); await observe();
+  incarnation = 'native_process_2';
+  await waitFor(() => expect(store.getSnapshot().working).toBe(false));
+  await act(async () => { store.setTarget(target); });
+  await applyView();
+  await observe();
   expect(row('job_1', 'local').getByRole('button', { name: /completed/ })).toBeVisible();
 });
 it('renders accounting ownership separately from exclusion without asserting totals', async () => {
@@ -244,12 +262,12 @@ it('embeds a PM job from a remounted artifact deep-link', async () => {
   const mounted = mount(); openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
   await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
+  expect(peekPendingSwarmNavigation()).toBeNull();
   mounted.unmount(); await start(); mount();
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
   openTarget('job_1', metadataSelectionKey(selection()), 'artifact-missing');
   await waitFor(() => expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true'));
-  expect(peekPendingSwarmNavigation()?.artifactId).toBe('artifact-missing');
+  expect(peekPendingSwarmNavigation()).toBeNull();
 });
 it('requires both job ID and exact selection key to match and never falls back from a missing exact key', async () => {
   await start(); mount(); openTarget('job_2', metadataSelectionKey(selection()));
@@ -265,7 +283,7 @@ it('opens the Puppetmaster dashboard from a PM job row', async () => {
   fireEvent.click(row('job_1').getByRole('button', { name: /^PM harness job/ }));
   expect(row('job_1').getByRole('button', { name: /^PM harness job/ })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.queryByTestId('job-dashboard-host')).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Inspect tasks and artifacts' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'See in Puppetmaster dashboard' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Open Puppetmaster board' })).toBeInTheDocument();
 });
 

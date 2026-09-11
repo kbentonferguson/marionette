@@ -368,3 +368,8 @@ export function projectSessionsEmptyState(
   if (sessionsReady) return "empty";
   return showRowLoading ? "loading" : "pending";
 }
+
+/** Delete/archive of the current session must open a blank New session, never another transcript. */
+export function shouldOpenBlankSessionAfterRemove(removedId: string, activeId: string | undefined): boolean {
+  return Boolean(removedId && activeId && removedId === activeId);
+}

@@ -56,7 +56,7 @@ def test_curated_catalog_covers_the_published_endpoint_table():
         "grok-4.5", "gpt-5.6-luna", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3",
         "kimi-k2.7-code", "kimi-k2.6", "mimo-v2.5", "mimo-v2.5-pro",
         "minimax-m3", "minimax-m2.7", "qwen3.7-max", "qwen3.7-plus",
-        "qwen3.6-plus", "deepseek-v4-pro", "deepseek-v4-flash", "hy3",
+        "qwen3.6-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash", "hy3",
     ):
         assert model in go.CURATED_MODELS
 
@@ -260,7 +260,7 @@ def test_build_pilot_routes_chat_completions_models():
     driver = prov.build_pilot("opencode-go:deepseek-v4-flash")
     assert isinstance(driver, OpenAICompatDriver)
     assert driver.base_url == go.BASE_URL
-    assert driver.model == "deepseek-v4-flash"
+    assert driver.model == "deepseek-flash"
     assert driver.api_key_env == "OPENCODE_GO_API_KEY"
     assert driver.extra_headers["User-Agent"] == go.USER_AGENT
 

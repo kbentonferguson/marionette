@@ -429,14 +429,10 @@ class SessionStore:
             # Durability: flush any coalesced mutations before promote/read.
             self._cancel_save_timer_unlocked()
             self._flush_unlocked()
-            deleted_root = ""
-            for s in self._sessions:
-                if s["id"] == sid:
-                    deleted_root = session_stored_root(s)
-                    break
             self._sessions = [s for s in self._sessions if s["id"] != sid]
             if self._active == sid:
-                self._active = self._pick_next_active(deleted_root)
+                # Client opens a blank session; do not promote a sibling.
+                self._active = None
             self._save(immediate=True)
             return self._active
 
