@@ -93,7 +93,6 @@ function expertAsLocalTask(task: ExpertTask, status: string) {
 export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal }: {
   job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
 }) {
-  const { state } = useSharedJobMetadata();
   const identity = JSON.stringify([job.metadata_key, job.local_ref]);
   return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} />;
 }
