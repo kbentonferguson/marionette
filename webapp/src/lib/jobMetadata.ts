@@ -121,6 +121,12 @@ export function parseMetadataSelection(v: unknown, c: Pick<MetadataContext, 'ses
   return { job_ref, source: s.source, session_id: c.session_id, repo: c.repo };
 }
 export function parseMetadataView(v: unknown, target: MetadataTarget): MetadataView {
+  if (record(v) && v.availability === 'unavailable') {
+    const ctx = record(v.context) ? v.context : null;
+    if (!ctx || typeof ctx.session_id !== 'string' || !ctx.session_id || typeof ctx.repo !== 'string' || !ctx.repo) {
+      throw new MetadataError('unavailable');
+    }
+  }
   const o = object(v, ['version', 'context', 'availability', 'sources', 'missing', 'refreshing', ...(record(v) && Object.hasOwn(v, 'local') ? ['local'] : [])]);
   let local: MetadataView['local'];
   if (o.local !== undefined) {
@@ -301,6 +307,25 @@ export function metadataListPath(c: MetadataContext, s: MetadataStream, t: Trave
 }
 
 export type MetadataObservation = { row: MetadataSummary; freshness: 'observed' | 'stale' };
+export function canonicalExpertSelection(
+  canonical: NonNullable<LocalObservation['row']['canonical']>,
+  repo: string,
+): MetadataSelection {
+  return {
+    source: canonical.source,
+    job_ref: canonical.job_ref,
+    session_id: canonical.session_id,
+    repo,
+  };
+}
+export function expertLookupKey(
+  jobKey: string | undefined,
+  canonical: LocalObservation['row']['canonical'] | undefined,
+  repo: string | undefined,
+): string {
+  if (canonical && repo) return metadataSelectionKey(canonicalExpertSelection(canonical, repo));
+  return jobKey ?? '';
+}
 export function canonicalPMReplacesLocal(local: LocalObservation, pm: MetadataObservation[]): boolean {
   const canonical = local.row.canonical;
   if (!canonical || canonical.session_id !== local.row.session_id) return false;

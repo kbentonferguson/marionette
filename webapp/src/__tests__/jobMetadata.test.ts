@@ -1,6 +1,6 @@
 import backend from './jobMetadata.backend.json';
 import { describe, expect, it } from 'vitest';
-import { advanceMetadataStream, canonicalPMReplacesLocal, initialMetadataStream, mergeMetadataRows, metadataListPath, metadataSelectionKey,
+import { advanceMetadataStream, canonicalPMReplacesLocal, expertLookupKey, initialMetadataStream, mergeMetadataRows, metadataListPath, metadataSelectionKey,
   metadataStreams, validateMetadataTarget, parseMetadataDetail, parseMetadataList, parseMetadataPins, parseMetadataView } from '../lib/jobMetadata';
 import type { MetadataObservation, MetadataStreamState, MetadataView, MetadataRemoval } from '../lib/jobMetadata';
 import type { LocalObservation } from '../lib/localJobMetadata';
@@ -134,6 +134,45 @@ describe('bounded reducer', () => {
     expect(metadataStreams(parsed, 'repo')).toHaveLength(14);
     expect(() => parseMetadataView({ ...v, sources: [...v.sources, v.sources[0]] }, context)).toThrow();
   });
+});
+
+it('treats a transitional empty metadata view as unavailable, not invalid metadata', () => {
+  const empty = {
+    version: 1,
+    context: { session_id: '', repo: '', view_generation: 'generation-1' },
+    availability: 'unavailable',
+    sources: [],
+    missing: ['view_unavailable'],
+    refreshing: false,
+  };
+  try {
+    parseMetadataView(empty, context);
+    throw new Error('expected parseMetadataView to throw');
+  } catch (error) {
+    expect(error).toMatchObject({ code: 'unavailable' });
+  }
+  try {
+    parseMetadataView({ version: 1, availability: 'unavailable', sources: [], missing: ['response_budget'] }, context);
+    throw new Error('expected parseMetadataView to throw');
+  } catch (error) {
+    expect(error).toMatchObject({ code: 'unavailable' });
+  }
+});
+
+it('looks up expert facts on the canonical PM identity', () => {
+  const canonical = {
+    source: 'harness' as const,
+    session_id: context.session_id,
+    dispatch_id: 'call_01',
+    job_ref: { job_id: 'job_canonical', state_id: 'store-A', version: 2 as const, incarnation: 'pm-incarnation' },
+  };
+  expect(expertLookupKey('["local"]', canonical, context.repo)).toBe(metadataSelectionKey({
+    source: 'harness',
+    job_ref: canonical.job_ref,
+    session_id: context.session_id,
+    repo: context.repo,
+  }));
+  expect(expertLookupKey('local-only', undefined, context.repo)).toBe('local-only');
 });
 
 it('replaces a local placeholder only with its fresh exact canonical PM identity', () => {
