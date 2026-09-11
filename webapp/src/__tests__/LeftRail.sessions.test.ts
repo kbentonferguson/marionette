@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionSettledInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, shouldOpenBlankSessionAfterRemove, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -40,6 +40,12 @@ describe("LeftRail session list contracts", () => {
     expect(touched).toBe(2);
     expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.map((s) => s.id)).toEqual(["sess-m"]);
     expect(readSWRCache<Session[]>(`sessions:${dugout}`)).toEqual([]);
+  });
+
+  it("delete or archive of the current session opens a blank New session", () => {
+    expect(shouldOpenBlankSessionAfterRemove("sess-a", "sess-a")).toBe(true);
+    expect(shouldOpenBlankSessionAfterRemove("sess-a", "sess-b")).toBe(false);
+    expect(shouldOpenBlankSessionAfterRemove("sess-a", "")).toBe(false);
   });
 
   it("reads cached sessions for a non-active root from sessions:${path}", () => {

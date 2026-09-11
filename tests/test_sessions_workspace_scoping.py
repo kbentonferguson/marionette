@@ -253,9 +253,11 @@ def test_delete_single_session_via_delete_method(tmp_path):
 
 
 def test_delete_active_session_stays_in_same_workspace(tmp_path):
-    """Deleting the active session must promote a sibling from the SAME
-    workspace -- never the newest session globally, which auto-switched the
-    whole app to another dir (often a leaked temp worktree)."""
+    """Deleting the active session must not promote any other transcript.
+
+    The client opens a blank session in the same workspace. Promoting a sibling
+    (or the newest global session) auto-switched dirs and leaked other chats.
+    """
     store = SessionStore(str(tmp_path / "sessions.json"))
     repo_a = tmp_path / "repo_a"
     repo_b = tmp_path / "repo_b"
@@ -267,8 +269,12 @@ def test_delete_active_session_stays_in_same_workspace(tmp_path):
     active_a = store.create("A-active", repo=str(repo_a), workspace_root=str(repo_a))
 
     new_active = store.delete(active_a["id"])
-    assert new_active == older_a["id"]
-    assert new_active != newest_b["id"]
+    assert new_active is None
+    assert store.active is None
+    remaining = {row["id"] for row in store.rows()}
+    assert older_a["id"] in remaining
+    assert newest_b["id"] in remaining
+    assert active_a["id"] not in remaining
 
 
 def test_delete_last_session_in_workspace_leaves_no_active(tmp_path):
@@ -286,11 +292,12 @@ def test_delete_last_session_in_workspace_leaves_no_active(tmp_path):
     assert store.delete(only_a["id"]) is None
 
 
-def test_delete_rootless_active_promotes_rootless_peer(tmp_path):
+def test_delete_rootless_active_leaves_no_active(tmp_path):
     store = SessionStore(str(tmp_path / "sessions.json"))
     peer = store.create("One")
     active = store.create("Two")
-    assert store.delete(active["id"]) == peer["id"]
+    assert store.delete(active["id"]) is None
+    assert peer["id"] in {row["id"] for row in store.rows()}
 
 
 def test_ephemeral_temp_sessions_pruned_on_load(tmp_path, monkeypatch):

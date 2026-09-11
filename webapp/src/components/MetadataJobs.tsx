@@ -77,25 +77,25 @@ function relativeSince(ts: number | string | null | undefined, now: number): str
   if (mins < 60) return `${mins}m ago`;
   return `${Math.floor(mins / 60)}h ago`;
 }
-export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal }: {
-  job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
+export function MetadataInspection({ job, navigation, compact = false, onReveal, onOpenDashboard, deferAutoRead = false }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead?: boolean;
 }) {
   const identity = job.local_ref ? JSON.stringify(['local', job.local_ref.job_id]) : (job.metadata_key ?? job.id);
-  return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} />;
+  return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} onReveal={onReveal} onOpenDashboard={onOpenDashboard} deferAutoRead={deferAutoRead} />;
 }
-function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
-  job: Job; navigation?: SwarmNavigationTarget; compact: boolean; revealed: boolean; onReveal?: () => void;
+function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboard, deferAutoRead }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead: boolean;
 }) {
   const { store, state } = useSharedJobMetadata();
   const [notice, setNotice] = useState('');
   const [stopping, setStopping] = useState(false);
   const [stopAcknowledged, setStopAcknowledged] = useState(false);
   const [dialogClosed, setDialogClosed] = useState(false);
-  const inspectionOpen = !compact || revealed || !!navigation?.artifactId;
-  const showDump = inspectionOpen && !dialogClosed;
+  // Compact never hosts the inspection overlay.
+  const showDump = !compact && !dialogClosed;
   const [now, setNow] = useState(Date.now);
   const revealInspection = () => { onReveal?.(); setDialogClosed(false); };
-  useEffect(() => { if (navigation?.artifactId) { onReveal?.(); setDialogClosed(false); } }, [navigation, onReveal]);
+  useEffect(() => { if (!compact && navigation?.artifactId) { onReveal?.(); setDialogClosed(false); } }, [compact, navigation, onReveal]);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -119,6 +119,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     : listed?.freshness === 'observed');
   const initialPMRead = useRef(false);
   const inspect = (lane: LocalDetail['lane'] = 'actions') => {
+    if (compact) return;
     revealInspection();
     if (state.view.kind !== 'view') return;
     if (local) { if (!native || native.lane !== lane) store.selectLocalIfCurrent(local, lane); void store.readLocalDetail(); }
@@ -129,11 +130,11 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     }
   };
   useEffect(() => {
-    if (initialPMRead.current || local || !selectedPM || selectedPM.job_ref.version !== 2 || detail?.observation || navigation?.artifactId || state.working || state.view.kind !== 'view') return;
+    if (deferAutoRead || initialPMRead.current || local || !selectedPM || detail?.observation || state.working || state.view.kind !== 'view') return;
     initialPMRead.current = true;
     store.select(selectedPM);
     void store.readDetail();
-  }, [inspectionOpen, local, selectedPM, state.working, state.view, store]);
+  }, [local, selectedPM, state.working, state.view, store]);
   const initialNativeRead = useRef(false);
   const initialRoutingRead = useRef(false);
   useEffect(() => {
@@ -144,26 +145,26 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     setNotice('');
   }, [local?.incarnation]);
   useEffect(() => {
-    if (initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working) return;
+    if (deferAutoRead || initialNativeRead.current || !local || !nativeSummary || ['run_command', 'run_command_batch', 'parallel_wave'].includes(nativeSummary.kind) || state.working) return;
     if (!store.selectLocalIfCurrent(local, 'tasks')) return;
     initialNativeRead.current = true;
     void store.readLocalDetail();
   }, [local, nativeSummary?.kind, state.working, state.view, store]);
   useEffect(() => {
-    if (initialRoutingRead.current || !local || !native?.tasks || state.working) return;
+    if (deferAutoRead || initialRoutingRead.current || !local || !native?.tasks || state.working) return;
     if (!store.selectLocalIfCurrent(local, 'routing')) return;
     initialRoutingRead.current = true;
     void store.readLocalDetail();
   }, [local, native?.tasks, state.working, state.view, store]);
   const attemptedNavigation = useRef<SwarmNavigationTarget | null>(null);
   useEffect(() => {
-    if (!navigation?.artifactId || navigation.kind !== 'pm' || !selectedPM || state.working
+    if (compact || deferAutoRead || !navigation?.artifactId || navigation.kind !== 'pm' || !selectedPM || state.working
       || state.view.kind !== 'view' || peekPendingSwarmNavigation() !== navigation
       || attemptedNavigation.current === navigation) return;
     attemptedNavigation.current = navigation;
     store.select(selectedPM);
     void store.readDetail();
-  }, [navigation, selectedPM, state.working, state.view, store]);
+  }, [compact, deferAutoRead, navigation, selectedPM, state.working, state.view, store]);
   const observation = selectedPM ? detail?.observation : undefined;
   const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
@@ -230,12 +231,11 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     : 'unavailable' as const;
   const nativeRouteByTask = useMemo(() => {
     const routes = new Map<string, LocalRoute>();
-    if (nativeRouteCoverage !== 'complete') return routes;
     for (const route of native?.routing?.rows ?? []) {
       if (route.task_id && route.association !== 'unavailable') routes.set(route.task_id, route);
     }
     return routes;
-  }, [native?.routing?.rows, nativeRouteCoverage]);
+  }, [native?.routing?.rows]);
   const dump = showDump ? <>
       <p className="break-all">{job.source} / {local ? `native ${local.incarnation}` : job.job_ref?.state_id} / {job.id}</p>
       {nativeSummary && <p>Native {nativeSummary.kind.replaceAll('_', ' ')} · Actions {nativeSummary.action_count ?? 'unknown'} · Children {nativeSummary.child_count ?? 'unknown'}{nativeSummary.parent_ref ? ` · Parent ${nativeSummary.parent_ref.job_id} / ${nativeSummary.parent_ref.incarnation}` : ' · Parent relationship unknown'}. Receipt presence: {Object.entries(nativeSummary.receipts).filter(([, present]) => present).map(([name]) => name).join(', ') || 'none observed'}.</p>}
@@ -280,7 +280,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
     {workerCount > 0 && <CompactSwarmDashboard
       title={jobDisplayTitle(job)} lifecycle={nativeSummary?.lifecycle ?? job.status}
       workerStatuses={taskStatusById} expert={expert && expert.kind !== 'unavailable' ? expert : undefined}
-      headerModel={expertHeaderModel(currentHeader(state, job.metadata_key ?? '')) ?? undefined}
+      headerModel={expertHeaderModel(currentHeader(state, job.metadata_key ?? '')) ?? nativeSummary?.display?.model ?? undefined}
       nativeTasks={nativeRows} nativeRoutes={nativeRouteByTask} routeCoverage={nativeRows.length ? nativeRouteCoverage : undefined}
       artifactCount={nativeSummary?.artifact_count ?? observation?.artifact_count ?? null}
       workerCount={nativeSummary?.task_count ?? observation?.task_count ?? job.task_count ?? null}
@@ -290,24 +290,20 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
       usage={costHeader?.usage?.tokens ?? (nativeSummary?.usage?.kind === 'reported' ? nativeSummary.usage.tokens : null)}
       cancel={nativeRows.length ? workerKill : undefined}
     />}
-    <div className="flex flex-wrap gap-1">
+    {compact && onOpenDashboard && <div className="flex flex-wrap gap-1">
+      <button type="button" className={button} onClick={onOpenDashboard}>See in Puppetmaster dashboard</button>
+    </div>}
+    {!compact && <div className="flex flex-wrap gap-1">
       <button className={button} disabled={!local && !selectedPM} onClick={() => inspect()}>Inspect {local ? 'actions' : 'tasks and artifacts'}</button>
       {local && <><button className={button} onClick={() => inspect('tasks')}>Inspect workers</button><button className={button} onClick={() => inspect('routing')}>Inspect routing</button><button className={button} onClick={() => inspect('output')}>Inspect output</button><button className={button} onClick={() => inspect('children')}>Inspect children</button></>}
-    </div>
-    {!local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
-    {view.kind === 'view' && !local && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
-    {local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
+    </div>}
+    {!compact && !local && !selectedPM && <p>Artifact preview is unavailable for this selection.</p>}
+    {view.kind === 'view' && !local && !deferAutoRead && <JobCancellationControl job={authorizedJob} repo={view.context.repo} sessionId={view.context.session_id} disabled={job.read_status === 'unavailable' || state.working} />}
+    {!compact && !deferAutoRead && local && view.kind === 'view' && job.session_id === view.context.session_id && <button className={button} disabled={!nativeSelection || !nativeFresh || (nativeSummary && terminal.has(nativeSummary.lifecycle)) || state.working || stopping} onClick={() => void nativeStop()}>Request native stop</button>}
     {local && !nativeSelection && <p>Native stop unavailable: this identity is not supported by the current execution control API.</p>}
     {stopNotice && <p role="status">{stopNotice}</p>}
-    {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => inspect()}>Retry</button></div>}
+    {detail?.error && <div><p role="alert">Selected read unavailable. Retry inspection.</p><button className={button} disabled={state.working} onClick={() => { if (compact) { if (selectedPM) { store.select(selectedPM); void store.readDetail(); } } else inspect(); }}>Retry</button></div>}
     {native?.error && <p role="alert">{native.summaryFreshness === 'observed' ? 'Selected lane is stale or unavailable. Retry inspection.' : 'Selected read unavailable. Retry inspection.'}</p>}
-    {compact && dump && <div role="dialog" aria-label="Selected job inspection" className="fixed inset-4 z-[80] m-auto flex h-3/4 max-h-full w-auto max-w-3xl flex-col overflow-hidden rounded-2xl border border-edge bg-panel text-txt shadow-lg">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-edge px-4 py-2">
-        <h2 className="text-sm font-semibold">Job inspection</h2>
-        <button type="button" className="min-h-11 shrink-0 px-2 text-xs text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent" onClick={() => setDialogClosed(true)}>Close job inspection</button>
-      </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain break-words p-4 text-xs text-muted">{dump}</div>
-    </div>}
     {!compact && dump}
   </div>;
 }
@@ -329,7 +325,10 @@ function isFinished(job: Job): boolean {
   return terminal.has(job.status) || (!job.local_ref && job.status === 'stalled');
 }
 function isActive(job: Job): boolean {
-  return job.read_status !== 'unavailable' && (job.local_ref ? nativeActiveStatuses : pmActiveStatuses).some(status => status === job.status);
+  return (job.local_ref ? nativeActiveStatuses : pmActiveStatuses).some(status => status === job.status);
+}
+function isLiveObservation(job: Job): boolean {
+  return job.read_status !== 'unavailable' && isActive(job);
 }
 function isNativeActivity(job: Job): boolean {
   return !!job.local_ref && ['run_command', 'run_command_batch', 'parallel_wave'].includes(job.job_kind ?? '');
@@ -352,19 +351,18 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [jobScope, setJobScope] = useState<JobScope>(loadJobScope);
   const [finishedOpen, setFinishedOpen] = useState(true);
-  const [inspected, setInspected] = useState<string[]>([]);
 
   const [notice, setNotice] = useState('');
   const liveJobs = useMemo(() => metadataJobs(state).filter(isSwarmTrackerJob), [state]);
   const retainedJobs = useRef<Job[]>([]);
   if (liveJobs.length > 0) retainedJobs.current = liveJobs;
-  // Soft refresh only: keep the last page while working with a live view and no
-  // transport error. Never mask a failed read with stale rows.
-  const jobs = liveJobs.length > 0
-    ? liveJobs
-    : (state.working && !state.error && state.view.kind === 'view'
-      ? retainedJobs.current
-      : liveJobs);
+  const discoveryIdle = state.view.kind === 'view' && !state.working && !state.error
+    && !state.streams.some(s => s.state === 'unavailable' || s.state === 'cursor_expired')
+    && state.local.state !== 'unavailable' && state.local.state !== 'expired';
+  const invalidated = state.view.kind === 'target' && state.view.reason === 'invalidated';
+  if (invalidated) retainedJobs.current = [];
+  const jobs = liveJobs.length > 0 ? liveJobs
+    : (!discoveryIdle && !invalidated && retainedJobs.current.length ? retainedJobs.current : liveJobs);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
@@ -394,7 +392,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     return () => window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, sync);
   }, []);
   useEffect(() => {
-    const live = new Set(jobs.filter(j => j.read_status !== 'unavailable' && (j.local_ref ? nativeActiveStatuses : pmActiveStatuses).some(status => status === j.status)).map(j => j.metadata_key));
+    const live = new Set(jobs.filter(isLiveObservation).map(j => j.metadata_key));
     setPreferences(p => p.dismissed.some(key => live.has(key)) ? { ...p, dismissed: p.dismissed.filter(key => !live.has(key)) } : p);
   }, [jobs]);
   useEffect(() => {
@@ -429,7 +427,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     setFilter('all');
     setFinishedOpen(true);
     setPreferences(p => ({ expanded: [...p.expanded.filter(k => k !== key), key].slice(-8), dismissed: p.dismissed.filter(k => k !== key) }));
-    setNotice(pending.artifactId ? 'Opening the recorded artifact target. If it is outside the loaded page, use Next artifacts; navigation remains pending until it is observed.' : '');
+    setNotice(pending.artifactId ? 'Job opened. Artifact details are in the Puppetmaster dashboard.' : '');
     setFocusRequest({ key, target: pending });
   }, [jobs, pending, enabled, visible, state.contextEpoch, state.view]);
   useLayoutEffect(() => {
@@ -439,10 +437,8 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     if (!button) return;
     button.focus({ preventScroll: true });
     button.scrollIntoView({ block: 'nearest' });
-    if (!focusRequest.target.artifactId) {
-      takePendingSwarmNavigation(focusRequest.target);
-      setPending(p => p === focusRequest.target ? null : p);
-    }
+    takePendingSwarmNavigation(focusRequest.target);
+    setPending(p => p === focusRequest.target ? null : p);
     setFocusRequest(null);
   }, [focusRequest, enabled, visible, jobs, state.contextEpoch, state.view]);
   if (!enabled) return <p className="p-2 text-xs text-muted">Job metadata paused for this view.</p>;
@@ -450,7 +446,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const scoped = filterJobsByScope(jobs, jobScope, activeSessionId, {
     includeJobIds: pending?.jobId ? [pending.jobId] : undefined,
   });
-  const hidden = scoped.filter(j => isFinished(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
+  const hidden = scoped.filter(j => !isActive(j) && !isNativeActivity(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
   const createdAt = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o.row.created_at]));
   for (const job of jobs) {
     const date = currentHeader(state, job.metadata_key ?? '')?.created_at;
@@ -464,7 +460,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       case 'all': return true;
       case 'finished': return isFinished(j);
       case 'attention': return j.status === 'interrupted' || (j.local_ref ? nativeAttentionStatuses : ['failed', 'stalled']).includes(j.status);
-      case 'active': return isActive(j);
+      case 'active': return isLiveObservation(j);
       case 'failed': return ['failed', 'timeout', 'timed_out', 'truncated', 'interrupted'].includes(j.status);
       case 'cancelled': return j.status === 'cancelled';
       case 'complete': return ['completed', 'complete', 'done'].includes(j.status);
@@ -480,16 +476,16 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     return (a.metadata_key ?? '').localeCompare(b.metadata_key ?? '');
   });
   const trackerCount = [...shown, ...hidden].filter(job => !isNativeActivity(job)).length;
-  const activeRows = shown.filter(j => !isFinished(j));
-  const finishedRows = shown.filter(j => isFinished(j));
+  const activeRows = shown.filter(j => isActive(j) && !isNativeActivity(j));
+  const finishedRows = shown.filter(j => !isActive(j) && !isNativeActivity(j));
   const failedCount = finishedRows.filter(j => failedOutcomeStatuses.has(j.status)).length;
   const warningCount = finishedRows.filter(j => quality(j) === 'degraded').length;
   const cancelledCount = finishedRows.filter(j => j.status === 'cancelled').length;
   const failedRead = state.error || state.view.kind === 'view' && (state.view.view.availability === 'unavailable'
     || state.streams.some(s => s.state === 'unavailable' || s.state === 'cursor_expired')
     || state.local.state === 'unavailable' || state.local.state === 'expired');
-  const anyRunning = shown.some(j => isActive(j));
-  const runningCount = shown.filter(j => isActive(j)).length;
+  const anyRunning = shown.some(isLiveObservation);
+  const runningCount = shown.filter(isLiveObservation).length;
   const completedCount = shown.filter(j => isFinished(j) && !isNativeActivity(j)).length;
   const hideFinished = () => {
     if (!finishedOpen) return;
@@ -512,7 +508,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const renderJob = (job: Job) => {
     const key = job.metadata_key ?? '', title = jobDisplayTitle(job), open = preferences.expanded.includes(key);
     const expert = currentExpert(state, key), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, key));
-    const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isActive(job) && !model;
+    const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isLiveObservation(job) && !model;
     const header = currentHeader(state, key);
     const workerCount = header?.selected_workers;
     const finishedWorkers = header?.completed_workers;
@@ -520,11 +516,11 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     const workerProgressFull = showWorkerProgress && finishedWorkers >= workerCount;
     const runningIcon = !job.local_ref && job.read_status !== 'unavailable' && job.status === 'running';
     const adapter = job.adapter || '';
-    return <div className="relative shrink-0 flex flex-col border-b border-edge/25 last:border-b-0" key={key} hidden={isFinished(job) && !finishedOpen && !open} data-job-id={job.id} data-job-source={job.source} data-testid={`inspect-${job.source}-${job.id}`} data-quality={quality(job)}
+    return <div className="relative shrink-0 flex flex-col border-b border-edge/25 last:border-b-0" key={key} hidden={!isActive(job) && !isNativeActivity(job) && !finishedOpen && !open} data-job-id={job.id} data-job-source={job.source} data-testid={`inspect-${job.source}-${job.id}`} data-quality={quality(job)}
       onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
       <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-8' : 'pr-5'}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
         <span className="shrink-0 text-faint">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
-        <span className="shrink-0">{runningIcon ? <MetadataActivityIndicator /> : isActive(job) ? <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" /> : failedOutcomeStatuses.has(job.status) ? <XCircle size={12} className="text-risk" /> : quality(job) === 'degraded' ? <AlertTriangle size={12} className="text-warn" /> : ['completed', 'complete', 'done'].includes(job.status) ? <CheckCircle2 size={12} className="text-faint" /> : job.status === 'cancelled' ? <XCircle size={12} className="text-muted" /> : <Circle size={12} className="text-muted" />}</span>
+        <span className="shrink-0">{runningIcon ? <MetadataActivityIndicator /> : isLiveObservation(job) ? <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" /> : failedOutcomeStatuses.has(job.status) ? <XCircle size={12} className="text-risk" /> : quality(job) === 'degraded' ? <AlertTriangle size={12} className="text-warn" /> : ['completed', 'complete', 'done'].includes(job.status) ? <CheckCircle2 size={12} className="text-faint" /> : job.status === 'cancelled' ? <XCircle size={12} className="text-muted" /> : <Circle size={12} className="text-muted" />}</span>
         <span className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">{title}</span>
         {showWorkerProgress && <span className="inline-flex items-center gap-1 shrink-0">
           <span className="h-0.5 w-8 rounded-full bg-edge/50 overflow-hidden" aria-hidden>
@@ -540,7 +536,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-muted" aria-label="Open Puppetmaster board" title="Open Puppetmaster board" onClick={(event) => { event.stopPropagation(); popOutBoard(job); }}><ExternalLink size={11} /></button>
       {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-5 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from Jobs: ${title}`} title="Dismiss from Jobs (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
       {job.status === 'stalled' && <p className="px-2 text-xs text-muted">{job.local_ref ? 'May still be active; terminal state unconfirmed.' : 'Finished for liveness; recoverable.'}</p>}
-      {open && <MetadataInspection compact revealed={inspected.includes(key)} onReveal={() => setInspected(p => p.includes(key) ? p : [...p, key].slice(-8))} job={job} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
+      {open && <MetadataInspection compact job={job} onOpenDashboard={() => popOutBoard(job)} navigation={enabled && visible && pending && handled.current === pending && navigationMatches(pending, context, job) ? pending : undefined} />}
     </div>;
   };
   const jobList: ReactNode[] = [];

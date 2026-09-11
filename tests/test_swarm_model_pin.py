@@ -31,6 +31,85 @@ def test_pin_candidates_include_opencode_go_deepseek_aliases():
         assert "glm-5.2" not in blob
 
 
+def test_pin_candidates_map_opencode_go_deepseek_flash_live_id():
+    from harness.swarm_model_pin import pin_candidates
+
+    for pin in ("opencode-go:deepseek-flash", "deepseek-flash", "agentic/deepseek-flash"):
+        cands = [c.lower() for c in pin_candidates(pin)]
+        blob = " ".join(cands)
+        assert "deepseek-flash" in blob
+        assert "deepseek-v4-flash" in blob
+        assert "agentic/opencode-go/deepseek-flash" in blob
+        assert "glm-5.2" not in blob
+
+
+def test_resolve_opencode_go_deepseek_flash_pin_against_v4_registry(
+    monkeypatch, tmp_path,
+):
+    """Picker/live id deepseek-flash must pin the curated v4-flash worker row."""
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "agentic/deepseek-v4-flash",
+                        "adapter": "agentic",
+                        "adapter_model_name": "deepseek-v4-flash",
+                        "capability_score": 66,
+                        "payload_defaults": {
+                            "provider": "opencode-go",
+                            "model": "deepseek-v4-flash",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setattr(
+        "harness.auto_registry.ensure_keyed_provider_registry_health",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
+        "harness.auto_registry.keyed_agentic_providers",
+        lambda: {"opencode-go"},
+    )
+    monkeypatch.setattr(
+        "harness.swarm_model_pin._settings_enabled_specs",
+        lambda: ["opencode-go:deepseek-flash"],
+    )
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_model_pin",
+        lambda payload, model, *, adapter, registry=None: {
+            **(payload or {}),
+            "model": "deepseek-v4-flash",
+            "provider": "opencode-go",
+            "pinned_model": "agentic/deepseek-v4-flash",
+            "pinned_adapter_model_name": "deepseek-v4-flash",
+        },
+    )
+
+    from harness.swarm_model_pin import resolve_agentic_model_pin, resolve_swarm_model_pin
+
+    for pin in (
+        "opencode-go:deepseek-flash",
+        "deepseek-flash",
+        "agentic/deepseek-flash",
+        "opencode-go:deepseek-v4-flash",
+    ):
+        out = resolve_swarm_model_pin(pin, allowed_adapters=["agentic"])
+        assert out["demoted"] is False, out
+        assert out["resolved"] == "agentic/deepseek-v4-flash"
+        assert out["pin_fields"]["model"] == "deepseek-flash"
+        pin_obj, err = resolve_agentic_model_pin(pin)
+        assert err == ""
+        assert pin_obj is not None
+        assert pin_obj.model == "deepseek-flash"
+        assert pin_obj.router_model_id == "agentic/deepseek-v4-flash"
+
+
 def test_resolve_rejects_cursor_alias_when_only_agentic_is_allowed(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     models_path.write_text(
@@ -487,7 +566,8 @@ def test_opencode_go_curated_bound_into_auto_registry():
     slugs = {slug for _n, _t, slug in go}
     assert "gpt-5.6-luna" in slugs
     assert "deepseek-v4-flash" in slugs
-    assert slugs == set(CURATED_MODELS)
+    assert "deepseek-flash" in CURATED_MODELS
+    assert slugs == set(CURATED_MODELS) - {"deepseek-flash"}
 
 
 def test_exposed_catalog_lists_enabled_astra_ahead_of_file_order_junk(

@@ -64,8 +64,44 @@ CURATED_MODELS = (
     "qwen3.6-plus",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "deepseek-flash",
     "hy3",
 )
+
+# Live Go /models currently lists ``deepseek-flash``. Curated/OpenRouter and
+# older Settings pins still say ``deepseek-v4-flash``. Same model.
+FLASH_MODEL_ALIASES = frozenset({
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-1-flash",
+})
+WIRE_FLASH_MODEL = "deepseek-flash"
+
+
+def flash_model_keys(model: Optional[str]) -> frozenset:
+    """Bare ids that mean the same Go DeepSeek flash row as *model*."""
+    bare = normalize_model_id(model).lower()
+    if not bare:
+        return frozenset()
+    if bare in FLASH_MODEL_ALIASES:
+        return FLASH_MODEL_ALIASES
+    return frozenset({bare})
+
+
+def same_go_flash_model(left: Optional[str], right: Optional[str]) -> bool:
+    """True when both names are the Go DeepSeek V4.1 flash live/curated pair."""
+    a = normalize_model_id(left).lower()
+    b = normalize_model_id(right).lower()
+    return bool(a) and a in FLASH_MODEL_ALIASES and b in FLASH_MODEL_ALIASES
+
+
+def wire_model_id(model: Optional[str]) -> str:
+    """Bare id the Go relay actually serves for *model*."""
+    bare = normalize_model_id(model)
+    if bare.lower() in FLASH_MODEL_ALIASES:
+        return WIRE_FLASH_MODEL
+    return bare
 
 # Endpoint table (https://opencode.ai/docs/go/). Prefix matching rather than an
 # exact allow-list so a newly added sibling (qwen3.8-plus, minimax-m4) routes
@@ -242,7 +278,7 @@ def build_driver(
     Callers pass the raw picker model (possibly namespaced); the bare id is what
     reaches the relay.
     """
-    bare = normalize_model_id(model)
+    bare = wire_model_id(model)
     return build_opencode_driver(
         spec=spec,
         model=bare,

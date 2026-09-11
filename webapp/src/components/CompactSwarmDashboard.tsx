@@ -1,6 +1,6 @@
 import { CheckCircle2, Circle, Cpu, Loader2, XCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { expertWorkerModel, isExpertEngineStamp, resolveExpertRouting } from '../lib/expertRoutingFacts';
+import { expertWorkerModel, isExpertEngineStamp, resolveExpertRouting, rosterRoleName, workerIsRouting } from '../lib/expertRoutingFacts';
 import { expertTaskOutcome } from '../lib/expertOutcomeFacts';
 import type { ExpertArtifact, ExpertMetadata, ExpertTask } from '../lib/expertMetadata';
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
@@ -41,17 +41,26 @@ function newestEvidence(artifacts: ExpertArtifact[], taskId: string): ExpertArti
   });
 }
 
-function nativeFact(task: LocalTask, index: number, route?: LocalRoute): WorkerFact {
-  const routed = route?.model.trim() || null;
-  const assigned = task.model_kind === 'assigned' && task.model ? task.model : null;
+function knownModel(value: string | null | undefined): string | null {
+  const model = value?.trim() || null;
+  return model && !isExpertEngineStamp(model) ? model : null;
+}
+
+function nativeFact(task: LocalTask, index: number, route?: LocalRoute, headerModel?: string): WorkerFact {
+  const routed = knownModel(route?.model);
+  const assigned = task.model_kind === 'assigned' ? knownModel(task.model) : null;
   const realized = route?.model_kind === 'realized' ? routed : null;
+  const fallback = knownModel(headerModel);
+  const pending = workerIsRouting(task.status);
+  const model = realized ?? assigned ?? routed ?? fallback ?? (pending ? 'routing…' : null);
   return {
     key: `native:${task.task_id ?? index}`,
     taskId: task.task_id,
-    name: task.role || 'Worker identity unavailable',
+    name: rosterRoleName(task.role, task.adapter),
     status: task.status || 'unknown',
-    model: realized ?? assigned ?? routed,
-    modelSource: realized ? 'recorded realized route' : assigned ? 'assigned task model' : routed ? 'recorded route forecast' : 'model unavailable',
+    model,
+    modelSource: realized ? 'recorded realized route' : assigned ? 'assigned task model' : routed ? 'recorded route forecast'
+      : fallback ? 'job display model' : pending ? 'routing in progress' : 'No model recorded',
     modelKind: realized ? 'routed' : assigned ? 'assigned' : routed ? 'forecast' : '',
     instruction: task.instruction,
     instructionTruncated: task.truncated,
@@ -65,13 +74,15 @@ function nativeFact(task: LocalTask, index: number, route?: LocalRoute): WorkerF
 function expertFact(task: ExpertTask, status: string, expert: ExpertMetadata, route?: ExpertArtifact): WorkerFact {
   const model = expertWorkerModel(task, route);
   const routed = !!route?.model?.trim() && !isExpertEngineStamp(route.model);
+  const pending = workerIsRouting(status);
   return {
     key: `expert:${task.id}`,
     taskId: task.id,
-    name: task.role || 'Worker identity unavailable',
+    name: rosterRoleName(task.role, task.adapter),
     status,
-    model,
-    modelSource: routed ? `recorded ${route?.created_by || 'route'}` : model ? 'assigned task model' : 'model unavailable',
+    model: model ?? (pending ? 'routing…' : null),
+    modelSource: routed ? `recorded ${route?.created_by || 'route'}` : model ? 'assigned task model'
+      : pending ? 'routing in progress' : 'No model recorded',
     modelKind: routed ? 'routed' : model ? 'assigned' : '',
     instruction: task.instruction,
     instructionTruncated: task.instruction_truncated,
@@ -117,7 +128,7 @@ export default function CompactSwarmDashboard({
   cancel?: { disabled: boolean; request: () => void };
 }) {
   const workers = useMemo(() => {
-    if (nativeTasks?.length) return nativeTasks.map((task, index) => nativeFact(task, index, task.task_id ? nativeRoutes?.get(task.task_id) : undefined));
+    if (nativeTasks?.length) return nativeTasks.map((task, index) => nativeFact(task, index, task.task_id ? nativeRoutes?.get(task.task_id) : undefined, headerModel));
     if (expert && expert.kind !== 'unavailable') {
       const routes = resolveExpertRouting(expert, headerModel).routingForTask;
       return expert.tasks.map(task => expertFact(task, workerStatuses.get(task.id) ?? 'unknown', expert, routes.get(task.id)));
@@ -165,7 +176,7 @@ export default function CompactSwarmDashboard({
           onKeyDown={event => { if ((event.key === 'Enter' || event.key === ' ') && !event.repeat) { event.preventDefault(); setSelectedKey(worker.key); } }}>
           {statusIcon(worker.status)}
           <span className="swarm-worker-name">{worker.name}</span>
-          <span className="swarm-worker-model" title={worker.model ? `Model: ${worker.model}` : 'Model unavailable'}><Cpu size={11} aria-hidden /><span>{worker.model ?? 'Model unavailable'}</span><small>{worker.modelKind}</small></span>
+          <span className="swarm-worker-model" title={worker.modelKind && worker.model ? `Model: ${worker.model}` : worker.model ?? 'No model recorded'}><Cpu size={11} aria-hidden /><span>{worker.model ?? 'No model recorded'}</span><small>{worker.modelKind}</small></span>
           <span className="swarm-worker-status">{worker.status}</span>
         </button>)}
       </div>
@@ -180,7 +191,7 @@ export default function CompactSwarmDashboard({
           <summary onClick={event => { event.preventDefault(); setInstructionKey(instructionKey === selected.key ? null : selected.key); }}>Instruction</summary>
           {instructionKey === selected.key && <WorkerInstruction key={selected.key} text={selected.instruction} truncated={selected.instructionTruncated} />}
         </details>
-        {cancel && <button type="button" className="swarm-worker-cancel" disabled={cancel.disabled} onClick={cancel.request}>Cancel this job</button>}
+        {cancel && <button type="button" className="swarm-worker-cancel" disabled={cancel.disabled} onClick={cancel.request}>Stop selected workers</button>}
       </section>}
     </div>}
   </section>;

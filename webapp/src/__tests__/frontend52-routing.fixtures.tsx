@@ -56,7 +56,6 @@ export async function capturedRoutingFixture(options: {
   const rendered = render(<fixture.Provider><JobsInspectHarness><div style={{ width: options.width ? `${options.width}px` : undefined }}><SwarmPane /></div></JobsInspectHarness></fixture.Provider>);
   onTestFinished(() => { rendered.unmount(); fixture.dispose(); });
   const job = await screen.findByRole('button', { name: /^Captured routing evidence/ });
-  if (job.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   const inspector = await screen.findByRole('region', { name: 'Selected job inspector' });
   await waitFor(() => { if (fixture.store.getSnapshot().working) throw Error('Still reading'); });

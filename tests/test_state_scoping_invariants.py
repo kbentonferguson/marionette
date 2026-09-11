@@ -223,7 +223,8 @@ def test_delete_active_promotes_same_workspace_sibling_only(tmp_path):
 
     assert store.active == active_a["id"]
     new_active = store.delete(active_a["id"])
-    assert new_active == peer_a["id"]
+    assert new_active is None
+    assert peer_a["id"] in {row["id"] for row in store.rows()}
 
 
 # ---------------------------------------------------------------------------

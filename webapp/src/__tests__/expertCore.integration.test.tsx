@@ -22,7 +22,7 @@ async function expandAndInspect(name?: string | RegExp) {
     ));
   const job = jobs[0];
   if (job?.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
-  fireEvent.click(await screen.findByRole('button', { name: /Inspect (tasks and artifacts|actions)/ }));
+  fireEvent.click((await screen.findAllByRole('button', { name: /Inspect (tasks and artifacts|actions)/ }))[0]);
   await screen.findByRole('region', { name: 'Selected job inspector' });
 }
 function inspected() {
@@ -306,7 +306,7 @@ describe('original worker routing requirements through the selected store', () =
     f.selected.mockImplementation(async s => { const value = selected(expert, s); value.tasks.rows[0].status = status; return { ...value, context: f.context() }; });
     render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
     await expandAndInspect(/Audit auth flow/);
-    expect(await screen.findByText(status === 'complete' ? 'No model recorded' : 'routing…')).toBeVisible();
+    expect(await inspected().findByText(status === 'complete' ? 'No model recorded' : 'routing…')).toBeVisible();
     expect(document.querySelectorAll('[data-worker-model-slot]')).toHaveLength(1);
     expect(screen.queryByTitle('Model: gpt-6-astra')).toBeNull();
   });

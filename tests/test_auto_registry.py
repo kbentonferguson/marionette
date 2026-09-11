@@ -963,6 +963,30 @@ def test_opencode_go_live_drops_mimo_when_not_served(monkeypatch, tmp_path):
     assert not any("mimo" in mid for mid in ids)
 
 
+def test_opencode_go_live_flash_id_keeps_v4_curated_worker_row(monkeypatch, tmp_path):
+    """Go /models lists deepseek-flash; curated worker slug stays v4-flash."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-go" if provider.name == "opencode-go" else None
+
+    live = ["gpt-5.6-luna", "deepseek-flash", "kimi-k3"]
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        sync_agentic_registry()
+
+    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
+    assert "agentic/gpt-5.6-luna" in ids
+    assert "agentic/deepseek-v4-flash" in ids
+    assert "agentic/deepseek-flash" not in ids
+
+
 def test_sync_with_no_keys_writes_no_agentic_models(monkeypatch, tmp_path):
     models_path = tmp_path / "models.json"
     models_path.write_text(

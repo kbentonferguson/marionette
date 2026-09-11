@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.12` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.463, deliberately pre-1.0. Pin `puppetmaster-ai==1.27.12` so first-run verification reads the persisted Codex wire name (dashed registry ids match dotted adapter names). Reply output cap defaults to the provider model limit where supported; APIs that require a numeric ceiling receive 32K. DeepSeek tool calls preserve provider reasoning; private reasoning stays out of spoken answers. OpenCode Go tool-stream cutoffs get one silent non-stream recovery attempt. Runtime pin: `puppetmaster-ai==1.27.12`.
+> Status: v0.9.464, deliberately pre-1.0. Pin stays `puppetmaster-ai==1.27.12`. Swarm Tracker is compact-only: named roles, no Inspect overlay, finished jobs stay under Finished, and the pill opens the Puppetmaster dashboard. OpenCode Go DeepSeek flash pins accept live `deepseek-flash` and curated `deepseek-v4-flash`. Delete or archive of the current session opens a blank New session. Memory Save is session-scoped and idempotent. Reply output cap defaults to the provider model limit where supported; APIs that require a numeric ceiling receive 32K. DeepSeek tool calls preserve provider reasoning. OpenCode Go tool-stream cutoffs get one silent non-stream recovery attempt. Runtime pin: `puppetmaster-ai==1.27.12`.
 
 ## Documentation
 

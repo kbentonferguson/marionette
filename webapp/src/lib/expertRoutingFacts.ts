@@ -61,11 +61,26 @@ export function resolveExpertRouting(expert: ExpertMetadata, headerModel?: strin
   return { routingForTask, unmatched };
 }
 
+export function workerIsRouting(status: string | null | undefined): boolean {
+  return /^(running|in_progress|queued|pending|registered|started|stitching)$/i.test(status ?? '');
+}
+
+/** Roster names are roles. Adapter lives on its own chip, never mashed into the title. */
+export function rosterRoleName(role: string, adapter = ''): string {
+  const name = role.trim();
+  if (!name) return 'Worker';
+  const suffix = adapter.trim();
+  if (!suffix) return name;
+  const wrapped = ` (${suffix})`;
+  return name.length > wrapped.length && name.toLowerCase().endsWith(wrapped.toLowerCase())
+    ? name.slice(0, -wrapped.length).trim() || name
+    : name;
+}
+
 export function expertWorkerSlot(task: ExpertTask, status: string | null, route?: ExpertArtifact): string {
   const model = expertWorkerModel(task, route);
   if (model) return model;
-  return /^(running|in_progress|queued|pending|registered|started|stitching)$/i.test(status ?? '') && !route?.model?.trim()
-    ? 'routing…' : 'No model recorded';
+  return workerIsRouting(status) && !route?.model?.trim() ? 'routing…' : 'No model recorded';
 }
 
 /** A zero-worker job may own an explicitly unscoped final routing decision. */

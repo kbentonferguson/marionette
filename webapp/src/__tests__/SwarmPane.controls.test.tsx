@@ -86,7 +86,7 @@ function controlRow(goal = 'Inspect A', source: 'harness' | 'cli' = 'harness'): 
 async function mountControls(rows: MetadataSummary[]) {
   const fixture = await expertMetadataFixture(rows);
   metadata = fixture;
-  render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
+  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
   return fixture;
 }
 
@@ -102,7 +102,6 @@ async function inspectControl(name: string) {
   const jobId = cardEl?.getAttribute('data-job-id');
   const source = cardEl?.getAttribute('data-job-source');
   const inspectRoot = jobId ? screen.getByTestId(`inspect-${source}-${jobId}`) : document.body;
-  fireEvent.click(within(inspectRoot).getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await waitFor(() => expect(metadata?.store.getSnapshot().working).toBe(false));
   return within(inspectRoot).getByRole('button', { name: 'Stop selected workers' });
 }
@@ -166,11 +165,13 @@ it('sends a session-scoped local selection without a durable reference', async (
   metadata = f;
   expect(f.store.getSnapshot().local.observations).toHaveLength(1);
   vi.mocked(api.swarmCancel).mockReturnValue(new Promise(() => {}));
-  render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
+  render(<f.Provider><SwarmPane /></f.Provider>);
   await expand('Provider worker');
-  const worker = await screen.findByRole('button', { name: /implement/ });
+  const provider = screen.getByRole('button', { name: /Provider worker/ }).closest('[data-testid^="inspect-"]');
+  if (!(provider instanceof HTMLElement)) throw Error('Missing provider row');
+  const worker = await within(provider).findByRole('button', { name: /implement/ });
   fireEvent.click(worker);
-  const cancel = screen.getByRole('button', { name: 'Cancel this job' });
+  const cancel = screen.getByRole('button', { name: 'Stop selected workers' });
   expect(cancel).toBeEnabled(); fireEvent.click(cancel);
   expect(api.swarmCancel).toHaveBeenCalledWith({ version: 1, source: 'local', repo: f.context().repo, session_id: f.context().session_id,
     local_incarnation: 'native-1', job_ref: { job_id: 'local-kill', state_id: null } });
@@ -236,7 +237,7 @@ it('retains the original request after ambiguous transport failure on the select
   await expand('Inspect CLI');
   const cliCard = screen.getByRole('button', { name: /Inspect CLI/ }).closest('[data-job-id]');
   const cli = screen.getByTestId(`inspect-${cliCard?.getAttribute('data-job-source')}-${cliCard?.getAttribute('data-job-id')}`);
-  fireEvent.click(within(cli).getByRole('button', { name: 'Inspect tasks and artifacts' }));
+  await waitFor(() => expect(within(cli).getByRole('button', { name: 'Stop selected workers' })).toBeVisible());
   const cancel = within(cli).getByRole('button', { name: 'Stop selected workers' });
   await waitFor(() => expect(cancel).toHaveAttribute('aria-disabled', 'false'));
   fireEvent.click(cancel);
@@ -249,4 +250,22 @@ it('retains the original request after ambiguous transport failure on the select
   await waitFor(() => expect(api.requestCancellation).toHaveBeenCalledTimes(2));
   expect(vi.mocked(api.requestCancellation).mock.calls[1][0]).toEqual(original);
   expect(api.swarmLive).not.toHaveBeenCalled();
+});
+
+it('opens Puppetmaster dashboard from the compact pill and never a job inspection overlay', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null);
+  await mountControls([controlRow()]);
+  await expand('Inspect A');
+  expect(screen.queryByRole('dialog', { name: 'Selected job inspection' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Inspect tasks and artifacts' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'See in Puppetmaster dashboard' }));
+  await waitFor(() => expect(api.dashboard).toHaveBeenCalled());
+  open.mockRestore();
+});
+
+it('keeps a completed swarm under Finished', async () => {
+  await mountControls([{ ...controlRow(), lifecycle: 'complete' }]);
+  expect(screen.getByRole('button', { name: /Finished \(/ })).toBeVisible();
+  expect(screen.getByRole('button', { name: /^Inspect A ·/ })).toBeVisible();
+  expect(screen.queryByText(/^No jobs yet$/)).not.toBeInTheDocument();
 });

@@ -185,6 +185,21 @@ def _parse_pin_provider_model(pin: str) -> tuple[str, str]:
     return "", body
 
 
+def _same_pin_model(left: str, right: str) -> bool:
+    """Exact model id, or the OpenCode Go DeepSeek flash live/curated pair."""
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        from .opencode_go import same_go_flash_model
+        return same_go_flash_model(a, b)
+    except Exception:
+        return False
+
+
 def settings_enabled_pin_specs(
     pin: str,
     *,
@@ -216,7 +231,7 @@ def settings_enabled_pin_specs(
             continue
         if pin_provider and prov != pin_provider:
             continue
-        exact = bool(pin_model_l) and mid.lower() == pin_model_l
+        exact = bool(pin_model_l) and _same_pin_model(mid, pin_model_l)
         if not exact:
             continue
         key = raw.lower()
@@ -302,7 +317,7 @@ def _row_matches_enabled_settings(row: dict, enabled: Optional[list[str]]) -> bo
     if not provider or not model:
         return False
     return any(
-        _normalize_pin_provider(_provider) == provider and _model.strip().lower() == model
+        _normalize_pin_provider(_provider) == provider and _same_pin_model(_model, model)
         for spec in enabled
         if ":" in str(spec)
         for _provider, _model in [str(spec).split(":", 1)]
@@ -462,6 +477,25 @@ def pin_candidates(pin: str) -> list[str]:
     hyphenated = re.sub(r"(gpt-\d+)\.(\d+)", r"\1-\2", bare, count=1, flags=re.I)
     _add(hyphenated)
 
+    # OpenCode Go live id is deepseek-flash; curated/OpenRouter rows stay
+    # deepseek-v4-flash. Pins of either must resolve.
+    flash_aliases = {
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-1-flash",
+    }
+    tail = bare.rsplit("/", 1)[-1].lower()
+    if tail in flash_aliases:
+        _add("deepseek-flash")
+        _add("deepseek-v4-flash")
+        _add("agentic/deepseek-flash")
+        _add("agentic/deepseek-v4-flash")
+        _add("opencode-go/deepseek-flash")
+        _add("opencode-go/deepseek-v4-flash")
+        _add("agentic/opencode-go/deepseek-flash")
+        _add("agentic/opencode-go/deepseek-v4-flash")
+
     for body in (bare, dotted, hyphenated):
         if not body:
             continue
@@ -528,7 +562,7 @@ def _exact_registry_pin(pin: str, rows: list[dict]) -> Optional[dict[str, Any]]:
         if not row_model:
             row_model = str(defaults.get("model") or "").strip()
         row_id = str(row.get("id") or "").strip()
-        if not row_id or row_model != model:
+        if not row_id or not _same_pin_model(row_model, model):
             continue
         if provider and row_provider != provider:
             continue
@@ -633,6 +667,17 @@ def resolve_swarm_model_pin(
                 if reason and remapped:
                     pin_fields[key] = remapped
                     _diag("swarm_model_pin.codex_pro_remap_fields", msg=f"{key}:{reason}")
+            provider = str(pin_fields.get("provider") or "").strip().lower()
+            if provider in ("opencode-go", "opencode_go"):
+                try:
+                    from .opencode_go import wire_model_id
+                    for key in ("model", "pinned_adapter_model_name"):
+                        cur = str(pin_fields.get(key) or "").strip()
+                        wired = wire_model_id(cur)
+                        if wired and wired != cur:
+                            pin_fields[key] = wired
+                except Exception as exc:
+                    _diag("swarm_model_pin.go_flash_wire", exc)
             if norm_meta.get("reasoning_effort_hint") and not pin_fields.get("reasoning_effort"):
                 pin_fields["reasoning_effort"] = norm_meta["reasoning_effort_hint"]
             reason = "exact_registry_row"

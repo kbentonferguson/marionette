@@ -49,7 +49,8 @@ it('renders the worker name once and keeps status and model as separate facts', 
   const role = 'pipeline-mapper';
   render(<NativeTaskDisclosure task={{ ...producerTask(), role, model: 'configured/model', model_kind: 'assigned' }} />);
   const worker = screen.getByRole('button', { name: `${role}: running` });
-  expect(within(worker).getAllByText(`${role} (agentic)`)).toHaveLength(1);
+  expect(within(worker).getAllByText(role)).toHaveLength(1);
+  expect(within(worker).queryByText(`${role} (agentic)`)).toBeNull();
   expect(within(worker).getByText('running')).toBeVisible();
   expect(within(worker).getByTitle('Model: configured/model')).toHaveTextContent('configured/model');
 });

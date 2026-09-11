@@ -151,6 +151,8 @@ _DEMOTE_ALIASES: dict[str, tuple[str, ...]] = {
         "agentic/deepseek-v4-flash",
         "deepseek-v4-flash",
         "deepseek/deepseek-v4-flash",
+        "deepseek-flash",
+        "agentic/deepseek-flash",
     ),
 }
 

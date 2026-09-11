@@ -1,4 +1,5 @@
 import { lastSelectedProjectRoot } from "../../lib/panelTransition";
+import { setActiveMemoryProposalSession } from "../../lib/memoryProposalResolution";
 /**
  * Warm-cache session switch effect. Mid-turn reattach lives in chatEventsReattach.
  */
@@ -213,6 +214,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
   useEffect(() => {
     const prevId = cachedSessionIdRef.current;
     const switchedSession = Boolean(prevId && prevId !== activeSessionId);
+    setActiveMemoryProposalSession(activeSessionId || "");
     if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
       // Only cache when the visible rows belong to prevId. Stale bleed (prior
       // session still painted) must not poison the warm cache.

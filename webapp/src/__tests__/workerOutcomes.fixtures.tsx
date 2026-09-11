@@ -23,7 +23,6 @@ export async function renderWorkerMetadata(goal: string, lifecycle: string, stat
   });
   render(<f.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></f.Provider>);
   const row = await screen.findByRole('button', { name: `${goal} · ${lifecycle}` });
-  if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
   fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
   await screen.findByRole('region', { name: 'Selected job inspector' });
   expect(f.selected).toHaveBeenCalled();
