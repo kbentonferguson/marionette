@@ -94,7 +94,7 @@ export function MetadataInspection({ job, navigation, compact = false, revealed 
   job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void;
 }) {
   const { state } = useSharedJobMetadata();
-  const identity = JSON.stringify([job.metadata_key, job.local_ref, state.contextEpoch]);
+  const identity = JSON.stringify([job.metadata_key, job.local_ref]);
   return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} />;
 }
 function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
@@ -113,7 +113,7 @@ function SelectedInspection({ job, navigation, compact, revealed, onReveal }: {
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 1000);
+    const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 10000);
     return () => clearInterval(clock);
   }, []);
   const local = job.local_ref;
@@ -566,7 +566,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   }
   return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
     <div className="shrink-0 flex items-center justify-between h-[var(--shell-rail-row-height)] px-2 border-b border-[var(--shell-panel-border)] select-none">
-      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
+      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-normal text-faint font-medium">
         <span className="relative inline-flex">
           <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
           {anyRunning ? <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse" title={`${runningCount} running`} aria-hidden /> : null}

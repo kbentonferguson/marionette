@@ -186,6 +186,27 @@ def test_singleton_enabled_spec_maps_luna_not_gpt53():
     assert "gpt-5.3" not in blob
 
 
+def test_cary_enabled_subset_never_aliases_mimo():
+    """Live Go/OR catalogs list MIMO; Settings toggles must not expand to it."""
+    from harness.swarm_worker_allowlist import allowed_model_ids_from_specs
+
+    ids = allowed_model_ids_from_specs([
+        "opencode-go:deepseek-v4-flash",
+        "openai-codex:gpt-6-astra",
+        "openai-codex:gpt-5.6-sol",
+        "openai-codex:gpt-5.6-luna",
+        "openrouter:google/gemini-3.8-flash",
+        "openrouter:google/gemini-3.7-flash",
+        "local:managed/qwen-test",
+        "opencode-go:deepseek-flash",
+    ])
+    blob = " ".join(ids).lower()
+    assert "deepseek-v4-flash" in blob
+    assert "gemini-3.8-flash" in blob
+    assert "mimo" not in blob
+    assert "xiaomi" not in blob
+
+
 def test_prefer_plan_billed_true_only_when_cursor_only(monkeypatch):
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._enabled_or_visible_specs",

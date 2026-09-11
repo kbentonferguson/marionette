@@ -70,7 +70,13 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
         }
 
     try:
-        specs = load_registry(default_registry_path())
+        from harness.registry_wizard import get_models_file_path
+
+        registry_path = get_models_file_path() or default_registry_path()
+    except Exception:
+        registry_path = default_registry_path()
+    try:
+        specs = load_registry(registry_path)
     except Exception:
         return {}
     if not specs:
@@ -99,6 +105,23 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
         "role": (role or "implement").strip() or "implement",
         "allowed_adapters": allowed,
     }
+    # Same Settings allowlist the live swarm stamps. Without this, the
+    # tracker forecast hires leftover live extras (MIMO) the user never
+    # enabled, even when dispatch itself would have constrained the run.
+    try:
+        from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
+
+        preview_ids = [
+            str(item).strip()
+            for item in (
+                resolve_swarm_worker_allowlist().get("allowed_model_ids") or []
+            )
+            if str(item).strip()
+        ]
+        if preview_ids:
+            signals_kwargs["allowed_model_ids"] = frozenset(preview_ids)
+    except Exception:
+        pass
     if max_cap is not None:
         try:
             from pmharness.bridge import _router_supports_max_capability

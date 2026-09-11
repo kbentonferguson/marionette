@@ -287,6 +287,56 @@ _CURATED_MODELS["opencode-zen"] = _opencode_zen_curated()
 _CURATED_MODELS["openai-codex"] = _openai_codex_curated()
 
 
+def _looks_like_mimo(name: str) -> bool:
+    """True for Xiaomi MIMO ids in any vendor/hyphen/dot spelling."""
+    n = (name or "").strip().lower().replace("_", "-")
+    return "mimo" in n or n.startswith("xiaomi/") or "/xiaomi/" in n
+
+
+def _mimo_explicitly_enabled(provider_name: str, model_name: str, slug: str) -> bool:
+    enabled = {
+        str(item or "").strip().lower()
+        for item in _enabled_picker_models(provider_name)
+        if str(item or "").strip()
+    }
+    keys = {
+        str(model_name or "").strip().lower(),
+        str(slug or "").strip().lower(),
+        str(slug or "").rsplit("/", 1)[-1].strip().lower(),
+        str(model_name or "").rsplit("/", 1)[-1].strip().lower(),
+    }
+    keys.discard("")
+    if enabled & keys:
+        return True
+    return any(
+        e == key or e.endswith("/" + key) or e.endswith(":" + key)
+        for e in enabled
+        for key in keys
+    )
+
+
+def _filter_unsolicited_worker_extras(
+    provider_name: str,
+    models: list,
+) -> list:
+    """Drop MIMO (and hyphenated twins) unless Settings explicitly enabled it.
+
+    Curated∩live still lists Xiaomi MIMO. An unconstrained worker catalog
+    then wins Autopilot on price. Enabled MIMO stays reachable.
+    """
+    out = []
+    for row in models or []:
+        if not isinstance(row, tuple) or len(row) < 3:
+            continue
+        model_name, tier, slug = row[0], row[1], row[2]
+        if (
+            _looks_like_mimo(str(model_name)) or _looks_like_mimo(str(slug))
+        ) and not _mimo_explicitly_enabled(provider_name, str(model_name), str(slug)):
+            continue
+        out.append((model_name, tier, slug))
+    return out
+
+
 def _enabled_picker_models(provider_name: str) -> list[str]:
     """The user's enabled picker models for one provider (model ids without the
     'provider:' prefix). The Models UI is the user's curation surface -- when
@@ -1082,7 +1132,8 @@ def sync_agentic_registry(force: bool = False) -> dict:
                     models = []
                 else:
                     models = _CURATED_MODELS.get(agentic_name, [])
-            
+            models = _filter_unsolicited_worker_extras(provider_name, models)
+
             if models:
                 synced_providers.append(agentic_name)
                 # Add each model as an agentic spec

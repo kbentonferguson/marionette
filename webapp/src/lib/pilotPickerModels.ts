@@ -16,6 +16,25 @@ export function providerOf(spec: string): string {
   return spec.slice(0, idx);
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  "opencode-go": "OpenCode Go",
+  "opencode-zen": "OpenCode Zen",
+  "openai-codex": "Codex",
+  "openrouter": "OpenRouter",
+  "cursor-cli": "Cursor",
+  "cursor": "Cursor",
+  local: "Local",
+};
+
+/** Sentence-case product name for a provider slug. */
+export function providerLabelOf(provider: string): string {
+  const key = (provider || "").trim().toLowerCase();
+  if (!key) return "Other";
+  const known = PROVIDER_LABELS[key];
+  if (known) return known;
+  return key.replace(/-/g, " ");
+}
+
 /** Match model id, provider prefix, and/or friendly display name. */
 export function filterPilotModels(
   models: string[],
