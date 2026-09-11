@@ -187,6 +187,10 @@ def test_tests_yml_windows_runner_is_swappable():
     text = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
     assert "vars.CI_WINDOWS_RUNNER" in text
     assert "windows-latest" in text
+    # Do not default the job to a third-party label. Blacksmith is org-only
+    # and an unset/missing runner queues the gate forever.
+    assert "runs-on: blacksmith-" not in text
+    assert "runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}" in text
 
 
 def test_tests_yml_is_the_fast_dest_into_main_gate():

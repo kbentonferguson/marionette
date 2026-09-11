@@ -37,9 +37,10 @@ jobs:
 
   pytest-windows:
     # CI_WINDOWS_RUNNER swaps GitHub-hosted windows-latest for a faster
-    # machine (Blacksmith `blacksmith-4vcpu-windows-2025`) without a new
-    # workflow. Unset keeps windows-latest so CI never queues on a missing
-    # runner label.
+    # hosted machine without a new workflow. Unset keeps windows-latest so
+    # CI never queues on a missing runner label. Blacksmith labels need a
+    # GitHub org (professorpalmer is a user account); do not set the
+    # variable until a runner app is actually installed on this repo.
     runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
     strategy:
       fail-fast: false

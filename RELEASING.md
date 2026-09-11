@@ -78,15 +78,15 @@ tree; wait for `tests` on that commit.
 ### Faster Windows (optional)
 
 `tests.yml` reads `vars.CI_WINDOWS_RUNNER` and falls back to `windows-latest`.
-After the Blacksmith GitHub App is installed on this repo, set:
+Do not hardcode a third-party runner label: if the app is not installed on
+this repo, Windows jobs queue forever.
 
-```bash
-gh variable set CI_WINDOWS_RUNNER --body blacksmith-4vcpu-windows-2025 \
-  --repo professorpalmer/marionette
-```
-
-Same YAML, different machines. Do not hardcode the Blacksmith label until the
-app is installed or Windows jobs queue forever.
+Blacksmith (`blacksmith-4vcpu-windows-2025`) is organization-only. These
+repos stay on the `professorpalmer` user account, so that label will not
+provision runners. Leave `CI_WINDOWS_RUNNER` unset and keep GitHub-hosted
+`windows-latest`. Hosted alternatives that accept personal accounts
+(for example Namespace `nscloud-windows-2022-amd64-4x8`) can use the same
+variable later without a YAML change.
 
 ## Diverged / self-edited checkouts
 
