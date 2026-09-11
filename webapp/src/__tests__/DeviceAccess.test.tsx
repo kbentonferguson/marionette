@@ -57,7 +57,7 @@ describe('Device access', () => {
     await ready(); draft();
     fireEvent.click(screen.getByRole('button', { name: 'Enroll device' }));
     const show = await screen.findByRole('button', { name: 'Show credential' });
-    expect(show).toHaveFocus();
+    await waitFor(() => expect(show).toHaveFocus());
     expect(screen.queryByText(fixtureCredential)).not.toBeInTheDocument();
     expect(writeText).not.toHaveBeenCalled();
     fireEvent.click(show);
