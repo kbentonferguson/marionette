@@ -48,30 +48,31 @@ def test_last_delete_clears_pilot_without_rebinding(server, clear):
     assert [p['text'] for p in new.list_prompts()] == ['B']
 
 
-def test_delete_attaches_survivor_without_copying_queue(server):
+def test_delete_current_does_not_attach_survivor(server):
     b, survivor = attach(server, 'B')
     a, deleted = attach(server, 'A')
     code, body = server._handle_session_delete(a)
-    assert code == 200 and body['active'] == b
-    assert server._pilot is survivor
+    assert code == 200 and body['active'] is None
+    assert server._pilot is None
+    assert server._runners.active_view_id is None
+    assert server._runners.get(b) is survivor
     assert [p['text'] for p in survivor.list_prompts()] == ['B']
     assert [p['text'] for p in deleted.list_prompts()] == ['A']
 
 
-def test_delete_lease_exhaustion_never_reuses_deleted_pilot(server):
+def test_delete_current_does_not_spend_a_lease_on_a_sibling(server):
     a, deleted = attach(server, 'A')
     c, busy_c = attach(server, 'C')
     d, busy_d = attach(server, 'D')
     busy_c._busy.acquire()
     busy_d._busy.acquire()
-    b = server._sessions.create('cold survivor')['id']
+    server._sessions.create('cold survivor')
     server._sessions.switch(a)
     server._pilot = deleted  # A's view outlived its evicted idle registry entry.
     server._runners.set_active_view(a)
     try:
         code, body = server._handle_session_delete(a)
-        assert code == 409 and body['code'] == 'lease_exhausted'
-        assert body['deleted'] == a
+        assert code == 200 and body['active'] is None
         assert server._pilot is None
         assert server._runners.active_view_id is None
         assert deleted.harness_session_id == a

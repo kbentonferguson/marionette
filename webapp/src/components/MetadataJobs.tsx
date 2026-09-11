@@ -77,14 +77,14 @@ function relativeSince(ts: number | string | null | undefined, now: number): str
   if (mins < 60) return `${mins}m ago`;
   return `${Math.floor(mins / 60)}h ago`;
 }
-export function MetadataInspection({ job, navigation, compact = false, revealed = false, onReveal, onOpenDashboard, deferAutoRead = false }: {
-  job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; revealed?: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead?: boolean;
+export function MetadataInspection({ job, navigation, compact = false, onReveal, onOpenDashboard, deferAutoRead = false }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact?: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead?: boolean;
 }) {
   const identity = job.local_ref ? JSON.stringify(['local', job.local_ref.job_id]) : (job.metadata_key ?? job.id);
-  return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} revealed={revealed} onReveal={onReveal} onOpenDashboard={onOpenDashboard} deferAutoRead={deferAutoRead} />;
+  return <SelectedInspection key={identity} job={job} navigation={navigation} compact={compact} onReveal={onReveal} onOpenDashboard={onOpenDashboard} deferAutoRead={deferAutoRead} />;
 }
-function SelectedInspection({ job, navigation, compact, revealed, onReveal, onOpenDashboard, deferAutoRead }: {
-  job: Job; navigation?: SwarmNavigationTarget; compact: boolean; revealed: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead: boolean;
+function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboard, deferAutoRead }: {
+  job: Job; navigation?: SwarmNavigationTarget; compact: boolean; onReveal?: () => void; onOpenDashboard?: () => void; deferAutoRead: boolean;
 }) {
   const { store, state } = useSharedJobMetadata();
   const [notice, setNotice] = useState('');
