@@ -384,7 +384,7 @@ def _capturing_swarm_harness(monkeypatch, bridge_mod, tmp_path):
         def __init__(self, store: Any) -> None:
             self.store = store
 
-        def run(self, goal: str, specs=None, worker_mode=None, label=None):
+        def run(self, goal: str, specs=None, worker_mode=None, label=None, **_kwargs):
             return _FakeResult()
 
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")

@@ -345,7 +345,7 @@ class TestExplicitSubjectLeavesTheEnvAlone:
             def __init__(self, _store):
                 pass
 
-            def run(self, _goal, specs=None, worker_mode=None, label=None):
+            def run(self, _goal, specs=None, worker_mode=None, label=None, **_kwargs):
                 seen.append(list(specs or []))
                 return SimpleNamespace(
                     artifacts=[],
