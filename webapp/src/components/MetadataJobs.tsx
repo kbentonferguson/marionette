@@ -111,7 +111,10 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   const canonicalSelection = canonical && state.view.kind === 'view'
     ? canonicalExpertSelection(canonical, state.view.context.repo)
     : null;
-  const detailKeys = [job.metadata_key, canonicalSelection ? metadataSelectionKey(canonicalSelection) : ''].filter(Boolean);
+  const detailKeys = [
+    job.metadata_key,
+    canonicalSelection ? metadataSelectionKey(canonicalSelection) : undefined,
+  ].filter((key): key is string => Boolean(key));
   const pm = [...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].find(o => detailKeys.includes(metadataSelectionKey(o.row.selection)));
   const detail = state.detail.kind === 'selected' && detailKeys.includes(metadataSelectionKey(state.detail.selection))
     ? state.detail : detailKeys.map(key => state.detailCache[key]).find(Boolean) ?? null;

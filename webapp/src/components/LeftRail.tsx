@@ -785,14 +785,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     try {
       const res = await api.pruneEditBranches(repo);
       if (generation !== pruneEpoch.current) return;
-      await revalidateWorkspaces();
-      if (generation !== pruneEpoch.current) return;
       const count = res.count;
       const skipped = res.skipped?.length
         ? `; kept ${res.skipped.length}: ${res.skipped.map(item => `${item.path || item.branch} (${item.reason})`).join("; ")}` : "";
       toast((count > 0
         ? `Pruned ${count} unused branch${count === 1 ? "" : "es"}`
         : "No unused edit or leftover release branches to prune") + skipped);
+      await revalidateWorkspaces();
     } catch (err: unknown) {
       if (generation !== pruneEpoch.current) return;
       const message = err instanceof Error ? err.message
