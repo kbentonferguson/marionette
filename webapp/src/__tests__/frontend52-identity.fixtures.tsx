@@ -49,7 +49,6 @@ export async function identityFixture(options: {
   });
   const rendered = render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
   const job = await screen.findByRole('button', { name: /^Identity evidence/ });
-  if (job.getAttribute('aria-expanded') === 'false') fireEvent.click(job);
   const inspect = screen.getByRole('button', { name: 'Inspect tasks and artifacts' });
   fireEvent.click(inspect);
   await screen.findByRole('region', { name: 'Tasks' });

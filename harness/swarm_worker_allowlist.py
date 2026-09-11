@@ -198,11 +198,24 @@ def allowed_model_ids_from_specs(
     for spec in rows:
         provider = _provider_of_spec(spec)
         model = _model_of_spec(spec)
-        hit = by_pair.get((provider, model.strip().lower()))
+        hit = None
+        for alias in [model.strip().lower(), *sorted(_flash_lookup_keys(model))]:
+            hit = by_pair.get((provider, alias))
+            if hit:
+                break
         if hit and hit.lower() not in seen:
             seen.add(hit.lower())
             out.append(hit)
     return out
+
+
+def _flash_lookup_keys(model: str) -> frozenset:
+    try:
+        from .opencode_go import flash_model_keys
+        return flash_model_keys(model)
+    except Exception:
+        n = (model or "").strip().lower()
+        return frozenset({n} if n else ())
 
 
 def resolve_swarm_worker_allowlist(

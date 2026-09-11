@@ -11,16 +11,17 @@ const inactive = new JobMetadataStore();
 export const JobMetadataContext = createContext(inactive);
 export function JobMetadataOwner({ repo, sessionId, children }: { repo: string; sessionId: string | null; children: ReactNode }) {
   const [store] = useState(() => new JobMetadataStore());
+  useJobMetadata(store);
   useEffect(() => {
     if (!repo || !sessionId) { store.invalidate(); return; }
     store.setTarget({ repo, session_id: sessionId, scope: 'all' });
     const tick = () => { if (!document.hidden) void store.ownerTick(); };
     store.startTicks(2000); tick();
     document.addEventListener('visibilitychange', tick);
-    return () => { store.stopTicks(); store.invalidate(); document.removeEventListener('visibilitychange', tick); };
+    return () => { store.stopTicks(); document.removeEventListener('visibilitychange', tick); };
   }, [store, repo, sessionId]);
   // Effect cleanup must support React StrictMode's setup-cleanup-setup replay.
-  useEffect(() => () => { store.stopTicks(); store.invalidate(); store.closeConnection(); }, [store]);
+  useEffect(() => () => { store.stopTicks(); }, [store]);
   return <JobMetadataContext.Provider value={store}>{children}</JobMetadataContext.Provider>;
 }
 export function useSharedJobMetadata() {

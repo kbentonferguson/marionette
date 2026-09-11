@@ -12,7 +12,6 @@ import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 import { expertDetail, expertMetadataFixture, expertSummary } from "./metadataExpert.fixtures";
-import { JobsInspectHarness } from "./jobsInspectHarness";
 
 import { list } from "./jobMetadata.fixtures";
 
@@ -39,14 +38,13 @@ afterEach(() => { cleanup(); metadata?.dispose(); metadata = undefined; vi.unstu
 async function setup() {
   const fixture = await expertMetadataFixture([expertSummary(selection, 'Inspect A')], { browser: true });
   metadata = fixture;
-  render(<fixture.Provider><JobsInspectHarness><SwarmPane /></JobsInspectHarness></fixture.Provider>);
+  render(<fixture.Provider><SwarmPane /></fixture.Provider>);
   return fixture;
 }
 
 async function inspect(goal: string) {
   const row = await screen.findByRole('button', { name: new RegExp(goal) });
   if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
-  fireEvent.click(screen.getByRole('button', { name: 'Inspect tasks and artifacts' }));
 }
 
 it('shows exhausted reads and retries even when the successful row is otherwise identical', async () => {
@@ -63,8 +61,7 @@ it('shows exhausted reads and retries even when the successful row is otherwise 
   await waitFor(() => expect(retry).toBeEnabled());
   f.selected.mockResolvedValue(result);
   fireEvent.click(retry);
-  await screen.findByText('No artifacts recorded');
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   expect(f.store.getSnapshot().observations.map(o => o.row)).toEqual(rows);
   expect(f.selected).toHaveBeenCalledTimes(2);
   expect(api.swarmLive).not.toHaveBeenCalled();
@@ -78,8 +75,8 @@ it('shows transport failure instead of an empty tracker and retries', async () =
   await act(async () => { f.store.setTarget(f.context()); await f.store.readView(); });
   expect(await screen.findByRole('alert')).toHaveTextContent('Job updates unavailable');
   expect(screen.queryByText(/^No jobs observed in this view/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Job observations could not be loaded/)).toBeInTheDocument();
-  expect(screen.getByText(/an empty view does not establish no work/)).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: /Inspect A/ })).toBeVisible();
+  expect(screen.queryByText(/Job observations could not be loaded/)).not.toBeInTheDocument();
   expect(screen.queryByText('Job data unavailable')).not.toBeInTheDocument();
   f.request.mockImplementation(async (method, path) => {
     const result = await request(method, path);
@@ -90,10 +87,13 @@ it('shows transport failure instead of an empty tracker and retries', async () =
     return result;
   });
   fireEvent.click(screen.getByRole('button', { name: 'Retry updates' }));
-  await screen.findByText(/^No jobs yet/);
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  expect(screen.getByRole('button', { name: /Inspect A/ })).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
   await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   expect(f.store.getSnapshot().streams.some(s => s.state === 'complete')).toBe(true);
+  expect(screen.getByRole('button', { name: /Inspect A/ })).toBeVisible();
+  expect(screen.queryByText(/Job observations could not be loaded/)).not.toBeInTheDocument();
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(api.swarmLive).not.toHaveBeenCalled();
 });

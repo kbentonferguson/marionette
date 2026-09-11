@@ -183,6 +183,13 @@ class ReviewMemoryMixin:
 
     def accept_memory_proposal(self, proposal_id: str) -> dict:
         """Persist a pending end-of-turn memory proposal (source=agent)."""
+        resolved = getattr(self, "_resolved_memory_proposals", None)
+        if resolved is None:
+            self._resolved_memory_proposals = {}
+            resolved = self._resolved_memory_proposals
+        prior = resolved.get(proposal_id)
+        if prior:
+            return dict(prior)
         prop = self._pending_memory_proposals.pop(proposal_id, None)
         if not prop:
             return {"ok": False, "error": "proposal not found"}
@@ -194,7 +201,7 @@ class ReviewMemoryMixin:
             category=(prop.get("category") or "general").strip() or "general",
             source="agent",
         )
-        return {
+        result = {
             "ok": True,
             "id": entry.id,
             "text": entry.text,
@@ -202,10 +209,19 @@ class ReviewMemoryMixin:
             "source": entry.source,
             "created_at": entry.created_at,
         }
+        resolved[proposal_id] = result
+        return result
 
     def dismiss_memory_proposal(self, proposal_id: str) -> dict:
         """Drop a pending end-of-turn memory proposal without writing."""
+        resolved = getattr(self, "_resolved_memory_proposals", None)
+        if resolved is None:
+            self._resolved_memory_proposals = {}
+            resolved = self._resolved_memory_proposals
         if proposal_id in self._pending_memory_proposals:
             self._pending_memory_proposals.pop(proposal_id, None)
+            resolved[proposal_id] = {"ok": True}
+            return {"ok": True}
+        if proposal_id in resolved:
             return {"ok": True}
         return {"ok": False, "error": "proposal not found"}

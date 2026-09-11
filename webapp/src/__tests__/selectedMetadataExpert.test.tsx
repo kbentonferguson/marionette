@@ -123,7 +123,7 @@ it('keeps two colliding selected inspections cached and does not consume a diffe
   inspectHarnessJob('cli', cli.job_ref.job_id);
   await waitFor(() => expect(screen.getAllByRole('region', { name: 'Selected job inspector' })).toHaveLength(2));
   expect(Object.keys(f.store.getSnapshot().detailCache)).toHaveLength(2);
-  const first = within(screen.getByTestId(`inspect-harness-${selected.job_ref.job_id}`)).getByRole('region', { name: 'Selected job inspector' });
+  const first = within(screen.getByTestId(`dump-harness-${selected.job_ref.job_id}`)).getByRole('region', { name: 'Selected job inspector' });
   fireEvent.click(within(first).getByRole('button', { name: 'History', exact: true }));
   fireEvent.click(within(first).getByRole('button', { name: 'Next attempts' }));
   await waitFor(() => expect(f.selected).toHaveBeenCalledTimes(3));
