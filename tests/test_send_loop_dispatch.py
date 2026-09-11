@@ -991,3 +991,37 @@ def test_untracked_pm_refusal_names_native_verbs_not_shell_cli():
     assert "run_implement" in _TRACKABLE_SWARM_REFUSAL
     assert "python -m puppetmaster" not in _TRACKABLE_SWARM_REFUSAL
     assert "puppetmaster swarm" not in _TRACKABLE_SWARM_REFUSAL
+
+
+def test_rows_for_job_drops_foreign_owned_rows():
+    from harness.send_loop_dispatch import _rows_for_job
+
+    current = "job_failed_smoke"
+    rows = [
+        {"id": "a1", "job_id": current, "type": "routing"},
+        {"id": "a2", "job_id": "job_old_audit", "type": "finding",
+         "headline": "webapp/src/components/Conversation.tsx:466"},
+        {"id": "a3", "type": "finding",
+         "headline": "tools/new_engagement.py:31",
+         "execution_ref": {"job_id": current}},
+    ]
+    kept = _rows_for_job(rows, current)
+    ids = [row["id"] for row in kept]
+    assert ids == ["a1", "a3"]
+    assert all(row["id"] != "a2" for row in kept)
+
+
+def test_swarm_manifest_leads_with_failed_bind():
+    from harness.send_loop_dispatch import _render_swarm_delivery_manifest
+
+    text = _render_swarm_delivery_manifest(
+        "job_failed_smoke",
+        [{"id": "r1", "type": "routing", "job_id": "job_failed_smoke"}],
+        {"pm_artifacts": 2, "available_to_inspect": 2, "complete": True, "missing": []},
+        job_status="failed",
+    )
+    assert text.startswith("PM SWARM BIND:")
+    assert "- job_id: job_failed_smoke" in text
+    assert "- status: failed" in text
+    assert "- findings: 0" in text
+    assert "Conversation.tsx" not in text

@@ -266,14 +266,33 @@ def _swarm_artifact_delivery(
     }
 
 
-def _render_swarm_delivery_manifest(job_id: str, rows: list[dict], delivery: dict) -> str:
+def _render_swarm_delivery_manifest(
+    job_id: str,
+    rows: list[dict],
+    delivery: dict,
+    *,
+    job_status: str = "",
+) -> str:
     expected = int(delivery.get("pm_artifacts") or 0)
     available = int(delivery.get("available_to_inspect") or 0)
+    findings = sum(
+        1 for row in (rows or [])
+        if str((row or {}).get("type") or "").strip().lower()
+        in {"finding", "risk", "decision"}
+    )
     lines = [
+        "PM SWARM BIND:",
+        f"- job_id: {job_id}",
+    ]
+    status = str(job_status or "").strip()
+    if status:
+        lines.append(f"- status: {status}")
+    lines.append(f"- findings: {findings}")
+    lines.extend([
         "PM SWARM ARTIFACT MANIFEST:",
         f"- PM artifacts: {expected}",
         f"- Available to inspect: {available}/{expected}",
-    ]
+    ])
     missing = list(delivery.get("missing") or [])
     if missing:
         lines.append("- WARNING: Synthesis continued with incomplete PM evidence.")
@@ -797,6 +816,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         })
         manifest = _render_swarm_delivery_manifest(
             _source_job_id, _delivered_reuse, _delivery_reuse,
+            job_status="reused",
         )
         session._append_action_result(
             act, aid,
@@ -1277,6 +1297,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     turn_findings.extend((a for a in delivered_arts if a.get('type') != 'verification'))
     body = _render_swarm_delivery_manifest(
         _job_id_text, delivered_arts, artifact_delivery,
+        job_status=str(getattr(result, "status", "") or ""),
     )
     stall = ''
     if _demo_refused or counters['demo_swarms'] >= 1:

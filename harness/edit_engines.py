@@ -153,8 +153,8 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
             jobs = list(store.list_jobs() or [])
         except Exception:
             jobs = []
-        if jobs:
-            resolved = str(getattr(jobs[-1], "id", "") or "")
+        if len(jobs) == 1:
+            resolved = str(getattr(jobs[0], "id", "") or "")
     snap["job_id"] = resolved
     if not resolved:
         return snap
