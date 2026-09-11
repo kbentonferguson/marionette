@@ -4211,6 +4211,16 @@ class ConversationalSession(
             # command is never wrongly threaded onto a stale tree ceiling.
             self._auto_budget = None
 
+    def _auto_halt_close(self, objective: str, budget: "AutoBudget", reason: str, extra=None):
+        payload = {"reason": reason, "snapshot": budget.snapshot()}
+        if extra:
+            payload.update(extra)
+        yield ConvEvent("auto_halt", payload)
+        distilled = self._maybe_auto_distill()
+        if distilled:
+            yield ConvEvent("distilled", distilled)
+        self._maybe_ingest(objective, [], [])
+
     def _run_auto_inner(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True,
                  analysis_mode: bool = False,
@@ -4265,11 +4275,7 @@ class ConversationalSession(
                 return
             halt = budget.check()
             if halt:
-                yield ConvEvent("auto_halt", {"reason": halt, "snapshot": budget.snapshot()})
-                d = self._maybe_auto_distill()
-                if d:
-                    yield ConvEvent("distilled", d)
-                self._maybe_ingest(objective, [], [])
+                yield from self._auto_halt_close(objective, budget, halt)
                 return
             cycle += 1
             findings_before = 0
@@ -4331,11 +4337,7 @@ class ConversationalSession(
                 if tripped:
                     break
             if tripped:
-                yield ConvEvent("auto_halt", {"reason": tripped, "snapshot": budget.snapshot()})
-                d = self._maybe_auto_distill()
-                if d:
-                    yield ConvEvent("distilled", d)
-                self._maybe_ingest(objective, [], [])
+                yield from self._auto_halt_close(objective, budget, tripped)
                 return
 
             # Immediately reset loop_msg to default for subsequent cycles, unless overridden by verification failure.
@@ -4365,14 +4367,9 @@ class ConversationalSession(
                         # on non-empty mid-thought prose.
                         structured_ok = False
                     if structured_ok:
-                        yield ConvEvent("auto_halt", {
-                            "reason": "analysis findings submitted",
-                            "snapshot": budget.snapshot(),
-                        })
-                        d = self._maybe_auto_distill()
-                        if d:
-                            yield ConvEvent("distilled", d)
-                        self._maybe_ingest(objective, [], [])
+                        yield from self._auto_halt_close(
+                            objective, budget, "analysis findings submitted",
+                        )
                         return
                     loop_msg = (
                         "(system) Do not stop yet. End with a structured "
@@ -4385,11 +4382,10 @@ class ConversationalSession(
                     passed, out = self._run_verification()
                     yield ConvEvent("verification", {"passed": passed, "output": out[:1000]})
                     if passed:
-                        yield ConvEvent("auto_halt", {"reason": "objective met and verified (verify_cmd passed)", "snapshot": budget.snapshot()})
-                        d = self._maybe_auto_distill()
-                        if d:
-                            yield ConvEvent("distilled", d)
-                        self._maybe_ingest(objective, [], [])
+                        yield from self._auto_halt_close(
+                            objective, budget,
+                            "objective met and verified (verify_cmd passed)",
+                        )
                         return
                     else:
                         failed_verifications += 1
@@ -4401,25 +4397,19 @@ class ConversationalSession(
                             max_retries = 2
                         
                         if failed_verifications >= max_retries:
-                            yield ConvEvent("auto_halt", {
-                                "reason": f"objective NOT verified after {max_retries} retries (verify_cmd still failing)",
-                                "snapshot": budget.snapshot(),
-                                "last_output": out
-                            })
-                            d = self._maybe_auto_distill()
-                            if d:
-                                yield ConvEvent("distilled", d)
-                            self._maybe_ingest(objective, [], [])
+                            yield from self._auto_halt_close(
+                                objective, budget,
+                                f"objective NOT verified after {max_retries} retries (verify_cmd still failing)",
+                                extra={"last_output": out},
+                            )
                             return
                         else:
                             loop_msg = f"Verification command failed. Output:\n{out}\nFix the issue so the verification passes, then finish."
                 else:
-                    yield ConvEvent("auto_halt", {"reason": "pilot reports objective met "
-                        "(no further investigation)", "snapshot": budget.snapshot()})
-                    d = self._maybe_auto_distill()
-                    if d:
-                        yield ConvEvent("distilled", d)
-                    self._maybe_ingest(objective, [], [])
+                    yield from self._auto_halt_close(
+                        objective, budget,
+                        "pilot reports objective met (no further investigation)",
+                    )
                     return
             if analysis_mode and budget.max_tokens > 0:
                 # Near the token ceiling: nudge a FINDING summary before the
