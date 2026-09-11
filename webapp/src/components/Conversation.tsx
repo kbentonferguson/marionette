@@ -121,6 +121,7 @@ import {
   feedResizeScrollFollowDecision,
   isAtFeedTail,
   nextFeedPinState,
+  applyUserSubmitFeedPin,
   scrollToFeedEnd,
   settleFrameResult,
   shouldShowJumpToBottom,
@@ -605,7 +606,7 @@ export default function Conversation({
   const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
   const pendingJobIdsRef = useRef<string[]>([]);
   useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
-  const processedSwarmJobIdsRef = useRef<string[]>([]);
+  const processedSwarmJobIdsRef = useRef<Set<string>>(new Set());
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
   const swarmLiveJobs = metadataJobs(metadata);
   useEffect(() => {
@@ -1843,7 +1844,7 @@ export default function Conversation({
 
   useEffect(() => {
     setPendingJobIds([]);
-    processedSwarmJobIdsRef.current = [];
+    processedSwarmJobIdsRef.current = new Set();
     setBackendPendingSwarms(false);
     if (activeSessionId) {
       // Peek first for pending_swarms / latch visibility. Consume only once we
@@ -2557,8 +2558,8 @@ export default function Conversation({
 
     // Ref is a fast path only — applySwarmResultToItems is the real idempotency
     // gate so poll/SSE/rehydrate stay safe after session-switch clears the ref.
-    if (!processedSwarmJobIdsRef.current.includes(job_id)) {
-      processedSwarmJobIdsRef.current.push(job_id);
+    if (!processedSwarmJobIdsRef.current.has(job_id)) {
+      processedSwarmJobIdsRef.current.add(job_id);
     }
 
     setItems((prevItems) => applySwarmResultToItems(prevItems, d));
@@ -2994,6 +2995,34 @@ export default function Conversation({
         kind: "msg",
         msg: optimisticUserEchoMsg({ text: msg, images: imgsToSend, id: echoId }),
       }]);
+      pinnedToBottomRef.current = true;
+      scrollReleasedByGestureRef.current = false;
+      scrollSettlingRef.current = true;
+      const pinSubmittedRow = () => {
+        const el = feedRef.current;
+        const scrollToEnd = scrollFeedToEndRef.current;
+        if (scrollToEnd) {
+          programmaticScrollRef.current = true;
+          scrollToEnd();
+        } else if (el) {
+          const next = applyUserSubmitFeedPin({
+            scrollHeight: el.scrollHeight,
+            clientHeight: el.clientHeight,
+          });
+          programmaticScrollRef.current = true;
+          el.scrollTop = next.scrollTop;
+        }
+        pinnedToBottomRef.current = true;
+      };
+      queueMicrotask(() => {
+        requestAnimationFrame(() => {
+          pinSubmittedRow();
+          requestAnimationFrame(() => {
+            pinSubmittedRow();
+            scrollSettlingRef.current = false;
+          });
+        });
+      });
       const hasPriorUserTurn = itemsRef.current.some(
         (it) => it.kind === "msg" && it.msg.role === "user",
       );
