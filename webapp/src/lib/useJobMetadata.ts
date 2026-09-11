@@ -521,6 +521,12 @@ export class JobMetadataStore {
     }, () => this.publish({ ...this.state, advanceNumber: this.state.advanceNumber + 1,
       nextFollowed: (this.state.nextFollowed + 1) % this.state.followedLocal.length }));
   }
+  selectLocalIfCurrent(selection: LocalRef, lane: LocalDetail['lane'] = 'actions'): boolean {
+    const view = this.state.view;
+    if (view.kind !== 'view' || selection.incarnation !== view.view.local?.incarnation) return false;
+    this.selectLocal(selection, lane);
+    return true;
+  }
   selectLocal(selection: LocalRef | null, lane: LocalDetail['lane'] = 'actions'): void {
     const view = this.state.view;
     if (selection && (view.kind !== 'view' || selection.incarnation !== view.view.local?.incarnation)) throw new MetadataError('invalid_request');
