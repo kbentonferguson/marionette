@@ -21,6 +21,7 @@ SHARED_DISPLAY_NAMES = {
 CHAT_COMPLETIONS = "chat_completions"
 ANTHROPIC_MESSAGES = "anthropic_messages"
 OPENAI_RESPONSES = "openai_responses"
+REQUIRED_MAX_OUTPUT_TOKENS = 32000
 
 
 def informative_display_name(label: object, model: Optional[str]) -> str:
@@ -140,7 +141,7 @@ def build_opencode_driver(
     model: str,
     api_mode: str,
     api_key_env: str,
-    max_tokens: int,
+    max_tokens: Optional[int],
     base_url: str,
     temperature: Optional[float] = None,
     extra_body: Optional[dict] = None,
@@ -156,9 +157,12 @@ def build_opencode_driver(
     if api_mode == ANTHROPIC_MESSAGES:
         from pmharness.drivers.anthropic import AnthropicDriver
 
+        required_max_tokens = int(max_tokens or 0)
+        if required_max_tokens <= 0:
+            required_max_tokens = REQUIRED_MAX_OUTPUT_TOKENS
         return AnthropicDriver(
             name=spec, model=bare, base_url=base_url,
-            api_key_env=api_key_env, max_tokens=max_tokens,
+            api_key_env=api_key_env, max_tokens=required_max_tokens,
         )
     if api_mode == OPENAI_RESPONSES:
         from pmharness.drivers.codex_responses import CodexResponsesDriver

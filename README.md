@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.27.11` is the one
 real dependency the installer puts in the venv.
 
-> Status: v0.9.460, deliberately pre-1.0. DeepSeek tool calls preserve the provider reasoning field, while private reasoning stays out of spoken answers. Product workers use the agentic adapter and route within enabled provider/model pairs. Explicit unavailable pins fail clearly. Background completion notices preserve the current request, and command receipts keep script text separate from output. Runtime pin: `puppetmaster-ai==1.27.11`.
+> Status: v0.9.461, deliberately pre-1.0. The reply output cap now defaults to the provider's model-specific limit where supported; APIs that require a numeric ceiling receive 32K. Explicit user caps remain available in Settings. DeepSeek tool calls preserve the provider reasoning field, and private reasoning stays out of spoken answers. Runtime pin: `puppetmaster-ai==1.27.11`.
 
 ## Documentation
 

@@ -29,6 +29,7 @@ from typing import Optional
 
 from . import opencode_go as _opencode_go
 from . import opencode_zen as _opencode_zen
+from .opencode_common import REQUIRED_MAX_OUTPUT_TOKENS
 
 # GLM Coding Plan (subscription credits) vs pay-as-you-go API. Official docs:
 # Coding Plan OpenAI Chat Completions must use /api/coding/paas/v4 — the
@@ -475,24 +476,25 @@ def resolve_bare_model(model: str) -> tuple:
 
 
 _UNLIMITED_MAX_TOKENS = frozenset({"0", "off", "none", "unlimited"})
-_REQUIRED_MAX_TOKENS_FALLBACK = 128000
+_REQUIRED_MAX_TOKENS_FALLBACK = REQUIRED_MAX_OUTPUT_TOKENS
 
 
 def requested_max_output_tokens() -> Optional[int]:
     """HARNESS_MAX_TOKENS as a request-time ceiling.
 
-    None means omit ``max_tokens`` on hosts that allow it. Empty or invalid
-    values keep the historical 8000 default so tool-call JSON is not cut off.
+    None means omit ``max_tokens`` on hosts that allow it. The factory default
+    lets the provider choose its model-specific output limit; APIs that require
+    a field receive ``_REQUIRED_MAX_TOKENS_FALLBACK`` instead.
     """
     raw = (os.environ.get("HARNESS_MAX_TOKENS") or "").strip()
     if not raw:
-        return 8000
+        return None
     if raw.lower() in _UNLIMITED_MAX_TOKENS:
         return None
     try:
         n = int(raw)
     except (TypeError, ValueError):
-        return 8000
+        return None
     if n <= 0:
         return None
     return n
@@ -519,9 +521,9 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     Returns a driver exposing .complete(prompt, system=...). Transport is OURS
     (pmharness drivers); only the routing DATA is Hermes-derived.
     """
-    # Output-token ceiling. Default to HARNESS_MAX_TOKENS (8000) so large edit_file
-    # / write_file tool calls are NOT truncated mid-arguments -- a 1500-token cap
-    # silently cut off big tool-call JSON, which is why edit_file "lost" its args.
+    # Optional output-token ceiling. The factory default omits it where the API
+    # allows so reasoning and tool-call JSON are not cut off by Marionette.
+    # Providers that require a field receive a 32K fallback below.
     if max_tokens is None:
         max_tokens = requested_max_output_tokens()
 
@@ -593,7 +595,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         if burl and burl.rstrip("/").endswith("v1beta"):
             kwargs["base_url"] = burl
         return _finalize_driver(
-            GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=_required_max_tokens(max_tokens), **kwargs)
+            GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=max_tokens, **kwargs)
         )
 
     if provider.api_mode == "anthropic_messages":
@@ -631,7 +633,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     if provider.api_mode == "bedrock":
         from pmharness.drivers.bedrock import BedrockDriver
         return _finalize_driver(
-            BedrockDriver(name=spec, model=model, max_tokens=_required_max_tokens(max_tokens))
+            BedrockDriver(name=spec, model=model, max_tokens=max_tokens)
         )
     if provider.api_mode in ("codex_responses", "responses"):
         from pmharness.drivers.codex_responses import CodexResponsesDriver
@@ -646,7 +648,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 model=model,
                 base_url=provider.base_url,
                 api_key_env=key_env or default_key_env,
-                max_tokens=_required_max_tokens(max_tokens),
+                max_tokens=max_tokens,
                 chatgpt_backend=(provider.api_mode == "codex_responses"),
             )
         )

@@ -13,8 +13,8 @@ def test_native_anthropic_gets_max_tokens(monkeypatch):
     import harness.providers as prov
     importlib.reload(prov)
     d = prov.build_pilot("anthropic:claude-opus-4-8")
-    # Must be the 8000 default, NOT the AnthropicDriver class default of 1024.
-    assert getattr(d, "max_tokens", 0) >= 8000
+    # Anthropic requires a ceiling, so the unlimited product default uses 32K.
+    assert getattr(d, "max_tokens", 0) == 32000
 
 
 def test_max_tokens_env_override(monkeypatch):

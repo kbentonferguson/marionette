@@ -196,7 +196,7 @@ class BedrockDriver:
         name: str,
         model: str,
         *,
-        max_tokens: int = 8000,
+        max_tokens: Optional[int] = 8000,
         temperature: float = 0.0,
         timeout: int = 300,
         send_temperature: bool = False,
@@ -230,7 +230,9 @@ class BedrockDriver:
             raise RuntimeError(missing_bedrock_credentials_message())
 
     def _extra(self) -> dict:
-        extra: dict[str, Any] = {"max_tokens": self.max_tokens}
+        extra: dict[str, Any] = {}
+        if isinstance(self.max_tokens, int) and self.max_tokens > 0:
+            extra["max_tokens"] = self.max_tokens
         if self.send_temperature and self.temperature is not None:
             extra["temperature"] = self.temperature
         # Claude-on-Bedrock extended thinking (same effort knob as Codex/Anthropic).
@@ -244,7 +246,7 @@ class BedrockDriver:
             if model_supports_anthropic_thinking(self.model):
                 budget = anthropic_thinking_budget()
                 if budget is not None and budget > 0:
-                    if int(extra.get("max_tokens") or 0) <= budget:
+                    if "max_tokens" in extra and int(extra["max_tokens"]) <= budget:
                         extra["max_tokens"] = budget + 1024
                     extra["additionalModelRequestFields"] = {
                         "thinking": {"type": "enabled", "budget_tokens": int(budget)},

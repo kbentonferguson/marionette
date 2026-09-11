@@ -771,13 +771,18 @@ def context_window(name: str, default: int = _CW_FLOOR) -> int:
 
 
 def build(name: str, *, reach: str = "openrouter") -> Driver:
-    import os as _os
-    _mt = int(_os.environ.get("HARNESS_MAX_TOKENS", "8000"))
     """Construct a Driver for a catalog model.
 
     reach='openrouter' routes through OpenRouter (one key for the whole field).
     reach='native' uses the provider's own endpoint where defined.
     """
+    import os as _os
+    _raw_mt = _os.environ.get("HARNESS_MAX_TOKENS", "").strip()
+    try:
+        _mt = max(0, int(_raw_mt)) if _raw_mt else 0
+    except (TypeError, ValueError):
+        _mt = 0
+    _required_mt = _mt or 32000
     if name == "stub-oracle":
         return StubDriver()
     if name == "stub-oracle-mt":
@@ -815,7 +820,7 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
             return AnthropicDriver(
                 name=name, model=nat["model"],
                 base_url=nat["base_url"], api_key_env=nat["api_key_env"],
-                max_tokens=_mt,
+                max_tokens=_required_mt,
             )
         if nat.get("driver") == "gemini":
             from .drivers.gemini import GeminiDriver

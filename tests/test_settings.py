@@ -59,6 +59,7 @@ def test_settings_get_returns_expected_shape(monkeypatch):
         assert data["swarm_reasoning_effort"] == "medium"
         assert "compactionResidual" in data
         assert data["compactionResidual"] == "catalog"
+        assert data["maxOutputTokens"] == "unlimited"
         assert "browserRealProfile" in data
         assert data["browserRealProfile"] is False
         assert "state_dir" in data

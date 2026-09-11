@@ -143,6 +143,16 @@ def test_mimo_pro_output_ceiling_is_clamped_to_what_xiaomi_serves():
     assert go.max_tokens_for_model("deepseek-v4-flash", 8000) == 8000
 
 
+def test_deepseek_factory_default_omits_marionette_output_cap(monkeypatch):
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    monkeypatch.setenv(go.API_KEY_ENV, "go-test")
+    driver = prov.build_pilot("opencode-go:deepseek-flash")
+    assert driver.max_tokens == 0
+    body = driver._build_chat_body([{"role": "user", "content": "continue"}])
+    assert "max_tokens" not in body
+    assert "max_completion_tokens" not in body
+
+
 def test_kimi_models_use_the_temperature_the_go_relay_accepts():
     assert go.temperature_for_model("kimi-k3") == 1.0
     assert go.temperature_for_model("opencode-go/kimi-k2.7-code") == 1.0
@@ -263,6 +273,7 @@ def test_build_pilot_routes_anthropic_messages_models():
     # AnthropicDriver appends /messages, so the base keeps its /v1 segment.
     assert driver.base_url == go.BASE_URL
     assert driver.model == "minimax-m3"
+    assert driver.max_tokens == 32000
     assert driver._headers()["User-Agent"] == go.USER_AGENT
 
 
@@ -274,6 +285,9 @@ def test_build_pilot_routes_openai_responses_models():
     assert driver.base_url == go.BASE_URL
     assert driver.chatgpt_backend is False
     assert driver.api_key_env == "OPENCODE_GO_API_KEY"
+    assert driver.max_tokens == 0
+    body = driver._build_body([{"role": "user", "content": "continue"}])
+    assert "max_output_tokens" not in body
 
 
 @pytest.mark.parametrize("model", ["grok-4.5", "muse-spark-1.2-contributor"])
