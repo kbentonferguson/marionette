@@ -1213,21 +1213,22 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <label className="text-[11px] text-muted shrink-0">Reply output cap</label>
             <input
               type="text"
-              defaultValue={settings.maxOutputTokens || "8000"}
+              defaultValue={settings.maxOutputTokens || "unlimited"}
               onBlur={(e) => {
                 const v = e.target.value.trim();
-                if (v !== (settings.maxOutputTokens || "8000")) update({ maxOutputTokens: v });
+                if (v !== (settings.maxOutputTokens || "unlimited")) update({ maxOutputTokens: v });
               }}
               disabled={saving}
               className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
-              placeholder="8000"
+              placeholder="unlimited"
             />
           </div>
           <p className="text-[10px] text-muted">
             Completion-token ceiling for the next pilot request (HARNESS_MAX_TOKENS).
-            The factory default is 8000. Use 0, off, or unlimited to omit the field so
-            the provider decides. Hitting this cap is a length stop, not a context
-            overflow — Compact will not raise it. Continue finishes the same reply.
+            The factory default lets the provider decide. APIs that require a ceiling use
+            32000. Enter a positive number to set a custom cap, or use 0, off, or unlimited
+            to omit the field where supported. Hitting a custom cap is a length stop, not a
+            context overflow — Compact will not raise it. Continue finishes the same reply.
             Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">

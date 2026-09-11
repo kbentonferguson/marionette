@@ -22,7 +22,7 @@ class GeminiDriver:
     def __init__(self, name: str, model: str, *,
                  base_url: str = "https://generativelanguage.googleapis.com/v1beta",
                  api_key_env: str = "GEMINI_API_KEY",
-                 max_tokens: int = 8000,
+                 max_tokens: Optional[int] = 8000,
                  temperature: float = 0.0,
                  timeout: int = 90,
                  send_temperature: bool = False,
@@ -59,7 +59,9 @@ class GeminiDriver:
         return new_schema
 
     def _generation_config(self, *, include_thoughts: bool = False) -> dict[str, Any]:
-        gen_config: dict[str, Any] = {"maxOutputTokens": self.max_tokens}
+        gen_config: dict[str, Any] = {}
+        if isinstance(self.max_tokens, int) and self.max_tokens > 0:
+            gen_config["maxOutputTokens"] = self.max_tokens
         if self.send_temperature and self.temperature is not None:
             gen_config["temperature"] = self.temperature
         if include_thoughts:

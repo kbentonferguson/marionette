@@ -9,6 +9,11 @@ from pmharness import registry
 from harness.pilot import parse_tool_calls
 
 
+def test_generation_config_omits_unset_output_cap():
+    driver = GeminiDriver("gemini", "gemini-3.5-flash", max_tokens=None)
+    assert "maxOutputTokens" not in driver._generation_config()
+
+
 @pytest.fixture(autouse=True)
 def mock_retry_sleep(monkeypatch):
     orig_with_retry = pmharness.drivers.retry.with_retry

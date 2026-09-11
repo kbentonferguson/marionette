@@ -364,11 +364,15 @@ def test_build_pilot_bare_model_uses_canonical_provider_when_keyed(monkeypatch):
 
 def test_requested_max_output_tokens_default_and_unlimited(monkeypatch):
     monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
-    assert prov.requested_max_output_tokens() == 8000
+    assert prov.requested_max_output_tokens() is None
     monkeypatch.setenv("HARNESS_MAX_TOKENS", "16000")
     assert prov.requested_max_output_tokens() == 16000
     for raw in ("0", "off", "none", "unlimited", "-1"):
         monkeypatch.setenv("HARNESS_MAX_TOKENS", raw)
         assert prov.requested_max_output_tokens() is None
     monkeypatch.setenv("HARNESS_MAX_TOKENS", "nope")
-    assert prov.requested_max_output_tokens() == 8000
+    assert prov.requested_max_output_tokens() is None
+
+
+def test_required_max_tokens_uses_high_fallback():
+    assert prov._required_max_tokens(None) == 32000

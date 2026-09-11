@@ -12,6 +12,29 @@ from harness import providers as prov
 from pmharness.drivers.bedrock import BedrockDriver
 
 
+def test_extra_omits_unset_output_cap():
+    driver = BedrockDriver("bedrock", "amazon.nova-lite-v1:0", max_tokens=None)
+    assert "max_tokens" not in driver._extra()
+
+
+def test_claude_thinking_does_not_invent_output_cap(monkeypatch):
+    monkeypatch.setenv("HARNESS_CODEX_REASONING_EFFORT", "high")
+    driver = BedrockDriver(
+        "bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", max_tokens=None,
+    )
+    extra = driver._extra()
+    assert "max_tokens" not in extra
+    assert extra["additionalModelRequestFields"]["thinking"]["budget_tokens"] == 16000
+
+
+def test_claude_thinking_keeps_explicit_cap_above_budget(monkeypatch):
+    monkeypatch.setenv("HARNESS_CODEX_REASONING_EFFORT", "high")
+    driver = BedrockDriver(
+        "bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", max_tokens=8000,
+    )
+    assert driver._extra()["max_tokens"] == 17024
+
+
 _BEDROCK_ENV = (
     "AWS_BEARER_TOKEN_BEDROCK",
     "AWS_ACCESS_KEY_ID",

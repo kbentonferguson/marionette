@@ -38,16 +38,27 @@ def test_build_stub_needs_no_key():
     assert isinstance(d, StubDriver)
 
 
-def test_build_openrouter_driver_constructs():
+def test_build_openrouter_driver_constructs(monkeypatch):
     # constructs without a key (key only read at call time)
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
     d = reg.build("kimi-k3", reach="openrouter")
     assert d.name == "kimi-k3"
     assert "openrouter.ai" in d.base_url
+    assert d.max_tokens == 0
 
 
-def test_build_native_driver_constructs():
+def test_build_native_driver_constructs(monkeypatch):
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
     d = reg.build("glm-5.2", reach="native")
     assert "z.ai" in d.base_url
+    assert d.max_tokens == 0
+
+
+def test_build_native_gemini_omits_factory_cap(monkeypatch):
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    d = reg.build("gemini-3.5-flash", reach="native")
+    assert d.max_tokens == 0
+    assert "maxOutputTokens" not in d._generation_config()
 
 
 def test_native_unavailable_raises():

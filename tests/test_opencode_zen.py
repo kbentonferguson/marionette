@@ -167,6 +167,16 @@ def test_zen_gpt_and_claude_follow_the_endpoint_table():
     assert zen.api_mode_for_model("unknown-new-model") == zen.CHAT_COMPLETIONS
 
 
+def test_zen_required_and_optional_protocol_defaults(monkeypatch):
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    anthropic = prov.build_pilot("opencode-zen:claude-sonnet-4-6")
+    assert anthropic.max_tokens == 32000
+    responses = prov.build_pilot("opencode-zen:gpt-5.5")
+    assert responses.max_tokens is None
+    body = responses._build_body([{"role": "user", "content": "continue"}])
+    assert "max_output_tokens" not in body
+
+
 def test_build_pilot_routes_ox_alpha_to_chat(monkeypatch):
     from pmharness.drivers.openai_compat import OpenAICompatDriver
 
