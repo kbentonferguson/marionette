@@ -119,7 +119,7 @@ def test_bridge_refuses_demo_without_allow(monkeypatch, tmp_path):
         def __init__(self, store):
             pass
 
-        def run(self, goal, specs=None, roles=None, worker_mode=None, label=None):
+        def run(self, goal, specs=None, roles=None, worker_mode=None, label=None, **_kwargs):
             return _Result()
 
     monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _Orch)

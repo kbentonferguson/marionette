@@ -4,6 +4,7 @@ import type { ExpertArtifact, ExpertMetadata, ExpertTask } from '../lib/expertMe
 import { expertTaskOutcome, expertTaskFailures } from '../lib/expertOutcomeFacts';
 import type { MetadataTask } from '../lib/jobMetadata';
 import { expertWorkerModel, expertWorkerSlot, resolveExpertRouting } from '../lib/expertRoutingFacts';
+import WorkerInstruction from './WorkerInstruction';
 
 export type ExpertWorkerUsageProps = { task: ExpertTask; route?: ExpertArtifact };
 export type ExpertWorkersProps = { expert: ExpertMetadata; tasks: MetadataTask[]; headerModel?: string;
@@ -46,7 +47,7 @@ function Worker({ expert, task, reference, route, renderUsage }: {
       <span data-worker-model-slot aria-label={model ? `Model: ${model}` : slot} title={model ? `Model: ${model}` : slot} className={wrap}>{slot}</span>
     </button>
     {expanded && <div className={wrap}><p>Task {task.id} · Adapter: {task.adapter || 'unknown'}</p>
-      <pre className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{task.instruction}{task.instruction_truncated ? '\n(instruction truncated)' : ''}</pre>
+      <WorkerInstruction key={task.id} text={task.instruction} truncated={task.instruction_truncated} />
       {route && <RouteFacts route={route} />}
       {renderUsage ? renderUsage({ task, route }) : <ExpertWorkerUsage task={task} route={route} />}
       {failures.map(artifact => <div key={artifact.id}><p>{artifact.headline}</p>{artifact.failure && <p>{artifact.failure}</p>}{artifact.detail && <p className="whitespace-pre-wrap">{artifact.detail}</p>}</div>)}

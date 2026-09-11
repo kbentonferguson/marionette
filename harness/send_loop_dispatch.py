@@ -876,6 +876,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         session._register_local_job(
             _sync_local_id, act.goal, role=_sync_register_role,
             cwd=_swarm_repo, engine='agentic',
+            dispatch_id=aid,
         )
         session._session_job_ids.append(_sync_local_id)
         # Pre-stamp narrow_verify / full_swarm rejection lineage so finish/drain

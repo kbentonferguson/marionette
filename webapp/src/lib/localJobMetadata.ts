@@ -12,11 +12,13 @@ export type LocalEconomics = (
   | (Priced & { kind: 'estimated'; estimated: true; cost_provenance: 'provider' | 'live' | 'static' | 'default' | 'unknown' })
 ) & { route_forecast_usd?: number; estimated_savings_usd?: number };
 export type LocalRef = { job_id: string; incarnation: string };
+export type CanonicalPMRef = { source: 'harness'; job_ref: { job_id: string; state_id: string; version: 2; incarnation: string }; session_id: string; dispatch_id: string };
 export type LocalSummary = { local_ref: LocalRef; revision: number; deleted: false; session_id: string;
   lifecycle: string; kind: 'run_command' | 'run_command_batch' | 'parallel_wave' | 'provider';
   parent_ref: LocalRef | null; task_count: number | null; action_count: number | null;
   artifact_count: number | null; child_count: number | null; created_at: number | null; updated_at: number | null;
   receipts: { terminal: boolean; launch: boolean; recovery: boolean; child: boolean }; economics: LocalEconomics;
+  canonical?: CanonicalPMRef;
   display?: { label: string; model: string; adapter: string; truncated: boolean };
   usage?: { kind: 'unknown' } | { kind: 'reported'; tokens: number; source: 'local_job_tokens' };
   accounting?: { kind: 'declared' | 'excluded' | 'unresolved'; aggregation_authority: false } };
@@ -104,6 +106,15 @@ function operatorFacts(r: Record<string, unknown>, kind: LocalSummary['kind']): 
   return { economics, ...(display ? { display } : {}), ...(usage ? { usage } : {}), ...(accounting ? { accounting } : {}) };
 }
 function amount(v: unknown): number { const n = num(v); if (n < 0 || n >= 1e18) return fail(); return n; }
+function canonical(v: unknown, session_id: string): CanonicalPMRef | undefined {
+  if (v === undefined) return undefined;
+  const c = obj(v), r = obj(c.job_ref);
+  if (Object.keys(c).sort().join(',') !== 'dispatch_id,job_ref,session_id,source'
+    || Object.keys(r).sort().join(',') !== 'incarnation,job_id,state_id,version'
+    || c.source !== 'harness' || c.session_id !== session_id || r.version !== 2) return fail();
+  return { source: 'harness', session_id, dispatch_id: str(c.dispatch_id),
+    job_ref: { job_id: str(r.job_id), state_id: str(r.state_id), version: 2, incarnation: str(r.incarnation) } };
+}
 function localRow(v: unknown, c: MetadataContext, incarnation: string, lane: LocalLane, upper: number): LocalRow {
   const r = obj(v), local_ref = ref(r.local_ref), revision = count(r.revision), session_id = str(r.session_id);
   if (local_ref.incarnation !== incarnation || (lane === 'history' && revision > upper) || (c.scope === 'session' && session_id !== c.session_id)) return fail();
@@ -113,11 +124,13 @@ function localRow(v: unknown, c: MetadataContext, incarnation: string, lane: Loc
   if (kind !== 'run_command' && kind !== 'run_command_batch' && kind !== 'parallel_wave' && kind !== 'provider') return fail();
   const receipts = obj(r.receipts);
   const parent_ref = r.parent_ref === null ? null : ref(r.parent_ref);
+  const canonical_ref = canonical(r.canonical, session_id);
   if (parent_ref && parent_ref.incarnation !== incarnation) return fail();
   return { local_ref, revision, session_id, deleted: false, lifecycle: str(r.lifecycle, 40), kind, parent_ref,
     task_count: r.task_count === null ? null : count(r.task_count), action_count: r.action_count === null ? null : count(r.action_count),
     artifact_count: r.artifact_count === null ? null : count(r.artifact_count), child_count: r.child_count === null ? null : count(r.child_count),
     created_at: nullable(r.created_at), updated_at: nullable(r.updated_at), ...operatorFacts(r, kind),
+    ...(canonical_ref ? { canonical: canonical_ref } : {}),
     receipts: { terminal: bool(receipts.terminal), launch: bool(receipts.launch), recovery: bool(receipts.recovery), child: bool(receipts.child) } };
 }
 export function parseLocalList(v: unknown, c: MetadataContext, incarnation: string, traversal: Traversal, lane: LocalLane = 'history'): LocalList {

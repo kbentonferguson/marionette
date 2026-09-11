@@ -336,3 +336,18 @@ def test_provider_registration_cannot_replace_observed_cancellation_identity(tmp
     assert runner._local_jobs['local-once'] is first
     assert runner._local_job_cancels['local-once'] is event
     assert runner.local_metadata_handle().ref('local-once') == ref
+
+
+def test_provider_placeholder_publishes_only_exact_canonical_pm_association(tmp_path):
+    runner = Runner(tmp_path)
+    runner._register_local_job('local-swarm-call_01', 'inspect', role='explore',
+                               dispatch_id='call_01', skip_routing_preview=True)
+    association = dict(source='harness', session_id='A', dispatch_id='call_01', job_ref=dict(
+        job_id='job_canonical', state_id='state_current', version=2,
+        incarnation='incarnation_current',
+    ))
+    runner._associate_local_job_with_pm('local-swarm-call_01', association)
+    page = runner.local_metadata_handle().read_page(ctx())
+    assert page['rows'][0]['canonical'] == association
+    runner._associate_local_job_with_pm('local-swarm-call_01', dict(association, session_id='foreign'))
+    assert runner.local_metadata_handle().read_page(ctx())['rows'][0]['canonical'] == association

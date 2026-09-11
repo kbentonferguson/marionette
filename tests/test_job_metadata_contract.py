@@ -37,6 +37,37 @@ from harness.api.job_readmodel import get_job_metadata, get_job_metadata_detail,
 from harness.job_readmodel import ActiveContext, KnownSources, MetadataReader, PMSelection, ReadContext
 
 
+def test_real_pm_five_role_swarm_is_visible_through_current_metadata(tmp_path):
+    from dataclasses import replace
+    from puppetmaster.orchestrator import Orchestrator
+    from puppetmaster.workers import specs_for_roles
+
+    store = create_store('sqlite', tmp_path / 'store')
+    ctx = ReadContext('session-live', str(tmp_path / 'repo'), 'view-live', 'session')
+    roles = ['explore', 'review', 'test', 'security-review', 'conflict-auditor']
+    created = []
+    specs = [replace(spec, adapter='local', payload={**spec.payload, 'auto_route': False})
+             for spec in specs_for_roles(roles)]
+    result = Orchestrator(store).run(
+        'current metadata canonical swarm', specs=specs, worker_mode='inline',
+        origin='marionette', session_id=ctx.session_id,
+        on_job_created=lambda job: created.append(store.job_ref(job.id)),
+    )
+    assert len(created) == 1 and created[0].version == 2
+    sources = KnownSources.from_roots([('harness', store.root, 'sqlite', False)])
+    reader = MetadataReader(lambda: ActiveContext(ctx.session_id, ctx.repo, ctx.view_generation), sources)
+    page = reader.read_job_page(ctx, sources.stores[0].selection)
+    assert len(page['rows']) == 1
+    summary = page['rows'][0]
+    assert summary['selection']['job_ref'] == created[0].as_dict()
+    assert summary['ownership'] == dict(origin='marionette', session_id=ctx.session_id, project_id=None)
+    assert summary['task_count'] == 5
+    selection = PMSelection(ctx, sources.stores[0].selection, created[0])
+    detail = reader.read_selected_metadata(selection)
+    assert {row['id'] for row in detail['tasks']['rows']} == {task.id for task in store.list_tasks(result.job.id)}
+    assert {task.role for task in store.list_tasks(result.job.id)} == set(roles)
+
+
 @pytest.fixture(params=['sqlite', 'file'])
 def case(tmp_path, request):
     store = create_store(request.param, tmp_path / 'store')

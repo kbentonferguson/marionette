@@ -4,7 +4,7 @@ import { parseMetadataDisplay, parseSelectedEconomics, parseSelectedHistory, his
 import type { MetadataDisplay, SelectedEconomics, SelectedHistory, HistoryCursorName } from './selectedMetadataEvidence';
 import { isPublicJobRef, jobRefQuery } from './publicJobRef';
 import { localPath, parseLocalList, parseLocalDetail } from './localJobMetadata';
-import type { LocalRef, LocalDetail, LocalList, LocalLane } from './localJobMetadata';
+import type { LocalRef, LocalDetail, LocalList, LocalLane, LocalObservation } from './localJobMetadata';
 import { browserResponse, controlDeadline, ControlRequestError } from './boundedControl';
 import { EndpointSessionClient, isEndpointMismatch } from './endpointSession';
 import { getHarnessIpc } from './transport';
@@ -301,6 +301,18 @@ export function metadataListPath(c: MetadataContext, s: MetadataStream, t: Trave
 }
 
 export type MetadataObservation = { row: MetadataSummary; freshness: 'observed' | 'stale' };
+export function canonicalPMReplacesLocal(local: LocalObservation, pm: MetadataObservation[]): boolean {
+  const canonical = local.row.canonical;
+  if (!canonical || canonical.session_id !== local.row.session_id) return false;
+  return pm.some(observation => {
+    const row = observation.row, selection = row.selection, ref = selection.job_ref, expected = canonical.job_ref;
+    return observation.freshness === 'observed'
+      && selection.source === canonical.source
+      && ref.job_id === expected.job_id && ref.state_id === expected.state_id
+      && ref.version === expected.version && ref.incarnation === expected.incarnation
+      && row.ownership.origin === 'marionette' && row.ownership.session_id === canonical.session_id;
+  });
+}
 export type MetadataStreamState = { stream: MetadataStream; checkpoint: number; missing: string[] } & (
   | { state: 'ready'; traversal: { mode: 'snapshot'; after_revision: 0; cursor: null } }
   | { state: 'partial'; traversal: Traversal & { cursor: string } }

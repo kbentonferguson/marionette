@@ -45,9 +45,9 @@ it('withholds final route on partial history, then preserves prior-page associat
   await screen.findByText(/routing: partial/);
   expect(screen.queryByText(/cheap-model/)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Next selected page' }));
-  await screen.findByText(/cheap-model \(recorded route forecast\)/);
+  expect(await screen.findByTitle('Model: cheap-model')).toHaveTextContent('forecast');
   expect(f.store.getSnapshot().localDetail?.routing?.rows).toHaveLength(1);
-  expect(screen.queryByTitle('Model: cheap-model')).toBeNull();
+  expect(screen.getByText('cheap-model · recorded route forecast')).toBeVisible();
   f.revise('New task body');
   fireEvent.click(screen.getByRole('button', { name: 'Inspect workers' }));
   await waitFor(() => expect(f.store.getSnapshot().localDetail?.tasks?.page.revision).toBe(f.response('tasks').page.revision));

@@ -1452,6 +1452,7 @@ def _execute_prewalk(
     worker_mode: Optional[str],
     job_label: str,
     session_id: str,
+    on_job_created: Optional[Callable[[Any], None]] = None,
 ) -> BridgeResult:
     """Start a plan-then-cheap prewalk via Puppetmaster's library entry.
 
@@ -1514,6 +1515,9 @@ def _execute_prewalk(
         specs=specs,
         worker_mode=mode,
         label=job_label,
+        origin="marionette",
+        session_id=session_id or None,
+        on_job_created=on_job_created,
     )
     artifacts = list(result.artifacts)
     compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
@@ -1559,6 +1563,7 @@ def execute_intent(
     on_delta: Optional[Callable[[str, str, str], None]] = None,
     session_id: Optional[str] = None,
     dispatch_id: Optional[str] = None,
+    on_job_created: Optional[Callable[[dict], None]] = None,
     cwd: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> Optional[BridgeResult]:
@@ -1600,6 +1605,20 @@ def execute_intent(
     job_label = job_label_for_session(
         session_id or "", dispatch_id=dispatch_id or "",
     )
+
+    def publish_job(job: Any) -> None:
+        """Publish an immutable public ref at PM creation, before workers run."""
+        if on_job_created is None:
+            return
+        try:
+            on_job_created(dict(
+                source="harness",
+                job_ref=store.job_ref(job.id, _launch_binding=True).as_dict(),
+                session_id=session_id or "",
+                dispatch_id=dispatch_id or "",
+            ))
+        except Exception:
+            return
 
     # Explicit per-runner cwd wins over the process-wide HARNESS_REPO view pointer.
     # Resolve at this seam so callers that forget resolve_effective_repo still
@@ -1644,6 +1663,7 @@ def execute_intent(
                 worker_mode=worker_mode,
                 job_label=job_label,
                 session_id=session_id or "",
+                on_job_created=publish_job,
             )
 
         # Swarm adapter selection (safety-first):
@@ -1700,6 +1720,8 @@ def execute_intent(
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
                 label=job_label,
+                origin="marionette", session_id=session_id or None,
+                on_job_created=publish_job,
             )
             adapter = "cursor"
         elif swarm_adapter == "agentic" and repo_cwd:
@@ -1825,6 +1847,8 @@ def execute_intent(
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
                 label=job_label,
+                origin="marionette", session_id=session_id or None,
+                on_job_created=publish_job,
             )
             adapter = pin_adapter
         elif swarm_adapter == "openai" and repo_cwd:
@@ -1866,6 +1890,8 @@ def execute_intent(
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
                 label=job_label,
+                origin="marionette", session_id=session_id or None,
+                on_job_created=publish_job,
             )
             adapter = "openai"
         else:
@@ -1895,6 +1921,8 @@ def execute_intent(
                 specs=specs,
                 worker_mode=worker_mode or "subprocess",
                 label=job_label,
+                origin="marionette", session_id=session_id or None,
+                on_job_created=publish_job,
             )
             adapter = "demo"
 

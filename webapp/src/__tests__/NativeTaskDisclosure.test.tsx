@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import NativeTaskDisclosure from '../components/NativeTaskDisclosure';
 import { producerTask } from './nativeExpert.fixtures';
@@ -45,7 +45,16 @@ it('labels task models as assignments without claiming provider use', () => {
   expect(screen.queryByText(/realized|provider used/i)).toBeNull();
 });
 
-it('retains full long role, model and instruction in a 220px disclosure without extra controls', () => {
+it('renders the worker name once and keeps status and model as separate facts', () => {
+  const role = 'pipeline-mapper';
+  render(<NativeTaskDisclosure task={{ ...producerTask(), role, model: 'configured/model', model_kind: 'assigned' }} />);
+  const worker = screen.getByRole('button', { name: `${role}: running` });
+  expect(within(worker).getAllByText(`${role} (agentic)`)).toHaveLength(1);
+  expect(within(worker).getByText('running')).toBeVisible();
+  expect(within(worker).getByTitle('Model: configured/model')).toHaveTextContent('configured/model');
+});
+
+it('retains full long role, model and instruction in a 220px disclosure with a copy action', () => {
   const role = 'role'.repeat(40), model = 'model'.repeat(32), instruction = 'instruction'.repeat(90);
   render(<div style={{ width: 220 }}><NativeTaskDisclosure task={{ ...producerTask(), role, model, instruction, model_kind: 'assigned' }} /></div>);
   const disclosure = screen.getByRole('button', { name: `${role}: running` });
@@ -54,5 +63,5 @@ it('retains full long role, model and instruction in a 220px disclosure without 
   expect(screen.queryByText(instruction)).toBeNull();
   fireEvent.click(disclosure);
   expect(screen.getByText(instruction)).toBeVisible();
-  expect(screen.getAllByRole('button')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Copy instruction' })).toBeVisible();
 });

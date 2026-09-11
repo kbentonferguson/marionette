@@ -602,7 +602,7 @@ describe("SwarmPane worker details", () => {
     } finally { fixture.close(); }
   });
 
-  it("expands a worker from the keyboard and keeps nested Kill from toggling the job", async () => {
+  it("selects a worker from the keyboard while keeping instructions closed and cancellation local", async () => {
     dispatchProjectSelected("/cancel-repo");
     vi.mocked(api.sessions).mockResolvedValue([{ id: "sess-test", active: true }]);
     const metadata = await nativeExpertFixture({ jobId: 'local-keys', repo: '/cancel-repo',
@@ -621,17 +621,15 @@ describe("SwarmPane worker details", () => {
 
     const worker = await screen.findByRole("button", { name: /key-worker/ });
     await waitFor(() => expect(metadata.store.getSnapshot().working).toBe(false));
-    expect(worker).toHaveAttribute("aria-expanded", "false");
-    expect(worker).toHaveAttribute("aria-controls");
-    expect(worker.className).toMatch(/focus-visible:outline/);
-    expect(worker.getAttribute("aria-label") || "").toMatch(/running/i);
+    expect(worker).toHaveAttribute("aria-pressed", "true");
+    expect(worker.className).toMatch(/swarm-worker-row/);
+    expect(worker).toHaveTextContent(/running/i);
     worker.focus();
     fireEvent.keyDown(worker, { key: " " });
-    expect(worker).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Keyboard disclosure")).toBeInTheDocument();
-    const details = document.getElementById(worker.getAttribute("aria-controls") || "");
-    expect(details).toBeTruthy();
-    expect(worker.contains(details)).toBe(false);
+    expect(worker).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("Keyboard disclosure")).toBeNull();
+    fireEvent.click(screen.getByText("Instruction"));
+    expect(screen.getByText("Keyboard disclosure")).toBeVisible();
 
     const kill = screen.getByRole("button", { name: "Cancel this job" });
     kill.focus();
@@ -1035,7 +1033,7 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(parts.total).toBe(0);
   });
 
-  it("renders local-job routing policy on worker expansion without template prose", async () => {
+  it("keeps the routed local model compact without template prose", async () => {
     // Explicit retained fallback test data on the real native owner/transport contract.
     const route = { task_id: 'local-swarm-1-w0', association: 'legacy_owner_single_task' as const,
       model_kind: 'forecast' as const, role: 'implement', policy: 'balanced', adapter: 'agentic',
@@ -1049,16 +1047,12 @@ describe("SwarmPane mid-run job-row meters", () => {
     await expandJob(/Provider worker|implement/);
     const worker = await screen.findByRole("button", { name: /implement \(agentic\)/ });
     await waitFor(() => expect(worker).toHaveTextContent("cheap-model"));
-    expect(worker).toHaveTextContent("recorded route forecast");
-    expect(screen.queryByTitle("Model: cheap-model")).toBeNull();
+    expect(screen.getByTitle("Model: cheap-model")).toBeVisible();
     expect(screen.queryByText("initial-cheap")).not.toBeInTheDocument();
     expect(screen.queryByText("balanced")).not.toBeInTheDocument();
     expect(screen.queryByText(/Right-sized: cheapest model/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Unmatched routing/)).not.toBeInTheDocument();
 
-    fireEvent.click(worker);
-    expect(screen.getByText("balanced")).toBeInTheDocument();
-    expect(screen.getByText("fallback")).toBeInTheDocument();
     expect(screen.queryByText(/Right-sized: cheapest model/)).not.toBeInTheDocument();
     expect(screen.queryByText("Pin attribution unknown")).not.toBeInTheDocument();
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
@@ -1072,8 +1066,8 @@ describe("SwarmPane mid-run job-row meters", () => {
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     await expandJob(/Provider worker/);
     expect(screen.getByLabelText('Job local-compact')).toBeVisible();
-    expect(await screen.findByText(/Workers \(1\)/)).toBeVisible();
-    expect(await screen.findByRole('button', { name: /implement \(agentic\)/ })).toBeVisible();
+    expect(await screen.findByText('Workers')).toBeVisible();
+    expect(await screen.findByRole('button', { name: /implement/ })).toBeVisible();
     expect(screen.queryByText(/Lifecycle:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Parent relationship unknown/)).not.toBeInTheDocument();
     expect(screen.queryByText(/combined tokens|Estimated spend|Native provider/)).not.toBeInTheDocument();
@@ -1081,8 +1075,10 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(screen.getByRole('button', { name: 'Inspect workers' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Request native stop' })).toBeVisible();
     expect(screen.queryByRole('dialog', { name: 'Selected job inspection' })).not.toBeInTheDocument();
-    const worker = await screen.findByRole('button', { name: /implement \(agentic\)/ });
+    const worker = await screen.findByRole('button', { name: /implement/ });
     fireEvent.click(worker);
+    expect(screen.queryByText('Keyboard disclosure')).toBeNull();
+    fireEvent.click(screen.getByText('Instruction'));
     expect(screen.getByText('Keyboard disclosure')).toBeVisible();
     expect(screen.queryByRole('dialog', { name: 'Selected job inspection' })).not.toBeInTheDocument();
   });

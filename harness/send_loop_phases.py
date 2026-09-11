@@ -1200,6 +1200,9 @@ def stream_swarm(
             cwd=_cwd,
             repo=_cwd,
             worker_mode=worker_mode,
+            on_job_created=lambda association: session._associate_local_job_with_pm(
+                f"local-swarm-{dispatch_id}", association,
+            ),
             on_delta=lambda wid, kind, text: delta_q.put(
                 ("delta", (wid, kind, text))
             ),
