@@ -95,6 +95,7 @@ it("reports protected targets after pruning", async () => {
   await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
   await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
   await act(async () => { fireEvent.click(pruneButton()); });
+  await waitFor(() => expect(api.pruneEditBranches).toHaveBeenCalledWith("/workspace"));
   await waitFor(() => {
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("/workspace/tree (Locked worktree)") }));
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("pmedit-unique (Commits not retained") }));

@@ -330,6 +330,7 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
         target_sessions = [
             s for s in svc.sessions.list()
             if svc.session_visible_for_workspace(s, target_repo, state_dir)
+            and not s.get("archived")
         ]
         if target_sessions:
             newest_session = max(target_sessions, key=lambda s: s.get("created", 0))

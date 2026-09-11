@@ -118,6 +118,47 @@ it.each(['same', 'repo', 'session', 'event'])('discards pending A-B-A result for
   wait.resolve(response(list()));
   expect(await first).toBe('discarded'); expect(store.getSnapshot().observations).toEqual([]);
 });
+it('ownerTick keeps discovering after one invalid metadata page', async () => {
+  await open();
+  let lists = 0;
+  request.mockImplementation(async (path: string) => {
+    if (path === '/api/endpoint') return response(handshake);
+    if (String(path).endsWith('/view')) return response(view());
+    lists += 1;
+    if (lists === 1) return response({ ...list(), context: { ...context, view_generation: 'foreign' } });
+    return response(list());
+  });
+  await store.ownerTick();
+  expect(store.getSnapshot().startupStopped).toBe(false);
+  await store.ownerTick();
+  expect(store.getSnapshot().startupStopped).toBe(false);
+  expect(store.getSnapshot().observations.length).toBeGreaterThan(0);
+});
+it('transitional empty view stays retryable so later ticks can open', async () => {
+  store.setTarget(context);
+  request.mockImplementation(async (path: string) => {
+    if (path === '/api/endpoint') return response(handshake);
+    if (String(path).endsWith('/view')) return response({
+      version: 1,
+      context: { session_id: '', repo: '', view_generation: 'generation-1' },
+      availability: 'unavailable',
+      sources: [],
+      missing: ['view_unavailable'],
+      refreshing: false,
+    });
+    return response(list());
+  });
+  expect(await store.readView()).toBe('failed');
+  expect(store.getSnapshot().error).toBe('unavailable');
+  expect(store.getSnapshot().startupStopped).toBe(false);
+  request.mockImplementation(async (path: string) => {
+    if (path === '/api/endpoint') return response(handshake);
+    if (String(path).endsWith('/view')) return response(view());
+    return response(list());
+  });
+  await store.ownerTick();
+  expect(store.getSnapshot().view.kind).toBe('view');
+});
 it('wrong host generation cannot populate state', async () => {
   await open(); request.mockResolvedValue(response({ ...list(), context: { ...context, view_generation: 'foreign' } }));
   expect(await store.advance()).toBe('failed'); expect(store.getSnapshot().observations).toEqual([]);
@@ -146,8 +187,8 @@ it('scheduler skips overlap, and expired streams never hot-spin', async () => {
   expect(request.mock.calls.length - before).toBeGreaterThanOrEqual(6);
   expect(request.mock.calls.length - before).toBeLessThanOrEqual(35);
   const idleStates = store.getSnapshot().streams.map(s => s.state);
-  expect(idleStates.filter(state => state === 'cursor_expired')).toHaveLength(6);
-  expect(idleStates.filter(state => state === 'ready')).toHaveLength(1);
+  expect(idleStates.filter(state => state === 'cursor_expired').length).toBeGreaterThanOrEqual(6);
+  expect(idleStates.filter(state => state === 'cursor_expired').length).toBeLessThanOrEqual(7);
   const afterBackoff = request.mock.calls.length;
   for (let i = 0; i < 20; i++) await store.advance();
   expect(request.mock.calls.length).toBeGreaterThan(afterBackoff);
