@@ -455,6 +455,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
+  const stickyQualityRef = useRef<Record<string, string>>(state.stickyQuality);
   const [visible, setVisible] = useState(() => !document.hidden);
   useEffect(() => {
     const update = () => setVisible(!document.hidden);
@@ -544,7 +545,6 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     const date = currentHeader(state, key)?.created_at;
     if (date) createdAt.set(job.metadata_key ?? '', Date.parse(date));
   }
-  const stickyQualityRef = useRef<Record<string, string>>(state.stickyQuality);
   const quality = (job: Job) => {
     const listedLocal = job.local_ref
       ? state.local.observations.find(o => localKey(o.row.local_ref) === localKey(job.local_ref!))?.row
