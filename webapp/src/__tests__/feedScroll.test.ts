@@ -24,6 +24,7 @@ import {
   scrollTopAfterFeedHeightChange,
   scrollToFeedEnd,
   applyUserSubmitFeedPin,
+  submitPinShouldAbort,
   settleFrameResult,
   shouldCancelFeedResizeFollowForManualScrollAway,
   shouldDeferFollowDuringUserGesture,
@@ -837,6 +838,16 @@ describe("feedScroll layout contracts", () => {
   it("scrollToEnd lands at scrollHeight - clientHeight", () => {
     expect(scrollToFeedEnd(2000, client)).toBe(1600);
     expect(scrollToFeedEnd(350, client)).toBe(0);
+  });
+
+  it("first submit paint pins even if a release already arrived", () => {
+    expect(submitPinShouldAbort({ pass: "first", releasedSinceSubmit: true })).toBe(false);
+    expect(submitPinShouldAbort({ pass: "first", releasedSinceSubmit: false })).toBe(false);
+  });
+
+  it("later submit paint aborts only after a post-submit release", () => {
+    expect(submitPinShouldAbort({ pass: "later", releasedSinceSubmit: true })).toBe(true);
+    expect(submitPinShouldAbort({ pass: "later", releasedSinceSubmit: false })).toBe(false);
   });
 
   it("user submit re-pins to the new tail even when the prior pin was stale", () => {

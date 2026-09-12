@@ -110,6 +110,14 @@ export function applyUserSubmitFeedPin(opts: {
   };
 }
 
+/** First submit paint always pins. A later paint honors a post-submit release. */
+export function submitPinShouldAbort(opts: {
+  pass: "first" | "later";
+  releasedSinceSubmit: boolean;
+}): boolean {
+  return opts.pass === "later" && opts.releasedSinceSubmit;
+}
+
 export function isPinnedToBottom(
   scrollHeight: number,
   scrollTop: number,

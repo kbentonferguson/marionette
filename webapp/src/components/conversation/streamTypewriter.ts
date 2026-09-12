@@ -31,12 +31,32 @@ function armTimeout(token: number, cb: () => void): void {
   paintHandles.set(token, { kind: "timeout", id, cb });
 }
 
+function armRaf(token: number, cb: () => void): void {
+  const id = requestAnimationFrame(() => {
+    paintHandles.delete(token);
+    if (isDocumentHidden()) {
+      armTimeout(token, cb);
+      return;
+    }
+    cb();
+  });
+  paintHandles.set(token, { kind: "raf", id, cb });
+}
+
 function onVisibilityChange(): void {
-  if (!isDocumentHidden()) return;
+  if (isDocumentHidden()) {
+    for (const [token, handle] of Array.from(paintHandles.entries())) {
+      if (handle.kind !== "raf") continue;
+      cancelAnimationFrame(handle.id);
+      armTimeout(token, handle.cb);
+    }
+    return;
+  }
+  if (typeof requestAnimationFrame !== "function") return;
   for (const [token, handle] of Array.from(paintHandles.entries())) {
-    if (handle.kind !== "raf") continue;
-    cancelAnimationFrame(handle.id);
-    armTimeout(token, handle.cb);
+    if (handle.kind !== "timeout") continue;
+    clearTimeout(handle.id);
+    armRaf(token, handle.cb);
   }
 }
 
@@ -53,16 +73,19 @@ export function scheduleStreamPaint(cb: () => void): number {
     armTimeout(token, cb);
     return token;
   }
-  const id = requestAnimationFrame(() => {
-    paintHandles.delete(token);
-    if (isDocumentHidden()) {
-      armTimeout(token, cb);
-      return;
-    }
-    cb();
-  });
-  paintHandles.set(token, { kind: "raf", id, cb });
+  armRaf(token, cb);
   return token;
+}
+
+/** Test seam: drop pending paints and the document visibility listener. */
+export function resetStreamPaintBridge(): void {
+  for (const token of Array.from(paintHandles.keys())) {
+    cancelStreamPaint(token);
+  }
+  if (visibilityBridgeBound && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
+  visibilityBridgeBound = false;
 }
 
 export function cancelStreamPaint(id: number): void {

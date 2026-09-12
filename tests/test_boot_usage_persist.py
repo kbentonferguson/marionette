@@ -54,6 +54,7 @@ def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["app_run_id"] == "run-test-abc"
     assert data["carry"]["_tokens_cached"] == 12_000
+    assert data["carry_price_source"]
     assert data["pilot_by_model"]["cursor/grok-4-6"]["est_cost_usd"] >= 1.25
 
     # Simulate a fresh backend process in the same Electron app run.
@@ -61,11 +62,13 @@ def test_persist_and_restore_boot_usage_same_app_run(tmp_path, monkeypatch):
         srv._BOOT_METER_CARRY[attr] = 0.0
     srv._BOOT_PILOT_BY_MODEL.clear()
     srv._BOOT_CARRY_COST_USD = 0.0
+    srv._BOOT_CARRY_PRICE_SOURCE = "default"
     srv._BOOT_REPOS.clear()
     srv._COST_EPOCH = datetime.now(timezone.utc)
     srv._BOOT_USAGE_RESTORED = False
 
     assert srv._restore_boot_usage() is True
+    assert srv._BOOT_CARRY_PRICE_SOURCE == data["carry_price_source"]
     assert srv._BOOT_METER_CARRY["_tokens_used"] == 50_000
     assert srv._BOOT_METER_CARRY["_tokens_cached"] == 12_000
     assert srv._BOOT_METER_CARRY["_worker_cost_usd"] == 0.25
@@ -184,6 +187,7 @@ def test_restore_legacy_carry_missing_worker_tokens_cached_peels_conservatively(
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     srv._cfg.state_dir = str(tmp_path)
     srv._BOOT_USAGE_RESTORED = False
+    srv._BOOT_CARRY_PRICE_SOURCE = "catalog"
     for attr in srv._BOOT_METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
 
@@ -212,6 +216,7 @@ def test_restore_legacy_carry_missing_worker_tokens_cached_peels_conservatively(
     )
 
     assert srv._restore_boot_usage() is True
+    assert srv._BOOT_CARRY_PRICE_SOURCE == "default"
     assert srv._BOOT_METER_CARRY["_tokens_cached"] == 50_000
     assert srv._BOOT_METER_CARRY["_worker_tokens_in"] == 50_000
     # Conservative peel: all restored cache treated as worker-overlappable.

@@ -3,6 +3,7 @@ import {
   STREAM_PAINT_MS,
   cancelStreamPaint,
   pumpTypewriterFrame,
+  resetStreamPaintBridge,
   scheduleStreamPaint,
   streamPaintHandleCount,
 } from "../components/conversation/streamTypewriter";
@@ -25,6 +26,7 @@ function setVisibility(state: "hidden" | "visible"): void {
 
 describe("streamTypewriter scheduler", () => {
   afterEach(() => {
+    resetStreamPaintBridge();
     setVisibility("visible");
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -72,6 +74,37 @@ describe("streamTypewriter scheduler", () => {
     expect(fired).toBe(1);
     expect(streamPaintHandleCount()).toBe(0);
     cancelStreamPaint(token);
+  });
+
+  it("converts a pending timeout back to rAF when the tab is shown", () => {
+    vi.useFakeTimers();
+    const rafCbs = new Map<number, FrameRequestCallback>();
+    let nextRaf = 1;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      const id = nextRaf++;
+      rafCbs.set(id, cb);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      rafCbs.delete(id);
+    });
+
+    setVisibility("hidden");
+    let fired = 0;
+    scheduleStreamPaint(() => {
+      fired += 1;
+    });
+    expect(rafCbs.size).toBe(0);
+    expect(streamPaintHandleCount()).toBe(1);
+
+    setVisibility("visible");
+    expect(rafCbs.size).toBe(1);
+    expect(streamPaintHandleCount()).toBe(1);
+
+    const cb = rafCbs.values().next().value;
+    cb?.(0);
+    expect(fired).toBe(1);
+    expect(streamPaintHandleCount()).toBe(0);
   });
 
   it("cancelStreamPaint drops the map entry", () => {
