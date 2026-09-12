@@ -1,0 +1,850 @@
+{
+  "context": {
+    "repo": "/repo",
+    "scope": "session",
+    "session_id": "session-A",
+    "view_generation": "generation-1"
+  },
+  "detail": {
+    "artifact_count": 5,
+    "artifacts": {
+      "page": {
+        "checkpoint": 27,
+        "next_cursor": null,
+        "outcome": "complete",
+        "revision": 27,
+        "scanned": 5
+      },
+      "rows": [
+        {
+          "check_result": "unavailable",
+          "id": "artifact_31edec2b2a15",
+          "presence": "recorded",
+          "revision": 15,
+          "sha256": "d385354af95a40e9131f704592f79c0fcde0aabbe435db519372a9d48383b69c",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_2fa1153f008c",
+          "type": "routing"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_4c1e09d47801",
+          "presence": "recorded",
+          "revision": 21,
+          "sha256": "601ebf4a6f03a19ecef9df29b493a45cf990ba638a80ed4601da1f212dd8d47a",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_2a568f666725",
+          "type": "finding"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_6265f46e383e",
+          "presence": "recorded",
+          "revision": 17,
+          "sha256": "026d985302b114659214fa33c033130f301daaa1da9b2c05b3913b2aebb01b0d",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_becff782f9fb",
+          "type": "routing"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_681e93b90e9a",
+          "presence": "recorded",
+          "revision": 23,
+          "sha256": "12d209f4227725619f4ce2268ab03b6557c90fb0121cd6790c8c5eebaa41a338",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_becff782f9fb",
+          "type": "finding"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_da25adc5aaa4",
+          "presence": "recorded",
+          "revision": 19,
+          "sha256": "4ba11dfa977839aabd8501651a84eae7878c052c61725fb6dddca0603f4acc92",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_2a568f666725",
+          "type": "routing"
+        }
+      ]
+    },
+    "cancellation_authority": false,
+    "context": {
+      "repo": "/repo",
+      "scope": "session",
+      "session_id": "session-A",
+      "view_generation": "generation-1"
+    },
+    "cost": {
+      "coverage": "unknown",
+      "job_ref": {
+        "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+        "job_id": "job_197af2ae19e0",
+        "state_id": "state_dbb49fdaf92e99c9",
+        "version": 2
+      },
+      "kind": "unavailable",
+      "outcome": "unavailable",
+      "reason": "no_terminal_receipt",
+      "receipt_digest": null,
+      "retry_after_ms": null,
+      "selected_count": null,
+      "source": "unavailable",
+      "summary_revision": 27,
+      "totals": null
+    },
+    "display": {
+      "delivery": "pending",
+      "goal_preview": "midflight parity swarm",
+      "goal_preview_truncated": false,
+      "kind": "available",
+      "quality": "unverified"
+    },
+    "expert": {
+      "artifacts": [
+        {
+          "adapter": "agentic",
+          "check_result": "unavailable",
+          "confidence": 0.9,
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_by": "router",
+          "detail": null,
+          "est_cost_usd": 0.02,
+          "failure": null,
+          "headline": "",
+          "id": "artifact_31edec2b2a15",
+          "model": "deepseek-v4-flash",
+          "policy": "balanced",
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": "explore",
+          "task_id": "task_2fa1153f008c",
+          "type": "routing"
+        },
+        {
+          "adapter": null,
+          "check_result": "unavailable",
+          "confidence": 0.8,
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_by": "worker",
+          "detail": null,
+          "est_cost_usd": null,
+          "failure": null,
+          "headline": "tests passed",
+          "id": "artifact_4c1e09d47801",
+          "model": null,
+          "policy": null,
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": null,
+          "task_id": "task_2a568f666725",
+          "type": "finding"
+        },
+        {
+          "adapter": "agentic",
+          "check_result": "unavailable",
+          "confidence": 0.9,
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_by": "router",
+          "detail": null,
+          "est_cost_usd": 0.02,
+          "failure": null,
+          "headline": "",
+          "id": "artifact_6265f46e383e",
+          "model": "deepseek-v4-flash",
+          "policy": "balanced",
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": "review",
+          "task_id": "task_becff782f9fb",
+          "type": "routing"
+        },
+        {
+          "adapter": null,
+          "check_result": "unavailable",
+          "confidence": 0.4,
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_by": "worker",
+          "detail": null,
+          "est_cost_usd": null,
+          "failure": null,
+          "headline": "still looking",
+          "id": "artifact_681e93b90e9a",
+          "model": null,
+          "policy": null,
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": null,
+          "task_id": "task_becff782f9fb",
+          "type": "finding"
+        },
+        {
+          "adapter": "agentic",
+          "check_result": "unavailable",
+          "confidence": 0.9,
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_by": "router",
+          "detail": null,
+          "est_cost_usd": 0.02,
+          "failure": null,
+          "headline": "",
+          "id": "artifact_da25adc5aaa4",
+          "model": "deepseek-v4-flash",
+          "policy": "balanced",
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": "test",
+          "task_id": "task_2a568f666725",
+          "type": "routing"
+        }
+      ],
+      "coverage": {
+        "artifacts": "complete",
+        "tasks": "complete"
+      },
+      "economics": {
+        "compaction": {
+          "coverage": "unavailable",
+          "reason": "source_absent"
+        },
+        "header": {
+          "completed_at": null,
+          "completed_workers": 1,
+          "cost": {
+            "basis": "measured",
+            "complete": false,
+            "estimated_cost_usd": null,
+            "measured_cost_usd": 0.05,
+            "plan_workers": 0,
+            "selected_usd": 0.05,
+            "source": "selected_current_records"
+          },
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "latest_task_updated_at": "2026-09-12T01:23:58+00:00",
+          "savings": {
+            "basis": "estimated",
+            "cache_usd": null,
+            "compact_tokens": null,
+            "compaction_usd": null,
+            "routing_usd": 0.08,
+            "selected_usd": 0.08,
+            "source": "selected_current_records"
+          },
+          "selected_workers": 5,
+          "updated_at": null,
+          "usage": {
+            "complete": false,
+            "cost_known_workers": 1,
+            "selected_workers": 5,
+            "tokens": 1710,
+            "tokens_known_workers": 2
+          },
+          "workers_complete": true
+        },
+        "tasks": {
+          "task_091c41ecc0b1": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": null,
+            "source_artifact_id": null,
+            "tokens": null,
+            "tokens_in": null,
+            "tokens_out": null
+          },
+          "task_2a568f666725": {
+            "cost_provenance": "provider",
+            "est_cost_usd": 0.05,
+            "estimated": false,
+            "plan_billed": false,
+            "route_forecast_usd": 0.02,
+            "source_artifact_id": "artifact_4c1e09d47801",
+            "tokens": 1200,
+            "tokens_in": 1000,
+            "tokens_out": 200
+          },
+          "task_2fa1153f008c": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": 0.02,
+            "source_artifact_id": null,
+            "tokens": null,
+            "tokens_in": null,
+            "tokens_out": null
+          },
+          "task_51c67ffe5a87": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": null,
+            "source_artifact_id": null,
+            "tokens": null,
+            "tokens_in": null,
+            "tokens_out": null
+          },
+          "task_becff782f9fb": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": 0.02,
+            "source_artifact_id": "artifact_681e93b90e9a",
+            "tokens": 510,
+            "tokens_in": 500,
+            "tokens_out": 10
+          }
+        }
+      },
+      "header": {
+        "completed_at": null,
+        "cost": {
+          "basis": "unknown",
+          "estimated_cost_usd": null,
+          "measured_cost_usd": null,
+          "selected_usd": null,
+          "source": "unavailable"
+        },
+        "created_at": "2026-09-12T01:23:58+00:00"
+      },
+      "kind": "available",
+      "quality": "unverified",
+      "reason": null,
+      "tasks": [
+        {
+          "adapter": "agentic",
+          "created_at": null,
+          "id": "task_091c41ecc0b1",
+          "instruction": "instruction for security",
+          "instruction_truncated": false,
+          "model": null,
+          "role": "security",
+          "updated_at": null,
+          "usage": {
+            "cost_provenance": null,
+            "est_cost_usd": null,
+            "estimated": null,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "id": "task_2a568f666725",
+          "instruction": "instruction for test",
+          "instruction_truncated": false,
+          "model": "deepseek-v4-flash",
+          "role": "test",
+          "updated_at": "2026-09-12T01:23:58+00:00",
+          "usage": {
+            "cost_provenance": "provider",
+            "est_cost_usd": 0.05,
+            "estimated": false,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "id": "task_2fa1153f008c",
+          "instruction": "instruction for explore",
+          "instruction_truncated": false,
+          "model": "deepseek-v4-flash",
+          "role": "explore",
+          "updated_at": "2026-09-12T01:23:58+00:00",
+          "usage": {
+            "cost_provenance": null,
+            "est_cost_usd": null,
+            "estimated": null,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": null,
+          "id": "task_51c67ffe5a87",
+          "instruction": "not started yet",
+          "instruction_truncated": false,
+          "model": null,
+          "role": "nostart",
+          "updated_at": null,
+          "usage": {
+            "cost_provenance": null,
+            "est_cost_usd": null,
+            "estimated": null,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": "2026-09-12T01:23:58+00:00",
+          "id": "task_becff782f9fb",
+          "instruction": "instruction for review",
+          "instruction_truncated": false,
+          "model": "deepseek-v4-flash",
+          "role": "review",
+          "updated_at": "2026-09-12T01:23:58+00:00",
+          "usage": {
+            "cost_provenance": null,
+            "est_cost_usd": null,
+            "estimated": null,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        }
+      ]
+    },
+    "history": {
+      "attempts": {
+        "page": {
+          "captured_count": 1,
+          "complete_invocation_history": false,
+          "coverage": "captured",
+          "next_cursor": null,
+          "outcome": "complete",
+          "scanned": 1
+        },
+        "rows": [
+          {
+            "facts": {
+              "adapter": "agentic",
+              "attempt_id": "run_19f1f177e884",
+              "job_id": "job_197af2ae19e0",
+              "model": "deepseek-v4-flash",
+              "provider": "deepseek",
+              "run_id": "run_19f1f177e884",
+              "started_at": "2026-09-12T01:23:58+00:00",
+              "task_id": "task_becff782f9fb"
+            },
+            "job_ref": {
+              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+              "job_id": "job_197af2ae19e0",
+              "state_id": "state_dbb49fdaf92e99c9",
+              "version": 2
+            },
+            "kind": "attempt",
+            "sequence": 2
+          }
+        ]
+      },
+      "counts": {
+        "captured_attempts": 1,
+        "captured_observations": 1,
+        "captured_process_outcomes": 0,
+        "captured_runs": 1,
+        "complete_invocation_history": false,
+        "coverage": "captured",
+        "outcome": "available"
+      },
+      "kind": "available",
+      "missing": [],
+      "observations": {
+        "page": {
+          "captured_count": 1,
+          "complete_invocation_history": false,
+          "coverage": "captured",
+          "next_cursor": null,
+          "outcome": "complete",
+          "scanned": 1
+        },
+        "rows": [
+          {
+            "facts": {
+              "attempt_id": "run_19f1f177e884",
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "cost_basis": "api",
+              "cost_state": "measured",
+              "cost_usd": 0.01,
+              "identity_state": "available",
+              "job_id": "job_197af2ae19e0",
+              "observation_id": "obs-1",
+              "observed_at": "2026-09-12T01:23:58+00:00",
+              "returncode": null,
+              "run_id": "run_19f1f177e884",
+              "source": "sdk",
+              "task_id": "task_becff782f9fb",
+              "timed_out": null,
+              "tokens_in": 10,
+              "tokens_out": 1,
+              "usage_state": "measured"
+            },
+            "job_ref": {
+              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+              "job_id": "job_197af2ae19e0",
+              "state_id": "state_dbb49fdaf92e99c9",
+              "version": 2
+            },
+            "kind": "observation",
+            "sequence": 3
+          }
+        ]
+      },
+      "process_outcomes": {
+        "page": {
+          "captured_count": 0,
+          "complete_invocation_history": false,
+          "coverage": "unknown",
+          "next_cursor": null,
+          "outcome": "complete",
+          "scanned": 0
+        },
+        "rows": []
+      },
+      "runs": {
+        "page": {
+          "captured_count": 1,
+          "complete_invocation_history": false,
+          "coverage": "captured",
+          "next_cursor": null,
+          "outcome": "complete",
+          "scanned": 1
+        },
+        "rows": [
+          {
+            "completion": {
+              "intent_digest": null,
+              "job_ref": {
+                "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+                "job_id": "job_197af2ae19e0",
+                "state_id": "state_dbb49fdaf92e99c9",
+                "version": 2
+              },
+              "outcome": "legacy_unknown",
+              "run_id": "run_19f1f177e884"
+            },
+            "facts": {
+              "completed_at": null,
+              "id": "run_19f1f177e884",
+              "job_id": "job_197af2ae19e0",
+              "role": "review",
+              "started_at": "2026-09-12T01:23:58+00:00",
+              "status": "running",
+              "task_id": "task_becff782f9fb",
+              "worker_id": "worker-1"
+            },
+            "job_ref": {
+              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+              "job_id": "job_197af2ae19e0",
+              "state_id": "state_dbb49fdaf92e99c9",
+              "version": 2
+            },
+            "kind": "run",
+            "sequence": 1
+          }
+        ]
+      }
+    },
+    "lifecycle": "running",
+    "missing": [
+      "cost"
+    ],
+    "selection": {
+      "job_ref": {
+        "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+        "job_id": "job_197af2ae19e0",
+        "state_id": "state_dbb49fdaf92e99c9",
+        "version": 2
+      },
+      "repo": "/repo",
+      "session_id": "session-A",
+      "source": "harness"
+    },
+    "task_count": 5,
+    "tasks": {
+      "page": {
+        "checkpoint": 27,
+        "next_cursor": null,
+        "outcome": "complete",
+        "revision": 27,
+        "scanned": 5
+      },
+      "rows": [
+        {
+          "binding": {
+            "generation": 0,
+            "lease_id": null,
+            "owner": null,
+            "task_id": "task_091c41ecc0b1"
+          },
+          "id": "task_091c41ecc0b1",
+          "revision": 9,
+          "stamp": "known",
+          "status": "queued"
+        },
+        {
+          "binding": {
+            "generation": 0,
+            "lease_id": null,
+            "owner": null,
+            "task_id": "task_2a568f666725"
+          },
+          "id": "task_2a568f666725",
+          "revision": 7,
+          "stamp": "known",
+          "status": "complete"
+        },
+        {
+          "binding": {
+            "generation": 1,
+            "lease_id": "lease_d9fc21d4672d",
+            "owner": "worker-1",
+            "task_id": "task_2fa1153f008c"
+          },
+          "id": "task_2fa1153f008c",
+          "revision": 11,
+          "stamp": "known",
+          "status": "running"
+        },
+        {
+          "binding": {
+            "generation": 0,
+            "lease_id": null,
+            "owner": null,
+            "task_id": "task_51c67ffe5a87"
+          },
+          "id": "task_51c67ffe5a87",
+          "revision": 13,
+          "stamp": "known",
+          "status": "queued"
+        },
+        {
+          "binding": {
+            "generation": 0,
+            "lease_id": null,
+            "owner": null,
+            "task_id": "task_becff782f9fb"
+          },
+          "id": "task_becff782f9fb",
+          "revision": 5,
+          "stamp": "known",
+          "status": "running"
+        }
+      ]
+    },
+    "version": 1
+  },
+  "page": {
+    "context": {
+      "repo": "/repo",
+      "scope": "session",
+      "session_id": "session-A",
+      "view_generation": "generation-1"
+    },
+    "coverage": {
+      "legacy": "unavailable",
+      "membership": "known_metadata",
+      "ordering": "id",
+      "store_set": "known_sources"
+    },
+    "lanes": {
+      "active_statuses": [
+        "in_progress",
+        "pending",
+        "queued",
+        "running",
+        "started",
+        "stitching"
+      ],
+      "attention_statuses": [
+        "failed",
+        "stalled"
+      ],
+      "statuses": [
+        "cancelled",
+        "complete",
+        "failed",
+        "in_progress",
+        "pending",
+        "queued",
+        "running",
+        "stalled",
+        "started",
+        "stitching"
+      ]
+    },
+    "missing": [
+      "legacy_ownership",
+      "economics"
+    ],
+    "mode": "snapshot",
+    "page": {
+      "checkpoint": 27,
+      "next_cursor": null,
+      "outcome": "complete",
+      "revision": 27,
+      "scanned": 1
+    },
+    "rows": [
+      {
+        "activity": "active",
+        "artifact_count": 5,
+        "deleted": false,
+        "display": {
+          "delivery": "pending",
+          "goal_preview": "midflight parity swarm",
+          "goal_preview_truncated": false,
+          "kind": "available",
+          "quality": "unverified"
+        },
+        "economics": {
+          "kind": "unavailable",
+          "reason": "selected_only"
+        },
+        "lifecycle": "running",
+        "ownership": {
+          "origin": "marionette",
+          "project_id": null,
+          "session_id": "session-A"
+        },
+        "revision": 27,
+        "selection": {
+          "job_ref": {
+            "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+            "job_id": "job_197af2ae19e0",
+            "state_id": "state_dbb49fdaf92e99c9",
+            "version": 2
+          },
+          "repo": "/repo",
+          "session_id": "session-A",
+          "source": "harness"
+        },
+        "stamp": "known",
+        "task_count": 5
+      }
+    ],
+    "store": {
+      "source": "harness",
+      "state_id": "state_dbb49fdaf92e99c9"
+    },
+    "version": 1
+  },
+  "pins": {
+    "context": {
+      "repo": "/repo",
+      "scope": "session",
+      "session_id": "session-A",
+      "view_generation": "generation-1"
+    },
+    "results": [
+      {
+        "result": {
+          "kind": "present",
+          "row": {
+            "activity": "active",
+            "artifact_count": 5,
+            "deleted": false,
+            "display": {
+              "delivery": "pending",
+              "goal_preview": "midflight parity swarm",
+              "goal_preview_truncated": false,
+              "kind": "available",
+              "quality": "unverified"
+            },
+            "economics": {
+              "kind": "unavailable",
+              "reason": "selected_only"
+            },
+            "header": {
+              "completed_at": null,
+              "completed_workers": 1,
+              "cost": {
+                "basis": "measured",
+                "complete": false,
+                "estimated_cost_usd": null,
+                "measured_cost_usd": 0.05,
+                "plan_workers": 0,
+                "selected_usd": 0.05,
+                "source": "selected_current_records"
+              },
+              "created_at": "2026-09-12T01:23:58+00:00",
+              "latest_task_updated_at": "2026-09-12T01:23:58+00:00",
+              "model": null,
+              "model_provenance": "unknown",
+              "quality": "unverified",
+              "savings": {
+                "basis": "estimated",
+                "cache_usd": null,
+                "compact_tokens": null,
+                "compaction_usd": null,
+                "routing_usd": 0.08,
+                "selected_usd": 0.08,
+                "source": "selected_current_records"
+              },
+              "selected_workers": 5,
+              "updated_at": null,
+              "usage": {
+                "complete": false,
+                "cost_known_workers": 1,
+                "selected_workers": 5,
+                "tokens": 1710,
+                "tokens_known_workers": 2
+              },
+              "workers_complete": true
+            },
+            "lifecycle": "running",
+            "ownership": {
+              "origin": "marionette",
+              "project_id": null,
+              "session_id": "session-A"
+            },
+            "revision": 27,
+            "selection": {
+              "job_ref": {
+                "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+                "job_id": "job_197af2ae19e0",
+                "state_id": "state_dbb49fdaf92e99c9",
+                "version": 2
+              },
+              "repo": "/repo",
+              "session_id": "session-A",
+              "source": "harness"
+            },
+            "stamp": "known",
+            "task_count": 5
+          }
+        },
+        "selection": {
+          "job_ref": {
+            "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+            "job_id": "job_197af2ae19e0",
+            "state_id": "state_dbb49fdaf92e99c9",
+            "version": 2
+          },
+          "repo": "/repo",
+          "session_id": "session-A",
+          "source": "harness"
+        }
+      }
+    ],
+    "version": 1
+  },
+  "selection": {
+    "job_ref": {
+      "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
+      "job_id": "job_197af2ae19e0",
+      "state_id": "state_dbb49fdaf92e99c9",
+      "version": 2
+    },
+    "repo": "/repo",
+    "session_id": "session-A",
+    "source": "harness"
+  }
+}

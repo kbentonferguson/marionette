@@ -1,4 +1,4 @@
-import { parseExpertMetadata, parseExpertHeader } from './expertMetadata';
+import { parseExpertMetadata, parseExpertHeader, ExpertParseError } from './expertMetadata';
 import type { ExpertMetadata, ExpertHeader } from './expertMetadata';
 import { parseMetadataDisplay, parseSelectedEconomics, parseSelectedHistory, historyCursors } from './selectedMetadataEvidence';
 import type { MetadataDisplay, SelectedEconomics, SelectedHistory, HistoryCursorName } from './selectedMetadataEvidence';
@@ -49,9 +49,14 @@ export type DetailCursors = { task_cursor: string | null; artifact_cursor: strin
 export type MetadataErrorCode = 'invalid_metadata' | 'invalid_request' | 'view_changed' | 'refresh_in_progress' | 'endpoint_changed' | 'unavailable' | 'outcome_unknown' | 'bounds_exceeded' | 'busy';
 export class MetadataError extends Error {
   readonly code: MetadataErrorCode;
-  constructor(code: MetadataErrorCode) { super(code); this.code = code; }
+  readonly detail?: string;
+  constructor(code: MetadataErrorCode, detail?: string) {
+    super(detail ? `${code}:${detail}` : code);
+    this.code = code;
+    if (detail !== undefined) this.detail = detail;
+  }
 }
-function fail(): never { throw new MetadataError('invalid_metadata'); }
+function fail(detail?: string): never { throw new MetadataError('invalid_metadata', detail); }
 function record(v: unknown): v is Record<string, unknown> { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 function object(v: unknown, fields: string[]): Record<string, unknown> {
   if (!record(v) || Object.keys(v).length !== fields.length || !fields.every(k => Object.hasOwn(v, k))) return fail();
@@ -237,20 +242,31 @@ export function parseMetadataDetail(v: unknown, c: MetadataContext, selected: Me
   const cost = record(o.cost) && o.cost.kind === 'unavailable' && Object.keys(o.cost).length === 2
     ? { kind: 'unavailable', reason: text(o.cost.reason) } satisfies MetadataDetail['cost'] : parseSelectedEconomics(o.cost, s.job_ref);
   const tasks = resourcePage(o.tasks, cursors.task_cursor, task), artifacts = resourcePage(o.artifacts, cursors.artifact_cursor, artifact);
+  let expert: ExpertMetadata | undefined;
+  if (o.expert !== undefined) {
+    try { expert = parseExpertMetadata(o.expert, artifacts.rows); }
+    catch (error) {
+      if (error instanceof ExpertParseError) throw new MetadataError('invalid_metadata', error.detail);
+      throw error;
+    }
+  }
   const parsed: MetadataDetail = { version: 1, context: expectedContext(o.context, c), selection: s, lifecycle: nullableText(o.lifecycle),
     tasks, artifacts,
-    ...(o.expert === undefined ? {} : { expert: parseExpertMetadata(o.expert, artifacts.rows) }),
+    ...(expert === undefined ? {} : { expert }),
     ...(o.display === undefined ? {} : { display: parseMetadataDisplay(o.display) }),
     ...(o.task_count === undefined ? {} : { task_count: nullableCount(o.task_count) }),
     ...(o.artifact_count === undefined ? {} : { artifact_count: nullableCount(o.artifact_count) }),
     history: parseSelectedHistory(o.history, s.job_ref, cursors), cost, cancellation_authority: false, missing: missing(o.missing) };
-  const expert = parsed.expert;
-  if (expert && expert.kind !== 'unavailable') {
-    if (parsed.tasks.page.revision !== parsed.artifacts.page.revision
-      || expert.tasks.some(t => !parsed.tasks.rows.some(ref => ref.id === t.id && ref.binding !== null))
-      || expert.artifacts.some(a => !parsed.artifacts.rows.some(ref => ref.id === a.id && ref.task_id === a.task_id && ref.type?.toLowerCase() === a.type.toLowerCase()))
-      || expert.coverage.tasks === 'complete' && (parsed.tasks.page.outcome !== 'complete' || cursors.task_cursor !== null || expert.tasks.length !== parsed.tasks.rows.length)
-      || expert.coverage.artifacts === 'complete' && (parsed.artifacts.page.outcome !== 'complete' || cursors.artifact_cursor !== null || expert.artifacts.length !== parsed.artifacts.rows.length)) return fail();
+  if (parsed.expert && parsed.expert.kind !== 'unavailable') {
+    const skewed = parsed.tasks.page.revision !== parsed.artifacts.page.revision;
+    const unbound = parsed.expert.tasks.some(t => !parsed.tasks.rows.some(ref => ref.id === t.id && ref.binding !== null));
+    const missingArt = parsed.expert.artifacts.some(a => !parsed.artifacts.rows.some(ref => ref.id === a.id && ref.task_id === a.task_id && ref.type?.toLowerCase() === a.type.toLowerCase()));
+    const taskGap = parsed.expert.coverage.tasks === 'complete' && (parsed.tasks.page.outcome !== 'complete' || cursors.task_cursor !== null || parsed.expert.tasks.length !== parsed.tasks.rows.length);
+    const artGap = parsed.expert.coverage.artifacts === 'complete' && (parsed.artifacts.page.outcome !== 'complete' || cursors.artifact_cursor !== null || parsed.expert.artifacts.length !== parsed.artifacts.rows.length);
+    if (skewed || unbound || missingArt || taskGap || artGap) {
+      parsed.expert = { kind: 'unavailable', reason: skewed ? 'lane_revision_skew' : 'expert_ref_mismatch',
+        header: null, tasks: [], artifacts: [], coverage: { tasks: 'unknown', artifacts: 'unknown' }, quality: 'unverified' };
+    }
   }
   return parsed;
 }
@@ -267,8 +283,16 @@ export function parseMetadataPins(v: unknown, c: MetadataContext, selections: Me
         const raw = record(result.row) ? result.row : fail();
         const { header, ...summary } = raw;
         const r = row(summary, c);
-        if (r.deleted || metadataSelectionKey(r.selection) !== metadataSelectionKey(s)) return fail();
-        return { selection: s, result: { kind: 'present', row: { ...r, ...(header === undefined ? {} : { header: parseExpertHeader(header) }) } } } satisfies MetadataPinResult;
+        if (r.deleted || metadataSelectionKey(r.selection) !== metadataSelectionKey(s)) return fail('pins.row');
+        let parsedHeader: ExpertHeader | null | undefined;
+        if (header !== undefined) {
+          try { parsedHeader = parseExpertHeader(header); }
+          catch (error) {
+            if (!(error instanceof ExpertParseError)) throw error;
+            parsedHeader = null;
+          }
+        }
+        return { selection: s, result: { kind: 'present', row: { ...r, ...(parsedHeader === undefined ? {} : { header: parsedHeader }) } } } satisfies MetadataPinResult;
       }
       case 'unavailable': {
         const result = object(o.result, ['kind', 'reason']);
