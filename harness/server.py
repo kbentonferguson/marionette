@@ -37,6 +37,7 @@ from . import workspaces as _ws
 from .sessions import (
     SessionStore,
     save_transcript,
+    persist_live_transcript,
     load_transcript,
     session_stored_root,
     session_visible_for_workspace,
@@ -1440,8 +1441,9 @@ def _save_active_transcript() -> None:
             runner = _pilot
         if runner is None:
             return
-        payload = runner.export_transcript_data()
-        save_transcript(_sessions_state_dir(), sid, payload)
+        persist_live_transcript(
+            runner, _sessions_state_dir(), sid, writer=save_transcript,
+        )
 
 
 _load_resume_latch()
@@ -3004,8 +3006,10 @@ def _persist_turn_transcript(ctx) -> None:
                 or getattr(pilot, "_replacement_retired", False)):
             return
         if sid and pilot is not None and _runners.get(sid) is pilot:
-            save_transcript(_cfg.state_dir or _tf.gettempdir(),
-                            sid, pilot.export_transcript_data())
+            persist_live_transcript(
+                pilot, _cfg.state_dir or _tf.gettempdir(), sid,
+                writer=save_transcript,
+            )
 
 
 def _checkpoint_transcript(ctx=None) -> None:

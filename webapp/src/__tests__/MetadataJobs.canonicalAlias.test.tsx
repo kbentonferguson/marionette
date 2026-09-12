@@ -101,7 +101,11 @@ function pmRow(c: MetadataContext = context()): MetadataSummary {
   };
 }
 
-function fourTaskDetail(selected: MetadataSelection, c: MetadataContext) {
+function fourTaskDetail(
+  selected: MetadataSelection,
+  c: MetadataContext,
+  overrides: { lifecycle?: string; quality?: 'unverified' | 'degraded' | 'ok' } = {},
+) {
   const ids = ['task-a', 'task-b', 'task-c', 'task-d'];
   const revision = 100;
   const tasks = ids.map((id, index) => ({
@@ -138,7 +142,7 @@ function fourTaskDetail(selected: MetadataSelection, c: MetadataContext) {
     version: 1,
     selection: selected,
     context: c,
-    lifecycle: 'running',
+    lifecycle: overrides.lifecycle ?? 'running',
     display: {
       kind: 'available',
       goal_preview: 'canonical swarm goal',
@@ -247,7 +251,7 @@ function fourTaskDetail(selected: MetadataSelection, c: MetadataContext) {
         })),
       ],
       coverage: { tasks: 'complete', artifacts: 'complete' },
-      quality: 'unverified',
+      quality: overrides.quality ?? 'unverified',
     },
     history: { kind: 'unavailable', reason: 'public_read_unbounded' },
     cost: { kind: 'unavailable', reason: 'not_in_metadata' },
@@ -287,11 +291,17 @@ afterEach(() => {
   clearSWRCache();
 });
 
-async function mountCanonicalAlias(options: { includePmList?: boolean } = {}) {
+async function mountCanonicalAlias(options: {
+  includePmList?: boolean;
+  lifecycle?: string;
+  quality?: 'unverified' | 'degraded' | 'ok';
+} = {}) {
   let pmPresent = options.includePmList === true;
+  const lifecycle = options.lifecycle ?? 'running';
+  const quality = options.quality ?? 'unverified';
   const c = context();
   const selected = pmSelection(c);
-  const summary = localSummary();
+  const summary = localSummary({ lifecycle });
   const requestJSON = vi.fn(async (_method: string, path: string) => {
     const url = new URL(path, 'http://fixture');
     if (url.pathname === '/api/endpoint') {
@@ -367,7 +377,7 @@ async function mountCanonicalAlias(options: { includePmList?: boolean } = {}) {
     }
     if (url.pathname === '/api/jobs/metadata') {
       const status = url.searchParams.get('status');
-      const rows = pmPresent && (!status || status === 'running') ? [pmRow(c)] : [];
+      const rows = pmPresent && (!status || status === lifecycle) ? [{ ...pmRow(c), lifecycle }] : [];
       return {
         kind: 'response',
         status: 200,
@@ -392,7 +402,7 @@ async function mountCanonicalAlias(options: { includePmList?: boolean } = {}) {
         kind: 'response',
         status: 200,
         correlationId: '',
-        text: JSON.stringify(fourTaskDetail(selected, c)),
+        text: JSON.stringify(fourTaskDetail(selected, c, { lifecycle, quality })),
       };
     }
     throw Error(`unexpected ${path}`);
@@ -570,6 +580,41 @@ describe('metadataJobs alias dedupe', () => {
 });
 
 describe('SwarmPane canonical alias presentation', () => {
+  it('titles a closed alias from PM hydrate without a click', async () => {
+    const fixture = await mountCanonicalAlias({ includePmList: false });
+    try {
+      const row = await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`);
+      expect(within(row).getByRole('button', { name: /Provider worker|canonical swarm goal · / })).toHaveAttribute('aria-expanded', 'false');
+      await waitFor(() => {
+        expect(within(row).getByRole('button', { name: /canonical swarm goal · / })).toBeVisible();
+      });
+      expect(within(row).getByRole('button', { name: /canonical swarm goal · / })).toHaveAttribute('aria-expanded', 'false');
+      expect(row).not.toHaveTextContent('PRIVATE FULL PROMPT');
+      expect(fixture.requestJSON.mock.calls.some(([, path]) => String(path).includes('/detail'))).toBe(true);
+    } finally {
+      fixture.unmount();
+    }
+  });
+
+  it('shows finished alias title and degraded quality without a click or live job', async () => {
+    const fixture = await mountCanonicalAlias({
+      includePmList: false,
+      lifecycle: 'complete',
+      quality: 'degraded',
+    });
+    try {
+      const row = await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`);
+      await waitFor(() => {
+        expect(within(row).getByRole('button', { name: /canonical swarm goal · complete/ })).toBeVisible();
+      });
+      expect(within(row).getByRole('button', { name: /canonical swarm goal · complete/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(row).toHaveAttribute('data-quality', 'degraded');
+      expect(screen.getByText(/1 untrustworthy/i)).toBeVisible();
+    } finally {
+      fixture.unmount();
+    }
+  });
+
   it('renders canonical goal, job id, and a 4-worker PM roster for an alias with canonical', async () => {
     const fixture = await mountCanonicalAlias({ includePmList: false });
     try {
@@ -627,6 +672,43 @@ describe('SwarmPane canonical alias presentation', () => {
     } finally {
       fixture.unmount();
     }
+  });
+
+  it('titles a local alias from cached PM preview when list display has no goal_preview', () => {
+    const c = context();
+    const selected = pmSelection(c);
+    const key = metadataSelectionKey(selected);
+    const alias = localSummary({
+      display: { label: 'Provider worker', model: '', adapter: 'agentic', truncated: false },
+    });
+    const state = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      observations: [],
+      pins: [],
+      local: {
+        observations: [{ row: alias, freshness: 'observed', observedAt: 1 }],
+        traversal: { mode: 'snapshot', after_revision: 0, cursor: null },
+        state: 'complete',
+        missing: [],
+        observedAt: 1,
+      },
+      localDetail: null,
+      detail: { kind: 'none' },
+      detailCache: {
+        [key]: {
+          kind: 'selected',
+          selection: selected,
+          cursors: { task_cursor: null, artifact_cursor: null },
+          observation: fourTaskDetail(selected, c),
+          freshness: 'observed',
+          error: null,
+        },
+      },
+    } as unknown as JobMetadataState;
+    const jobs = metadataJobs(state);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].goal).toBe('canonical swarm goal');
+    expect(jobs[0].goal).not.toMatch(/Provider worker|PRIVATE FULL PROMPT/);
   });
 
   it('titles a local alias from display.goal_preview before Provider worker', () => {

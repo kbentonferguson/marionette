@@ -105,10 +105,12 @@ def prepare_session_restart(svc: SessionControlServices) -> tuple[bool, Optional
         sessions = svc.get_sessions() if svc.get_sessions is not None else None
         pilot = svc.get_pilot()
         if sessions is not None and sessions.active and svc.save_transcript is not None:
-            svc.save_transcript(
+            from ..sessions import persist_live_transcript
+            persist_live_transcript(
+                pilot,
                 svc.cfg.state_dir or _tf.gettempdir(),
                 sessions.active,
-                pilot.export_transcript_data(),
+                writer=svc.save_transcript,
             )
         if svc.set_resume_latch is not None:
             sid = ""
@@ -285,10 +287,9 @@ def post_session_snapcompact(
         }
     if sessions is not None and sessions.active and svc.save_transcript is not None:
         try:
-            svc.save_transcript(
-                state_dir,
-                sessions.active,
-                pilot.export_transcript_data(),
+            from ..sessions import persist_live_transcript
+            persist_live_transcript(
+                pilot, state_dir, sessions.active, writer=svc.save_transcript,
             )
         except Exception:
             pass
@@ -356,10 +357,12 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
         }
     sessions = svc.get_sessions() if svc.get_sessions is not None else None
     if sessions is not None and sessions.active and svc.save_transcript is not None:
-        svc.save_transcript(
+        from ..sessions import persist_live_transcript
+        persist_live_transcript(
+            pilot,
             svc.cfg.state_dir or _tf.gettempdir(),
             sessions.active,
-            pilot.export_transcript_data(),
+            writer=svc.save_transcript,
         )
     _record_post_compaction_snapshot(pilot, svc)
     try:

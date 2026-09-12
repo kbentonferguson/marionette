@@ -37,6 +37,17 @@ def test_steer_expected_turn_id_must_match_current():
     assert action.delivery is DeliveryPolicy.NEXT_TURN_BOUNDARY
 
 
+def test_recover_expected_turn_id_must_match_current_when_set():
+    store = SessionActionStore()
+    store.set_current_turn_id("turn-a")
+    with pytest.raises(SessionActionIllegalTransition) as exc:
+        store.admit(ActionKind.RECOVER, "resume", expected_turn_id="turn-b")
+    assert exc.value.code == "recover_turn_mismatch"
+    action = store.admit(ActionKind.RECOVER, "resume", expected_turn_id="turn-a")
+    assert action.kind is ActionKind.RECOVER
+    assert action.expected_turn_id == "turn-a"
+
+
 def test_admit_after_closed_is_illegal():
     store = SessionActionStore()
     store.admit(ActionKind.STEER, "before close")
@@ -107,6 +118,19 @@ def test_admit_front_moves_new_action_to_head():
     store.admit(ActionKind.STEER, "older")
     store.admit_front(ActionKind.STEER, "newer")
     assert [a.text for a in store] == ["newer", "older"]
+
+
+def test_admit_front_reorders_existing_input_id():
+    store = SessionActionStore()
+    older = store.admit(ActionKind.STEER, "older", input_id="steer-1")
+    mid = store.admit(ActionKind.MAILBOX, "mid", input_id="mail-1")
+    store.admit(ActionKind.STEER, "newer", input_id="steer-2")
+    again = store.admit_front(ActionKind.MAILBOX, "ignored-on-dedupe", input_id="mail-1")
+    assert again is mid
+    assert [a.id for a in store] == ["mail-1", "steer-1", "steer-2"]
+    assert [a.text for a in store] == ["mid", "older", "newer"]
+    assert list(store)[0] is mid
+    assert list(store)[1] is older
 
 
 def test_normalize_turn_input_mode_rejects_unknown():

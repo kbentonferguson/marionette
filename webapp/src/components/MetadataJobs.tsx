@@ -159,7 +159,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       const own = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(selectedPM);
       if (own) rearmIfSkipped(store.readDetail());
       else if (first || state.detail.kind === 'none') { store.select(selectedPM); rearmIfSkipped(store.readDetail()); }
-      else rearmIfSkipped(store.hydrateDetail(selectedPM)); // another inspection owns the selection; refresh cache-only
+      else rearmIfSkipped(store.hydrateDetail(selectedPM, { prefetch: true })); // cache-only; do not clear selected stale
     } catch {
       initialPMRead.current = false;
     }
@@ -192,7 +192,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       }
       if (!due || (last !== null && at - last < 2000)) return;
       last = at;
-      void store.hydrateDetail(selection);
+      void store.hydrateDetail(selection, { prefetch: true });
     };
     attempt();
     const tick = setInterval(() => { if (!document.hidden) attempt(); }, 2000);
@@ -434,7 +434,7 @@ export default function MetadataJobs({ enabled = true }: { enabled?: boolean }) 
   return <ObservedJobs key={key} preferenceKey={`pmharness.metadata.jobs:${key}`} enabled={enabled} />;
 }
 function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preferenceKey: string }) {
-  const { state } = useSharedJobMetadata();
+  const { store, state } = useSharedJobMetadata();
   const [preferences, setPreferences] = useState(() => readPreferences(preferenceKey));
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
@@ -485,6 +485,10 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     const live = new Set(jobs.filter(isLiveObservation).map(j => j.metadata_key));
     setPreferences(p => p.dismissed.some(key => live.has(key)) ? { ...p, dismissed: p.dismissed.filter(key => !live.has(key)) } : p);
   }, [jobs]);
+  useEffect(() => {
+    if (!enabled || !visible || state.view.kind !== 'view' || state.working) return;
+    void store.hydrateListedDetails();
+  }, [enabled, visible, jobs, state.working, state.view.kind, state.detailCache, state.advanceNumber, store]);
   useEffect(() => {
     const onOpen = (event: Event) => {
       if (!(event instanceof CustomEvent) || !event.detail || typeof event.detail.jobId !== 'string') return;
