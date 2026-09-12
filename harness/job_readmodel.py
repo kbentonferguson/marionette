@@ -32,6 +32,20 @@ from .job_expert_compaction import read_selected_compaction
 
 PAGE_BUDGET = dict(limit=50, max_scan=51, max_bytes=32768)
 EXACT_BUDGET = dict(limit=1, max_scan=2, max_bytes=8192)
+SNAPSHOT_RETRIES = 3
+
+
+def _read_page(method, *args, **kwargs):
+    """Live workers hold SQLite write locks for short bursts; the store reports that as
+    ``read_snapshot_unavailable`` with a retry hint. Honor it a bounded number of times so a
+    lock burst does not surface as an unavailable roster."""
+    page = method(*args, **kwargs)
+    for _ in range(SNAPSHOT_RETRIES - 1):
+        if page.outcome != 'unavailable' or getattr(page, 'reason', None) != 'read_snapshot_unavailable':
+            break
+        time.sleep(min(max(getattr(page, 'retry_after_ms', None) or 100, 20), 250) / 1000)
+        page = method(*args, **kwargs)
+    return page
 HISTORY_BUDGET = dict(limit=20, max_scan=21, max_bytes=8192)
 HISTORY_LANES = {
     'attempts': 'list_attempt_refs', 'runs': 'list_run_refs',
@@ -434,7 +448,7 @@ class MetadataReader:
         if store is None:
             return None, None, 'store_unavailable'
         try:
-            page = store.list_job_summaries(job_ref=selection.job_ref, **EXACT_BUDGET)
+            page = _read_page(store.list_job_summaries, job_ref=selection.job_ref, **EXACT_BUDGET)
         except StoreIdentityError:
             return None, None, 'selection_changed'
         if page.outcome != 'complete':
@@ -512,7 +526,7 @@ class MetadataReader:
             selected_pages = {}
             for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
                 self.check(ctx)
-                selected_pages[lane] = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
+                selected_pages[lane] = _read_page(method, selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
             if selected_pages['tasks'].revision == selected_pages['artifacts'].revision:
                 break
         for lane, page in selected_pages.items():
@@ -544,9 +558,11 @@ class MetadataReader:
         else:
             result['expert'] = self._expert(store, row, selection, selected_pages, cursors)
         # Separate bounded reads are not a transaction. Never return lanes from a
-        # selection that lost ownership or changed while they were being read.
+        # selection that lost ownership or identity while they were being read. A live
+        # job's summary revision advances under every worker write; that is the same
+        # selection, and the lane pages already carry their own revisions.
         _, current, reason = self._selected(selection)
-        if reason or current.revision != row.revision:
+        if reason or current.job_ref != row.job_ref:
             result.update(lifecycle=None, display=dict(kind='unavailable', reason='selection_changed'),
                           task_count=None, artifact_count=None,
                           tasks=dict(page=_page(), rows=[]), artifacts=dict(page=_page(), rows=[]),
@@ -577,7 +593,7 @@ class MetadataReader:
             return None
         cursors = dict(tasks=None, artifacts=None)
         for _ in range(3):
-            pages = {lane: method(selection.job_ref, cursor=None, **PAGE_BUDGET)
+            pages = {lane: _read_page(method, selection.job_ref, cursor=None, **PAGE_BUDGET)
                      for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs))}
             if pages['tasks'].revision == pages['artifacts'].revision:
                 break
@@ -600,7 +616,7 @@ class MetadataReader:
             return job_expert.unavailable('lane_revision_skew')
         deadline = time.monotonic() + 2
         _, current, reason = self._selected(selection, pin=pin)
-        if reason or current.revision != row.revision:
+        if reason or current.job_ref != row.job_ref:
             return job_expert.unavailable('selection_changed')
         job = job or store.get_job(selection.job_ref.job_id)
         if job.id != selection.job_ref.job_id or str(job.status) != row.status:
@@ -648,12 +664,18 @@ class MetadataReader:
         if known is not None and job.session_id and created_at and time.monotonic() < deadline:
             compaction = read_selected_compaction(known.root, session_id=job.session_id, job_id=job.id,
                 created_at=datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp())
-        # Re-read the identical finite reference pages. A task binding or artifact
-        # revision changed during hydration must invalidate the entire projection.
+        # Re-read the identical finite reference pages. A row hydrated above that was revised
+        # meanwhile would publish stale content, so that still invalidates the projection.
+        # Rows appended by a live job (a task bound, an artifact landed) leave this projection
+        # one step behind: report partial coverage rather than no roster. The page revision
+        # alone advances under every store write and is not a change to the selection.
         for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
-            current = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
-            if current != pages[lane]:
+            current = _read_page(method, selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
+            hydrated = tuple(pages[lane].items)
+            if current.outcome != pages[lane].outcome or tuple(current.items[:len(hydrated)]) != hydrated:
                 return job_expert.unavailable('selection_changed')
+            if len(current.items) != len(hydrated):
+                coverage[lane] = 'partial'
         if pages['tasks'].revision != pages['artifacts'].revision:
             return job_expert.unavailable('lane_revision_skew')
         if time.monotonic() >= deadline:

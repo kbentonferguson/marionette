@@ -221,6 +221,24 @@ def test_selected_reads_use_exact_public_bodies_without_scans_or_writes(case, mo
     assert any('selected_economics_current' in sql for sql in reads)
 
 
+def test_live_revision_advance_during_selected_read_keeps_lanes(case, monkeypatch):
+    """A worker write landing mid-read moves the job revision; the selection is unchanged."""
+    store, job, reader, _ = case
+    handle = reader.sources.stores[0].handle
+    original = handle.list_run_refs
+    def advanced(*a, **kw):
+        result = original(*a, **kw)
+        store.save_task(Task(job.id, 'worker', 'landed mid-read'))
+        return result
+    monkeypatch.setattr(handle, 'list_run_refs', advanced)
+    code, selected = detail(case)
+    assert code == 200 and 'selection_changed' not in selected['missing']
+    assert selected['lifecycle'] is not None
+    assert selected['tasks']['page']['outcome'] == 'complete'
+    assert selected['expert']['kind'] != 'unavailable'
+    assert selected['expert']['coverage']['tasks'] == 'partial'
+
+
 def test_ownership_change_during_selected_read_discards_all_lanes(case, monkeypatch):
     store, job, reader, _ = case
     handle = reader.sources.stores[0].handle
