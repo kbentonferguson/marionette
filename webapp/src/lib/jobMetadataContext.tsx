@@ -60,7 +60,7 @@ export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapt
 /** Live-dot / Jobs pulse: real swarm/implement hires only, never run_command. */
 function isObservedTrackerHire(
   freshness: string,
-  lifecycle: string | undefined,
+  lifecycle: string | null | undefined,
   signals: { id?: string | null; job_kind?: string | null; role?: string | null; adapter?: string | null },
 ): boolean {
   const status = String(lifecycle || '').toLowerCase();
