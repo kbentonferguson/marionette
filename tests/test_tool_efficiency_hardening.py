@@ -227,13 +227,56 @@ def test_write_file_verifies_what_landed_on_disk(repo):
 
 
 def test_write_file_reports_failed_post_write_verification(repo):
-    session, _workspace = repo
+    session, workspace = repo
     act = PilotAction(kind="write_file", path="new.txt", content="intended")
     with patch("harness.edit_hints.verify_written_text", return_value="post-write verification failed: nope"):
         ok, status, val = session._do_write_file(act, write=True)
     assert ok is False
     assert status == "verification_failed"
     assert "post-write verification failed" in val
+    assert not (workspace / "new.txt").exists()
+
+
+def test_write_file_verification_failure_restores_prior_bytes(repo):
+    session, workspace = repo
+    target = workspace / "keep.txt"
+    target.write_text("original\n", encoding="utf-8")
+    act = PilotAction(kind="write_file", path="keep.txt", content="intended")
+    with patch("harness.edit_hints.verify_written_text", return_value="post-write verification failed: nope"):
+        ok, status, _val = session._do_write_file(act, write=True)
+    assert ok is False and status == "verification_failed"
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_edit_file_verification_failure_restores_prior_bytes(repo):
+    session, workspace = repo
+    target = workspace / "a.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    act = PilotAction(
+        kind="edit_file",
+        path="a.py",
+        old_str="value = 1",
+        new_str="value = 2",
+    )
+    with patch("harness.edit_hints.verify_written_text", return_value="post-write verification failed: nope"):
+        ok, status, _val = session._do_edit_file(act, write=True)
+    assert ok is False and status == "verification_failed"
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_list_dir_survives_dangling_symlink(repo):
+    session, workspace = repo
+    (workspace / "ok.txt").write_text("hi", encoding="utf-8")
+    link = workspace / "broken"
+    try:
+        link.symlink_to(workspace / "missing.txt")
+    except OSError:
+        pytest.skip("symlinks not available")
+    ok, status, val = session._do_list_dir(PilotAction(kind="list_dir", path="."))
+    assert ok is True and status == "success"
+    text = val[1] if isinstance(val, tuple) else str(val)
+    assert "ok.txt" in text
+    assert "broken" in text
 
 
 def test_verify_written_text_detects_drift(tmp_path):

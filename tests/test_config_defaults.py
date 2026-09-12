@@ -44,3 +44,22 @@ def test_from_env_max_workers_defaults_and_overrides(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HARNESS_MAX_WORKERS", "12")
     assert HarnessConfig.from_env().max_workers == 12
+
+
+def test_from_env_invalid_budget_falls_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_CONFIG", str(tmp_path / "absent.json"))
+    monkeypatch.setenv("HARNESS_BUDGET", "nope")
+    assert HarnessConfig.from_env().budget == 3
+
+
+def test_from_env_bools_are_case_insensitive(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_CONFIG", str(tmp_path / "absent.json"))
+    monkeypatch.setenv("HARNESS_WIKI_AUTO", "TRUE")
+    monkeypatch.setenv("HARNESS_NO_DELEGATION", "Yes")
+    monkeypatch.setenv("HARNESS_AUTO_VERIFY", "OFF")
+    monkeypatch.setenv("HARNESS_BROWSER_ENABLED", "On")
+    cfg = HarnessConfig.from_env()
+    assert cfg.wiki_auto is True
+    assert cfg.no_delegation is True
+    assert cfg.auto_verify is False
+    assert cfg.browser_enabled is True

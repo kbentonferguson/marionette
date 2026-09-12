@@ -22,6 +22,15 @@ export function expertTaskOutcome(expert: ExpertMetadata, taskId: string): Exper
   return expert.coverage.artifacts === 'complete' && checks.length > 0
     && checks.every(a => a.check_result === 'passed') ? 'ok' : 'unverified';
 }
+export function stickyJobQuality(
+  key: string,
+  live: string,
+  sticky: Readonly<Record<string, string>>,
+): { quality: string; next: Record<string, string> } {
+  const next = live === 'degraded' ? { ...sticky, [key]: 'degraded' } : { ...sticky };
+  return { quality: next[key] === 'degraded' ? 'degraded' : live, next };
+}
+
 export function expertJobQuality(expert: ExpertMetadata): ExpertMetadata['quality'] {
   if (expert.kind === 'unavailable') return 'unverified';
   if (expert.quality === 'degraded' || expert.artifacts.some(isExpertFailure)) return 'degraded';

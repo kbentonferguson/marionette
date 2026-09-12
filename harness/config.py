@@ -9,6 +9,13 @@ from_env layers defaults < file < environment."""
 from dataclasses import dataclass
 
 
+def parse_truthy(raw: object, default: str = "") -> bool:
+    """Case-insensitive truthy parse for env / config file values."""
+    return str(raw if raw is not None else default).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 @dataclass
 class HarnessConfig:
     driver: str = "qwen3-coder-30b"   # default: wins both eval batteries (100%, lowest tokens, Apache-2.0)
@@ -164,7 +171,7 @@ class HarnessConfig:
                 return None
 
         def _bool(env_key: str, file_key: str, default: str = "") -> bool:
-            return str(pick(env_key, file_key, default)).strip().lower() in ("1", "true", "yes", "on")
+            return parse_truthy(pick(env_key, file_key, default))
 
         max_workers_raw = pick("HARNESS_MAX_WORKERS", "max_workers", 4)
         try:
@@ -172,28 +179,43 @@ class HarnessConfig:
         except (TypeError, ValueError):
             max_workers_val = 4
 
+        try:
+            budget_val = max(1, int(pick("HARNESS_BUDGET", "budget", 3)))
+        except (TypeError, ValueError):
+            budget_val = 3
+
+        try:
+            max_gate_attempts_val = max(1, int(pick("HARNESS_MAX_GATE_ATTEMPTS", "max_gate_attempts", 3) or 3))
+        except (TypeError, ValueError):
+            max_gate_attempts_val = 3
+
+        try:
+            max_gate_seconds_val = float(pick("HARNESS_MAX_GATE_SECONDS", "max_gate_seconds", 120) or 120)
+        except (TypeError, ValueError):
+            max_gate_seconds_val = 120.0
+
         return cls(
             driver=driver_val,
             reach=pick("HARNESS_REACH", "reach", "openrouter"),
-            budget=int(pick("HARNESS_BUDGET", "budget", 3)),
+            budget=budget_val,
             state_dir=pick("HARNESS_STATE_DIR", "state_dir", ""),
             repo=repo_val,
             swarm_adapter=swarm_adapter_val,
             wiki_url=pick("HARNESS_WIKI_URL", "wiki_url", ""),
-            wiki_auto=str(pick("HARNESS_WIKI_AUTO", "wiki_auto", "")).strip() in ("1","true","yes","True"),
+            wiki_auto=_bool("HARNESS_WIKI_AUTO", "wiki_auto"),
             max_context_tokens=max_ctx,
             max_context_tokens_pinned=max_ctx_pinned,
-            no_delegation=str(pick("HARNESS_NO_DELEGATION", "no_delegation", "")).strip() in ("1","true","yes","True"),
+            no_delegation=_bool("HARNESS_NO_DELEGATION", "no_delegation"),
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
             quality_gate_cmds=pick("HARNESS_QUALITY_GATE_CMDS", "quality_gate_cmds", ""),
-            max_gate_attempts=int(pick("HARNESS_MAX_GATE_ATTEMPTS", "max_gate_attempts", 3) or 3),
-            max_gate_seconds=float(pick("HARNESS_MAX_GATE_SECONDS", "max_gate_seconds", 120) or 120),
+            max_gate_attempts=max_gate_attempts_val,
+            max_gate_seconds=max_gate_seconds_val,
             quality_gate_on_auto=_bool(
                 "HARNESS_QUALITY_GATE_ON_AUTO", "quality_gate_on_auto",
             ),
-            auto_verify=str(pick("HARNESS_AUTO_VERIFY", "auto_verify", "true")).strip() in ("1","true","yes","True"),
+            auto_verify=_bool("HARNESS_AUTO_VERIFY", "auto_verify", "true"),
             verify_command=pick("HARNESS_VERIFY_COMMAND", "verify_command", ""),
-            browser_enabled=str(pick("HARNESS_BROWSER_ENABLED", "browser_enabled", "true")).strip() in ("1","true","yes","True"),
+            browser_enabled=_bool("HARNESS_BROWSER_ENABLED", "browser_enabled", "true"),
             max_workers=max_workers_val,
             resource_pressure_enabled=_bool(
                 "HARNESS_RESOURCE_PRESSURE_ENABLED", "resource_pressure_enabled",

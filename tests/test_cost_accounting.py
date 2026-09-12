@@ -451,3 +451,29 @@ def test_multi_session_catalog_costs_sum_invariant():
         _provider_cost_usd=0.0,
     )
     assert _session_cost_split(merged, PRICE_IN, PRICE_OUT) == pytest.approx(individual)
+
+
+def test_boot_session_cost_keeps_provider_usd_when_split_raises(monkeypatch):
+    from harness.api import usage_meters as um
+
+    um._boot_usage_reset_for_tests()
+    runner = SimpleNamespace(
+        _provider_cost_usd=1.25,
+        _worker_cost_usd=0.0,
+        config=SimpleNamespace(driver="broken"),
+    )
+
+    def _boom_prices(_runner):
+        raise RuntimeError("no runner price")
+
+    def _boom_split(*_a, **_k):
+        raise RuntimeError("no split")
+
+    monkeypatch.setattr(um, "_resolve_prices_for_runner", _boom_prices)
+    monkeypatch.setattr(um, "_iter_live_runners", lambda: [runner])
+    monkeypatch.setattr(um, "_session_cost_split", _boom_split)
+    try:
+        total = um._boot_session_cost(1.0, 2.0)
+        assert total == pytest.approx(1.25)
+    finally:
+        um._boot_usage_reset_for_tests()

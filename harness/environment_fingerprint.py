@@ -627,6 +627,32 @@ def format_acceptance_criteria_block(criteria: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def normalize_prior_findings(
+    raw: Any,
+    *,
+    max_items: int = 16,
+    max_chars: int = 400,
+) -> list[str]:
+    """Bound explicit prior-finding exclusions. Never infer from goal prose."""
+    return normalize_acceptance_criteria(
+        raw, max_items=max_items, max_chars=max_chars
+    )
+
+
+def format_prior_findings_block(findings: Sequence[str]) -> str:
+    """Worker brief block so round N+1 does not re-litigate settled findings."""
+    clean = normalize_prior_findings(list(findings or ()))
+    if not clean:
+        return ""
+    lines = [
+        "PRIOR FINDINGS (do not re-litigate; cite only if this dispatch "
+        "re-observes them on disk):",
+    ]
+    for item in clean:
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "ENVIRONMENT_FINGERPRINT_SCHEMA",
     "ENVIRONMENT_FINGERPRINT_VERSION",
@@ -634,8 +660,10 @@ __all__ = [
     "environment_fingerprint_of",
     "environment_fingerprint_schema_of",
     "format_acceptance_criteria_block",
+    "format_prior_findings_block",
     "job_environment_fingerprint",
     "job_environment_fingerprint_schema",
     "match_environment_fingerprint",
     "normalize_acceptance_criteria",
+    "normalize_prior_findings",
 ]

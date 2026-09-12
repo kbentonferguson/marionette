@@ -1049,6 +1049,9 @@ describe("slashCommands + mention listing", () => {
     expect(formatMentionListingCapMessage({ total: 5000, capped: 1000 })).toMatch(/Showing .+ of .+/);
     expect(formatMentionListingCapMessage({ capped: 2000 })).toMatch(/capped at/i);
     expect(formatMentionListingCapMessage({})).toMatch(/capped/i);
+    expect(
+      formatMentionListingCapMessage({ folders_total: 40, folders_capped: 10 }),
+    ).toMatch(/10.+of.+40.+folders/i);
   });
 });
 

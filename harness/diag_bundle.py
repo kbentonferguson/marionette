@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 DEFAULT_SESSION_LIMIT = 20
+MAX_SESSION_LIMIT = 200
 PIN_FALLBACK = "puppetmaster-ai==1.27.12"
 _PIN_RE = re.compile(r"puppetmaster-ai==[0-9]+(?:\.[0-9]+)*")
 _SECRET_KEY_FRAGMENTS = (
@@ -176,7 +177,11 @@ def collect_session_rows(
         except (TypeError, ValueError):
             return 0.0
 
-    rows = sorted(rows, key=_sort_key, reverse=True)[: max(0, int(limit))]
+    try:
+        capped = min(max(0, int(limit)), MAX_SESSION_LIMIT)
+    except (TypeError, ValueError):
+        capped = DEFAULT_SESSION_LIMIT
+    rows = sorted(rows, key=_sort_key, reverse=True)[:capped]
     out: list[dict[str, Any]] = []
     for row in rows:
         created = row.get("created")

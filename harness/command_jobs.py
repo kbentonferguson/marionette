@@ -696,8 +696,13 @@ def _bound_or_spill_output(
         return text, meta
     if meta.get("spill_uri") or meta.get("spill_path"):
         return meta["output_preview"], meta
-    # Nothing durable to point at: keep a hard-capped inline excerpt only.
-    return text[:_INLINE_OUTPUT_CAP] + "\n\n... (output truncated to 50KB) ...", meta
+    # Nothing durable to point at: keep a hard-capped head+tail excerpt only.
+    head = text[:4096]
+    tail = text[-4096:]
+    return (
+        f"{head}\n\n... (middle omitted; {len(text):,} chars, no spill) ...\n\n{tail}",
+        meta,
+    )
 
 
 def project_command_job_fields(job: Dict[str, Any]) -> Dict[str, Any]:

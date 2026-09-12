@@ -712,23 +712,33 @@ def probe_readiness(cwd: str) -> tuple[tuple[ReadinessFact, ...], dict[str, Any]
 def _localhost_policy_fact() -> ReadinessFact:
     """Loopback browsing is a policy setting, never a harness defect."""
     try:
-        from harness.url_safety import allow_private_urls
-        allowed = bool(allow_private_urls())
+        from harness.url_safety import allow_private_urls, browser_allow_loopback
+        private = bool(allow_private_urls())
+        loopback = bool(browser_allow_loopback())
     except Exception:  # noqa: BLE001 - absent policy reads as the safe default
-        allowed = False
-    if allowed:
+        private = False
+        loopback = True
+    if private:
         return ReadinessFact(
             "browser_localhost_policy",
             VERIFIED,
             CLASSIFICATION_POLICY,
             "loopback/private URLs permitted (HARNESS_ALLOW_PRIVATE_URLS)",
         )
+    if loopback:
+        return ReadinessFact(
+            "browser_localhost_policy",
+            VERIFIED,
+            CLASSIFICATION_POLICY,
+            "browser tools may open loopback (127.0.0.1/localhost); "
+            "web_fetch still blocks private URLs",
+        )
     return ReadinessFact(
         "browser_localhost_policy",
         NOT_VERIFIED,
         CLASSIFICATION_POLICY,
-        "loopback/private URLs blocked by policy",
-        "set HARNESS_ALLOW_PRIVATE_URLS=1 to check a local dev server",
+        "browser loopback disabled by policy",
+        "set HARNESS_BROWSER_ALLOW_LOOPBACK=1 to check a local dev server",
     )
 
 

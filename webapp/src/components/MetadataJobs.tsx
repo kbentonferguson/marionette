@@ -1,6 +1,6 @@
 import { SessionWorkerUsage } from './SessionWorkerUsage';
 import { expertHeaderModel, expertJobModel } from '../lib/expertRoutingFacts';
-import { expertJobQuality } from '../lib/expertOutcomeFacts';
+import { expertJobQuality, stickyJobQuality } from '../lib/expertOutcomeFacts';
 import { ExpertCost } from './ExpertCurrentFacts';
 import { failedOutcomeStatuses, MetadataOutcomeLabel, metadataOutcomeLabel } from './MetadataOutcomeChrome';
 import MetadataActivityIndicator from './MetadataActivityIndicator';
@@ -455,6 +455,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const previousGroups = useRef(new Map<string, string>());
   const focusedRow = useRef<string | null>(null);
+  const stickyQualityRef = useRef<Record<string, string>>(state.stickyQuality);
   const [visible, setVisible] = useState(() => !document.hidden);
   useEffect(() => {
     const update = () => setVisible(!document.hidden);
@@ -552,7 +553,10 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       : undefined;
     const key = expertLookupKey(job.metadata_key, listedLocal?.canonical, state.view.kind === 'view' ? state.view.context.repo : undefined);
     const expert = currentExpert(state, key);
-    return expert ? expertJobQuality(expert) : currentHeader(state, key)?.quality ?? 'unverified';
+    const live = expert ? expertJobQuality(expert) : currentHeader(state, key)?.quality ?? 'unverified';
+    const resolved = stickyJobQuality(key, live, stickyQualityRef.current);
+    stickyQualityRef.current = resolved.next;
+    return resolved.quality;
   };
   const selectedSummary = state.localDetail?.observation?.summary;
   if (selectedSummary && !createdAt.has(localKey(selectedSummary.local_ref))) createdAt.set(localKey(selectedSummary.local_ref), selectedSummary.created_at);

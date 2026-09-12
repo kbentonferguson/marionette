@@ -36,6 +36,8 @@ export type JobMetadataState = {
   followedLocal: LocalRef[]; followedCursors: Record<string, string | null>; nextFollowed: number; actionPage: { selection: LocalRef; observation: LocalDetail } | null;
   advanceNumber: number; observedAt: Record<string, number>;
   contextEpoch: number; epoch: number; view: ViewState; working: boolean; error: MetadataErrorCode | null;
+  errorDetail: string | null;
+  stickyQuality: Record<string, 'degraded'>;
   observations: RetainedMetadataObservation[]; removals: MetadataRemoval[]; streams: (MetadataStreamState & { initialized?: boolean; retryAt?: number; expiryFailures?: number })[]; nextStream: number; nextForeground: number;
   pins: { selection: MetadataSelection; observation: MetadataObservation | null; result: MetadataPinResult['result'] | null }[];
   detail: DetailState; detailCache: Record<string, Extract<DetailState, { kind: 'selected' }>>; displayLimited: boolean;
@@ -49,9 +51,22 @@ function freeze<T>(value: T): T {
   return value;
 }
 function blank(epoch: number, view: ViewState): JobMetadataState {
-  return { headerError: null, headerReads: {}, headers: {}, nextHeader: 0, selectedRefreshedAt: 0, startupStopped: false, activeSnapshotKeys: {}, localActive: { initialized: false, snapshotRevisions: {}, traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', keys: [], missing: [], observedAt: null }, nextPrimaryActive: 0, contextEpoch: 0, followedLocal: [], followedCursors: {}, nextFollowed: 0, actionPage: null, local: { observations: [], traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', missing: [], observedAt: null }, localDetail: null, advanceNumber: 0, observedAt: {}, epoch, view, working: false, error: null, observations: [], removals: [], streams: [], nextStream: 0, nextForeground: 0, pins: [], detail: { kind: 'none' }, detailCache: {}, displayLimited: false };
+  return { headerError: null, headerReads: {}, headers: {}, nextHeader: 0, selectedRefreshedAt: 0, startupStopped: false, activeSnapshotKeys: {}, localActive: { initialized: false, snapshotRevisions: {}, traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', keys: [], missing: [], observedAt: null }, nextPrimaryActive: 0, contextEpoch: 0, followedLocal: [], followedCursors: {}, nextFollowed: 0, actionPage: null, local: { observations: [], traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', missing: [], observedAt: null }, localDetail: null, advanceNumber: 0, observedAt: {}, epoch, view, working: false, error: null, errorDetail: null, stickyQuality: {}, observations: [], removals: [], streams: [], nextStream: 0, nextForeground: 0, pins: [], detail: { kind: 'none' }, detailCache: {}, displayLimited: false };
 }
 function code(error: unknown): MetadataErrorCode { return error instanceof MetadataError ? error.code : 'outcome_unknown'; }
+function errorDetailOf(error: unknown): string | null {
+  return error instanceof MetadataError && error.detail ? error.detail : null;
+}
+export function metadataBannerAfterError(
+  listScope: { kind: string } | undefined,
+  errorCode: MetadataErrorCode,
+  priorError: MetadataErrorCode | null,
+): MetadataErrorCode | null {
+  if (listScope?.kind === 'detail' && errorCode !== 'view_changed' && errorCode !== 'endpoint_changed') {
+    return priorError;
+  }
+  return errorCode;
+}
 /** A live job's expert projection is re-read after hydration and can miss a race the lanes
  *  survived (`selection_changed`, `deadline`, `lane_revision_skew`). Those are transient, so
  *  the last projected roster carries forward until the next read lands a fresh one. */
@@ -223,6 +238,8 @@ export class JobMetadataStore {
       if (!this.current(epoch)) return 'discarded';
       const errorCode = code(error);
       if (errorCode === 'busy') return 'skipped';
+      const detail = errorDetailOf(error);
+      if (detail) console.warn('job metadata', errorCode, detail, listScope);
       const global = !listScope || errorCode === 'view_changed' || errorCode === 'endpoint_changed';
       const pmAffected = (o: MetadataObservation) => global || (listScope?.kind === 'pm' && this.pmAffected(o, listScope.stream));
       const localAffected = (o: LocalObservation) => global || (listScope?.kind === 'local' && (listScope.lane === 'active'
@@ -231,7 +248,7 @@ export class JobMetadataStore {
       // error. A list-lane failure must not blank rosters that were read successfully, and
       // the refresh loops recover stale entries on their own cadence.
       const detailError = (key: string, prior: MetadataErrorCode | null) => listScope?.kind === 'detail' && listScope.key === key ? errorCode : prior;
-      this.publish({ ...this.state, error: errorCode, headers: Object.fromEntries(Object.entries(this.state.headers).map(([key, h]) => [key, pmAffected(h.observation) ? { ...h, observation: { ...h.observation, freshness: 'stale' } } : h])), local: { ...this.state.local, observations: this.state.local.observations.map(o => localAffected(o) ? { ...o, freshness: 'stale' } : o) }, observations: this.state.observations.map(o => pmAffected(o) ? { ...o, freshness: 'stale' } : o),
+      this.publish({ ...this.state, error: metadataBannerAfterError(listScope, errorCode, this.state.error), errorDetail: detail ?? this.state.errorDetail, headers: Object.fromEntries(Object.entries(this.state.headers).map(([key, h]) => [key, pmAffected(h.observation) ? { ...h, observation: { ...h.observation, freshness: 'stale' } } : h])), local: { ...this.state.local, observations: this.state.local.observations.map(o => localAffected(o) ? { ...o, freshness: 'stale' } : o) }, observations: this.state.observations.map(o => pmAffected(o) ? { ...o, freshness: 'stale' } : o),
         detailCache: Object.fromEntries(Object.entries(this.state.detailCache).map(([key, cached]) => [key, { ...cached, freshness: 'stale', error: detailError(key, cached.error) }])),
         pins: this.state.pins.map(p => p.observation && pmAffected(p.observation) ? { ...p, observation: { ...p.observation, freshness: 'stale' } } : p),
         detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: detailError(metadataSelectionKey(this.state.detail.selection), this.state.detail.error) } });

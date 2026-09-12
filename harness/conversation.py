@@ -758,7 +758,11 @@ class ConversationalSession(
         self._session_job_ids: list[str] = []
         # optional durable-knowledge integration (portable-llm-wiki)
         self._wiki = WikiClient()
-        self._wiki_auto = os.environ.get("HARNESS_WIKI_AUTO", "").strip() in ("1", "true", "yes")
+        from .config import parse_truthy
+
+        self._wiki_auto = bool(getattr(config, "wiki_auto", False)) or parse_truthy(
+            os.environ.get("HARNESS_WIKI_AUTO", "")
+        )
         # Local-model wiki orchestration: the cheap pilot structures a raw digest
         # into entity/concept/decision pages BEFORE ingest, so the wiki never pays
         # for a frontier orchestrator. Default = prepare-and-approve (human gates
@@ -916,7 +920,11 @@ class ConversationalSession(
         self._distilled_turns_hwm = 0
         self._distilled_corrections_hwm = 0
         # diff review: opt-in mode to hold agent edits for approval
-        self._review_edits_before_apply = os.environ.get("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "").strip() in ("1", "true", "yes")
+        from .config import parse_truthy
+
+        self._review_edits_before_apply = parse_truthy(
+            os.environ.get("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "")
+        )
         self._pending_reviews = {}
         self._pending_reviews_lock = threading.Lock()
         # Command safety guard for FULL-AUTO mode: when running unattended, screen
@@ -2687,23 +2695,20 @@ class ConversationalSession(
         except Exception:
             pass
         try:
-            from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
+            from .codegraph_inject import working_query, wrap_slice
+            from puppetmaster.codegraph import codegraph_context
 
-            cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
+            query = working_query(self, user_message)
+            if self._cg_cache_key == query:
+                return self._cg_cache_section
+            cg_slice = codegraph_context(task=query, cwd=self.config.repo)
             if cg_slice:
-                authoritative = (
-                    "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
-                    "symbols, definitions, and code are provided in the section below. "
-                    "USE THIS as your primary source. Do NOT re-read entire files that "
-                    "already appear here -- only read_file specific additional lines you "
-                    "still need (with start_line + limit), or call search_codegraph to "
-                    "widen the graph. Whole-file dumps when the answer is already below "
-                    "are wasteful and wrong.\n"
-                )
-                cg_section = authoritative + codegraph_prompt_section(cg_slice)
-            self._cg_cache_key = user_message
+                cg_section, symbols = wrap_slice(cg_slice)
+            else:
+                symbols = 0
+            self._cg_cache_key = query
             self._cg_cache_section = cg_section
-            self._cg_cache_symbols = cg_slice.count("- **") + cg_slice.count("#### ") if cg_slice else 0
+            self._cg_cache_symbols = symbols
         except Exception:
             pass
         return cg_section

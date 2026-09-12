@@ -2,10 +2,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SwarmPane from '../components/SwarmPane';
 import { currentExpert, metadataJobs, JobMetadataContext } from '../lib/jobMetadataContext';
-import { JobMetadataClient, metadataSelectionKey } from '../lib/jobMetadata';
+import { JobMetadataClient, MetadataError, metadataSelectionKey } from '../lib/jobMetadata';
 import type { MetadataContext, MetadataSelection, MetadataSummary } from '../lib/jobMetadata';
-import { JobMetadataStore } from '../lib/useJobMetadata';
+import { JobMetadataStore, metadataBannerAfterError } from '../lib/useJobMetadata';
 import type { JobMetadataState } from '../lib/useJobMetadata';
+import { stickyJobQuality } from '../lib/expertOutcomeFacts';
 import type { LocalObservation, LocalSummary } from '../lib/localJobMetadata';
 import { nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import { handshake, list, view } from './jobMetadata.fixtures';
@@ -626,5 +627,51 @@ describe('SwarmPane canonical alias presentation', () => {
     } finally {
       fixture.unmount();
     }
+  });
+
+  it('titles a local alias from display.goal_preview before Provider worker', () => {
+    const c = context();
+    const alias = localSummary({
+      display: {
+        label: 'Provider worker',
+        model: '',
+        adapter: 'agentic',
+        truncated: false,
+        goal_preview: 'RE-AUDIT of the leftover tracker nits',
+      },
+    });
+    const state = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      observations: [],
+      pins: [],
+      local: {
+        observations: [{ row: alias, freshness: 'observed', observedAt: 1 }],
+        traversal: { mode: 'snapshot', after_revision: 0, cursor: null },
+        state: 'complete',
+        missing: [],
+        observedAt: 1,
+      },
+      localDetail: null,
+      detail: { kind: 'none' },
+      detailCache: {},
+    } as unknown as JobMetadataState;
+    const jobs = metadataJobs(state);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].goal).toBe('RE-AUDIT of the leftover tracker nits');
+    expect(jobs[0].goal).not.toMatch(/Provider worker/);
+  });
+
+  it('keeps degraded quality after a later unverified live value', () => {
+    const first = stickyJobQuality('job-key', 'degraded', {});
+    expect(first.quality).toBe('degraded');
+    const later = stickyJobQuality('job-key', 'unverified', first.next);
+    expect(later.quality).toBe('degraded');
+  });
+
+  it('does not raise the global banner for a detail-scope invalid_metadata', () => {
+    expect(metadataBannerAfterError({ kind: 'detail' }, 'invalid_metadata', null)).toBeNull();
+    expect(metadataBannerAfterError({ kind: 'pm' }, 'invalid_metadata', null)).toBe('invalid_metadata');
+    const err = new MetadataError('invalid_metadata', 'expert:routing');
+    expect(err.detail).toBe('expert:routing');
   });
 });

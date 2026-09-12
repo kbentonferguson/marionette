@@ -164,16 +164,26 @@ function toast(msg: string) {
 type WorkspaceListingCap = {
   total?: number;
   capped?: number;
+  folders_total?: number;
+  folders_capped?: number;
 };
 
 function formatListingCapMessage(meta: WorkspaceListingCap): string {
-  const { total, capped } = meta;
+  const { total, capped, folders_total, folders_capped } = meta;
+  const parts: string[] = [];
   if (typeof total === "number" && typeof capped === "number" && total > capped) {
-    return `Showing ${capped.toLocaleString()} of ${total.toLocaleString()} files`;
+    parts.push(`Showing ${capped.toLocaleString()} of ${total.toLocaleString()} files`);
+  } else if (typeof capped === "number" && (typeof total !== "number" || total > capped)) {
+    parts.push(`File listing capped at ${capped.toLocaleString()} files`);
   }
-  if (typeof capped === "number") {
-    return `File listing capped at ${capped.toLocaleString()} files`;
+  if (
+    typeof folders_total === "number"
+    && typeof folders_capped === "number"
+    && folders_total > folders_capped
+  ) {
+    parts.push(`Showing ${folders_capped.toLocaleString()} of ${folders_total.toLocaleString()} folders`);
   }
+  if (parts.length) return parts.join(". ");
   return "File listing is capped for large workspaces";
 }
 
@@ -236,8 +246,13 @@ export default function FileTree() {
         setRootNodes(tree);
         setError(null);
         setListingCap(
-          res.truncated
-            ? { total: res.total, capped: res.capped }
+          res.truncated || res.folders_truncated
+            ? {
+                ...(res.truncated ? { total: res.total, capped: res.capped } : {}),
+                ...(res.folders_truncated
+                  ? { folders_total: res.folders_total, folders_capped: res.folders_capped }
+                  : {}),
+              }
             : null,
         );
       } else {

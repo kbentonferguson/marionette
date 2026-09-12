@@ -21,7 +21,12 @@ from ..pilot_replacement import replacement_gate
 from typing import Any, Callable
 from ..prompt_queue import ORIGINAL_TEXT_UNSET
 from ..diag import note as _diag_default
-from ..sessions import load_transcript, session_stored_root, session_visible_for_workspace
+from ..sessions import (
+    is_activity_headline_text,
+    load_transcript,
+    session_stored_root,
+    session_visible_for_workspace,
+)
 from ..session_runners import LeaseExhaustedError
 
 
@@ -569,10 +574,15 @@ def post_sessions_rename(body: dict, svc: SessionServices) -> tuple[int, dict]:
     title = body.get("title") or ""
     if not sid:
         return 400, {"error": "missing session id"}
-    if not title:
+    cleaned = (title or "").strip()
+    if not cleaned:
         return 400, {"error": "missing title"}
-    ok = svc.sessions.rename(sid, title)
-    return 200, {"ok": ok}
+    if is_activity_headline_text(cleaned):
+        return 400, {"error": "invalid title"}
+    ok = svc.sessions.rename(sid, cleaned)
+    if not ok:
+        return 404, {"error": "session not found"}
+    return 200, {"ok": True}
 
 
 # ---------------------------------------------------------------------------

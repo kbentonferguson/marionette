@@ -117,6 +117,10 @@ def test_hooks_add_update_remove(monkeypatch):
     assert code3 == 200 and rem["ok"] is True
     assert store == []
 
+    code4, missing_remove = post_hooks_remove({"id": hid})
+    assert code4 == 404
+    assert "not found" in str(missing_remove.get("error", "")).lower()
+
 
 # --- checkpoints -------------------------------------------------------------
 

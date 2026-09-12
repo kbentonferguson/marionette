@@ -5,6 +5,7 @@ import pytest
 
 from harness.url_safety import (
     _strip_zone_id,
+    is_safe_browser_url,
     is_safe_url,
     is_safe_url_pinned,
     normalize_url_for_request,
@@ -399,3 +400,34 @@ def test_ipv6_mapped_metadata_still_blocked_with_hatch(monkeypatch):
     ok, reason = is_safe_url("http://[::ffff:169.254.169.254]/latest/meta-data/")
     assert not ok
     assert "metadata" in reason.lower()
+
+
+def test_browser_url_allows_loopback_without_private_hatch(monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
+    monkeypatch.delenv("HARNESS_BROWSER_ALLOW_LOOPBACK", raising=False)
+    _patch_resolve(monkeypatch, "127.0.0.1")
+    ok, reason = is_safe_browser_url("http://127.0.0.1:8080/")
+    assert ok, reason
+    ok2, reason2 = is_safe_browser_url("http://localhost/admin")
+    assert ok2, reason2
+    ok3, _ = is_safe_url("http://127.0.0.1:8080/")
+    assert not ok3
+
+
+def test_browser_url_still_blocks_metadata_and_rfc1918(monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
+    _patch_resolve(monkeypatch, "169.254.169.254")
+    ok, reason = is_safe_browser_url("http://169.254.169.254/latest/meta-data/")
+    assert not ok
+    assert "metadata" in reason.lower()
+    _patch_resolve(monkeypatch, "10.0.0.5")
+    ok2, _ = is_safe_browser_url("http://10.0.0.5/")
+    assert not ok2
+
+
+def test_browser_loopback_opt_out(monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_ALLOW_LOOPBACK", "0")
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
+    _patch_resolve(monkeypatch, "127.0.0.1")
+    ok, _ = is_safe_browser_url("http://127.0.0.1:8080/")
+    assert not ok

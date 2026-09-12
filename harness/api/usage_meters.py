@@ -1128,8 +1128,19 @@ def _boot_session_cost(price_in: float, price_out: float) -> float:
                 _session_cost_split(runner, float(pin), float(pout))
             )
         except Exception:
-            try:
-                total += float(_session_cost_split(runner, price_in, price_out))
-            except Exception:
-                pass
+            priced = False
+            for attr in ("_provider_cost_usd", "_worker_cost_usd"):
+                try:
+                    extra = float(getattr(runner, attr, 0) or 0)
+                except (TypeError, ValueError):
+                    extra = 0.0
+                if extra:
+                    total += extra
+                    priced = True
+                    break
+            if not priced:
+                try:
+                    total += float(_session_cost_split(runner, price_in, price_out))
+                except Exception:
+                    pass
     return total
