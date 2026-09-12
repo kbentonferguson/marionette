@@ -211,7 +211,7 @@ export class JobMetadataStore {
     this.listeners.clear();
   }
   private current(epoch: number): boolean { return !this.disposed && this.state.epoch === epoch; }
-  private async run(work: (epoch: number) => Promise<void>, onError?: (error: MetadataErrorCode) => void, listScope?: { kind: 'pm'; stream: MetadataStream } | { kind: 'local'; lane: LocalLane }): Promise<MetadataActionResult> {
+  private async run(work: (epoch: number) => Promise<void>, onError?: (error: MetadataErrorCode) => void, listScope?: { kind: 'pm'; stream: MetadataStream } | { kind: 'local'; lane: LocalLane } | { kind: 'detail'; key: string }): Promise<MetadataActionResult> {
     if (this.disposed || this.inFlight) return 'skipped';
     const epoch = this.state.epoch;
     this.inFlight = true;
@@ -227,10 +227,14 @@ export class JobMetadataStore {
       const pmAffected = (o: MetadataObservation) => global || (listScope?.kind === 'pm' && this.pmAffected(o, listScope.stream));
       const localAffected = (o: LocalObservation) => global || (listScope?.kind === 'local' && (listScope.lane === 'active'
         ? nativeActiveStatuses.includes(o.row.lifecycle) : !this.state.localActive.keys.includes(localKey(o.row.local_ref))));
+      // Every retained detail goes stale; only the detail whose own read failed carries the
+      // error. A list-lane failure must not blank rosters that were read successfully, and
+      // the refresh loops recover stale entries on their own cadence.
+      const detailError = (key: string, prior: MetadataErrorCode | null) => listScope?.kind === 'detail' && listScope.key === key ? errorCode : prior;
       this.publish({ ...this.state, error: errorCode, headers: Object.fromEntries(Object.entries(this.state.headers).map(([key, h]) => [key, pmAffected(h.observation) ? { ...h, observation: { ...h.observation, freshness: 'stale' } } : h])), local: { ...this.state.local, observations: this.state.local.observations.map(o => localAffected(o) ? { ...o, freshness: 'stale' } : o) }, observations: this.state.observations.map(o => pmAffected(o) ? { ...o, freshness: 'stale' } : o),
-        detailCache: Object.fromEntries(Object.entries(this.state.detailCache).map(([key, cached]) => [key, { ...cached, freshness: 'stale', error: errorCode }])),
+        detailCache: Object.fromEntries(Object.entries(this.state.detailCache).map(([key, cached]) => [key, { ...cached, freshness: 'stale', error: detailError(key, cached.error) }])),
         pins: this.state.pins.map(p => p.observation && pmAffected(p.observation) ? { ...p, observation: { ...p.observation, freshness: 'stale' } } : p),
-        detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: errorCode } });
+        detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: detailError(metadataSelectionKey(this.state.detail.selection), this.state.detail.error) } });
       if (errorCode === 'view_changed' || errorCode === 'endpoint_changed') {
         const view = this.state.view;
         if (errorCode === 'endpoint_changed') this.client = new JobMetadataClient();
@@ -746,7 +750,7 @@ export class JobMetadataStore {
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(),
         detail: current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
         detailCache: Object.fromEntries([...retained, [key, entry]]) });
-    });
+    }, undefined, { kind: 'detail', key });
   }
   /** Refresh starts both lanes; advance carries the other lane's independent cursor unchanged. */
   readDetail(advance: 'refresh' | 'tasks' | 'artifacts' | HistoryLaneName = 'refresh', scheduled = false): Promise<MetadataActionResult> {
@@ -774,7 +778,8 @@ export class JobMetadataStore {
       const observation = incomplete && detail.observation ? detail.observation : carryExpert(response, detail.observation);
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + Number(scheduled), detail: { ...detail, observation, cursors: incomplete ? detail.cursors : captured,
         freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null } });
-    }, () => { if (scheduled) this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + 1 }); });
+    }, () => { if (scheduled) this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + 1 }); },
+    { kind: 'detail', key: metadataSelectionKey(detail.selection) });
   }
 }
 
