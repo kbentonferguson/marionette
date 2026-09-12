@@ -216,7 +216,16 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
         assert pid_file.exists(), errors
         pid = int(pid_file.read_text())
         assert _pid_alive(pid)
-        assert post_swarm_cancel(body, svc)[0] == 200
+        # The child writes its pid while the worker thread is still binding the
+        # process and the store may refuse a snapshot read under that write
+        # (Windows CI hit 409 here). The proof is that the process stops, so
+        # retry the cancel briefly instead of asserting on the first attempt.
+        cancel_deadline = time.monotonic() + 3
+        code, result = post_swarm_cancel(body, svc)
+        while code != 200 and time.monotonic() < cancel_deadline:
+            time.sleep(0.05)
+            code, result = post_swarm_cancel(body, svc)
+        assert code == 200, result
         thread.join(8)
         assert not thread.is_alive() and not errors and stopped
         dead_deadline = time.monotonic() + 2

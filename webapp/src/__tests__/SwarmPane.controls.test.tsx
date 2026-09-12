@@ -269,3 +269,42 @@ it('keeps a completed swarm under Finished', async () => {
   expect(screen.getByRole('button', { name: /^Inspect A ·/ })).toBeVisible();
   expect(screen.queryByText(/^No jobs yet$/)).not.toBeInTheDocument();
 });
+
+// jsdom honors the hidden attribute, the browser does not once Tailwind's later
+// .flex utility outranks preflight [hidden]; the display class has to flip too.
+it('collapsing Finished swaps the row display class, not only the hidden attribute', async () => {
+  await mountControls([{ ...controlRow(), lifecycle: 'complete' }]);
+  const row = screen.getByRole('button', { name: /^Inspect A ·/ }).closest('[data-job-id]');
+  if (!(row instanceof HTMLElement)) throw Error('Missing job row');
+  expect(row.classList.contains('flex')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /Finished \(/ }));
+  expect(row).toHaveAttribute('hidden');
+  expect(row.classList.contains('hidden')).toBe(true);
+  expect(row.classList.contains('flex')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: /Finished \(/ }));
+  expect(row).not.toHaveAttribute('hidden');
+  expect(row.classList.contains('flex')).toBe(true);
+});
+
+it('re-arms a finished detail read that lost the single-flight store instead of waiting a cadence slot', async () => {
+  const fixture = await mountControls([{ ...controlRow(), lifecycle: 'complete' }]);
+  const original = fixture.request.getMockImplementation();
+  if (!original) throw Error('Fixture request has no implementation');
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  fixture.request.mockImplementation(async (method: string, path: string, body?: unknown) => {
+    if (path.startsWith('/api/jobs/metadata?')) await gate;
+    return original(method, path, body);
+  });
+  fixture.selected.mockClear();
+  const held = fixture.store.advance();
+  expect(fixture.store.getSnapshot().working).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /^Inspect A ·/ }));
+  await act(async () => { await Promise.resolve(); });
+  expect(fixture.selected).not.toHaveBeenCalled();
+  const freed = Date.now();
+  release();
+  await act(async () => { await held; });
+  await waitFor(() => expect(fixture.selected).toHaveBeenCalled(), { timeout: 1500 });
+  expect(Date.now() - freed).toBeLessThan(1500);
+});
