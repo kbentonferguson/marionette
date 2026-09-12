@@ -2999,6 +2999,7 @@ export default function Conversation({
       scrollReleasedByGestureRef.current = false;
       scrollSettlingRef.current = true;
       const pinSubmittedRow = () => {
+        if (scrollReleasedByGestureRef.current) return;
         const el = feedRef.current;
         const scrollToEnd = scrollFeedToEndRef.current;
         if (scrollToEnd) {

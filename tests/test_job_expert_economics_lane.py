@@ -116,6 +116,14 @@ def test_header_clock_is_attested_and_task_clock_is_separate():
     assert result['latest_task_updated_at'] == second.updated_at
 
 
+def test_latest_task_updated_at_accepts_colonless_offset():
+    """timestamp() normalizes +0000 before the max() key parses the wire form."""
+    job, task = setup_records()
+    second = replace(task, id='second', updated_at='2026-09-07T13:00:00+0000')
+    result = project(job, [task, second], [])['header']
+    assert result['latest_task_updated_at'] is not None
+
+
 def test_source_attested_routing_cache_compaction_values_are_additive():
     job, task = setup_records()
     route = Artifact(job_id=job.id, task_id=task.id, type=ArtifactType.ROUTING,

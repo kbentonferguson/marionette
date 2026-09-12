@@ -22,4 +22,15 @@ describe("streamTypewriter slow-model batching", () => {
     expect(painted[0].length).toBeLessThan(burst.length);
     expect(r.typeBufRef.current).toBe(burst.slice(painted[0].length));
   });
+
+  it("stops the pump on an empty live buffer so tool-call gaps do not idle-spin", () => {
+    const r = refs("");
+    let scheduled = 0;
+    pumpTypewriterFrame(r, () => undefined, () => {
+      scheduled += 1;
+      return 7;
+    });
+    expect(scheduled).toBe(0);
+  });
 });
+
