@@ -662,6 +662,14 @@ export class JobMetadataStore {
       && (!source.cross_project || v.context.scope !== 'repo'))) throw new MetadataError('invalid_request');
     return selected;
   }
+  /** Prefetch must not throw: a local alias can point at a canonical the current view cannot select. */
+  private tryCaptureSelection(s: MetadataSelection): MetadataSelection | null {
+    try { return this.captureSelection(s); }
+    catch (error) {
+      if (error instanceof MetadataError) return null;
+      throw error;
+    }
+  }
   setPins(selections: MetadataSelection[]): void {
     if (this.disposed) return;
     if (selections.length + this.state.followedLocal.length > 8) throw new MetadataError('invalid_request');
@@ -746,9 +754,12 @@ export class JobMetadataStore {
     const seen = new Set<string>();
     const out: MetadataSelection[] = [];
     const consider = (selection: MetadataSelection, listedRevision = 0) => {
-      const key = metadataSelectionKey(selection);
+      const captured = this.tryCaptureSelection(selection);
+      if (!captured) return;
+      const key = metadataSelectionKey(captured);
       if (seen.has(key)) return;
       seen.add(key);
+      selection = captured;
       const cached = this.state.detailCache[key];
       if (cached?.error) {
         if (retryErrors) out.push(selection);
@@ -790,11 +801,12 @@ export class JobMetadataStore {
   hydrateDetail(selection: MetadataSelection, opts?: { prefetch?: boolean }): Promise<MetadataActionResult> {
     const view = this.state.view;
     if (view.kind !== 'view' || view.refresh !== 'idle') return Promise.resolve('skipped');
-    const captured = this.captureSelection(selection);
+    const prefetch = Boolean(opts?.prefetch);
+    const captured = prefetch ? this.tryCaptureSelection(selection) : this.captureSelection(selection);
+    if (!captured) return Promise.resolve('skipped');
     const key = metadataSelectionKey(captured);
     const contextEpoch = this.state.contextEpoch;
     const cursors: DetailCursors = { task_cursor: null, artifact_cursor: null };
-    const prefetch = Boolean(opts?.prefetch);
     return this.run(async () => {
       const response = await this.client.detail(view.context, captured, cursors);
       if (this.disposed || this.state.contextEpoch !== contextEpoch || this.state.view.kind !== 'view') return;
