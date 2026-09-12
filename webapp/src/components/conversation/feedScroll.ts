@@ -98,6 +98,18 @@ export function scrollToFeedEnd(scrollHeight: number, clientHeight: number): num
   return Math.max(0, scrollHeight - clientHeight);
 }
 
+/** Submit always re-pins. Resize follow will not pick this up if the pin was stale. */
+export function applyUserSubmitFeedPin(opts: {
+  scrollHeight: number;
+  clientHeight: number;
+}): { pinned: true; settling: true; scrollTop: number } {
+  return {
+    pinned: true,
+    settling: true,
+    scrollTop: scrollToFeedEnd(opts.scrollHeight, opts.clientHeight),
+  };
+}
+
 export function isPinnedToBottom(
   scrollHeight: number,
   scrollTop: number,

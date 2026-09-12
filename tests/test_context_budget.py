@@ -15,6 +15,7 @@ from harness.context_budget import (
     _MIN_TURN_BUDGET_CHARS,
 )
 from harness.conversation import ConversationalSession
+from harness.tool_dispatch import _slice_bounds, _slice_header
 
 # Content above the shared offload floor (aligned with max_result_chars).
 # 2000 tokens ~= 8000 chars; keep a margin so spill stubs clearly pass the gate.
@@ -160,6 +161,12 @@ def test_read_file_offset_limit(tmp_path):
     assert ok is True
     assert status == "success"
     assert val == file_content
+
+    s_idx, e_idx = _slice_bounds(3, 4, 10)
+    assert (s_idx, e_idx) == (2, 6)
+    assert _slice_header(s_idx + 1, e_idx, 10) == "[lines 3-6 of 10; next start_line=7]\n"
+    assert _slice_bounds(8, None, 10) == (7, 10)
+    assert _slice_bounds(None, 2, 10) == (0, 2)
 
     # Read with start_line and limit
     act2 = DummyAction(kind="read_file", path="test.txt", start_line=3, limit=4)

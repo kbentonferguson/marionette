@@ -23,6 +23,7 @@ import {
   nextFeedPinState,
   scrollTopAfterFeedHeightChange,
   scrollToFeedEnd,
+  applyUserSubmitFeedPin,
   settleFrameResult,
   shouldCancelFeedResizeFollowForManualScrollAway,
   shouldDeferFollowDuringUserGesture,
@@ -836,6 +837,13 @@ describe("feedScroll layout contracts", () => {
   it("scrollToEnd lands at scrollHeight - clientHeight", () => {
     expect(scrollToFeedEnd(2000, client)).toBe(1600);
     expect(scrollToFeedEnd(350, client)).toBe(0);
+  });
+
+  it("user submit re-pins to the new tail even when the prior pin was stale", () => {
+    const next = applyUserSubmitFeedPin({ scrollHeight: 2000, clientHeight: client });
+    expect(next.pinned).toBe(true);
+    expect(next.settling).toBe(true);
+    expect(next.scrollTop).toBe(scrollToFeedEnd(2000, client));
   });
 
   it("last-row growth while pinned at first overflow follows in one write", () => {

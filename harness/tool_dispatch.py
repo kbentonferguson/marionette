@@ -61,6 +61,21 @@ _SEARCH_SKIP_DIRS = frozenset({
 _PROBE_MATCH_CAP = 50
 
 
+def _slice_bounds(
+    start_line: Optional[int],
+    limit: Optional[int],
+    total_lines: int,
+) -> tuple[int, int]:
+    """One 0-based half-open range for a ranged read (header and anchors)."""
+    s_line = start_line if start_line is not None else 1
+    s_idx = max(0, s_line - 1)
+    if limit is not None:
+        e_idx = min(total_lines, s_idx + limit)
+    else:
+        e_idx = total_lines
+    return s_idx, e_idx
+
+
 def _slice_header(start_line: int, end_line: int, total_lines: int) -> str:
     """Header line for a ranged read, naming the next offset when more remains.
 
@@ -303,6 +318,7 @@ class ToolDispatchMixin:
                 len(raw_text) > _READ_FILE_LARGE_BYTE_TRIGGER
                 or total_lines > _READ_FILE_LARGE_LINE_TRIGGER
             )
+            s_idx = e_idx = None
             if oversized and start_line is None and limit is None:
                 head_lines = lines[:_READ_FILE_DEFAULT_WINDOW_LINES]
                 shown = len(head_lines)
@@ -318,13 +334,7 @@ class ToolDispatchMixin:
                     )
             else:
                 if start_line is not None or limit is not None:
-                    s_line = start_line if start_line is not None else 1
-                    s_idx = max(0, s_line - 1)
-                    if limit is not None:
-                        e_idx = min(total_lines, s_idx + limit)
-                    else:
-                        e_idx = total_lines
-                    
+                    s_idx, e_idx = _slice_bounds(start_line, limit, total_lines)
                     sliced_lines = lines[s_idx:e_idx]
                     content = _slice_header(s_idx + 1, e_idx, total_lines) + "".join(sliced_lines)
                 else:
@@ -339,13 +349,7 @@ class ToolDispatchMixin:
             from .hash_edit import annotate_read_content
             slice_start = None
             slice_end = None
-            if start_line is not None or limit is not None:
-                s_line = start_line if start_line is not None else 1
-                s_idx = max(0, s_line - 1)
-                if limit is not None:
-                    e_idx = min(total_lines, s_idx + limit)
-                else:
-                    e_idx = total_lines
+            if s_idx is not None and e_idx is not None:
                 slice_start = s_idx + 1
                 slice_end = e_idx
             content = annotate_read_content(

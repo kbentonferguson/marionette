@@ -10,15 +10,16 @@ function refs(buf: string) {
 }
 
 describe("streamTypewriter slow-model batching", () => {
-  it("paints a large slow-model burst in one frame instead of dripping", () => {
+  it("paints a large burst as a catch-up slice, not the whole buffer", () => {
     const burst = "token ".repeat(40);
     const r = refs(burst);
     const painted: string[] = [];
     pumpTypewriterFrame(r, (chunk) => painted.push(chunk), () => {
       return 1;
     });
-    expect(painted.join("")).toBe(burst);
     expect(painted).toHaveLength(1);
-    expect(r.typeBufRef.current).toBe("");
+    expect(painted[0].length).toBeGreaterThan(0);
+    expect(painted[0].length).toBeLessThan(burst.length);
+    expect(r.typeBufRef.current).toBe(burst.slice(painted[0].length));
   });
 });
