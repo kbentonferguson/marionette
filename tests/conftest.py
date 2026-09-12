@@ -386,7 +386,10 @@ def _isolate_provider_state(monkeypatch, tmp_path_factory):
 
     d = tmp_path_factory.mktemp("pmstate")
     monkeypatch.setenv("HARNESS_STATE_DIR", str(d))
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(d / "marionette-models.json"))
+    models_path = d / "marionette-models.json"
+    if not models_path.exists():
+        models_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
 
     server_mod = sys.modules.get("harness.server")
     test_store = None
@@ -407,13 +410,17 @@ def _isolate_server_session_state(server, state_dir, monkeypatch):
 
     # Queue ownership includes the state root and cannot follow a replaced store.
     server._sessions.flush()
-    monkeypatch.setattr(server, "_cfg", replace(server._cfg, state_dir=str(state_dir)))
+    cfg = replace(server._cfg, state_dir=str(state_dir))
+    # Isolate must not construct the default catalog driver (qwen3-coder-30b).
+    # xdist can leave load_catalog unreadable; stub-oracle-v2 is offline.
+    offline = replace(cfg, driver="stub-oracle-v2")
+    monkeypatch.setattr(server, "_cfg", cfg)
     monkeypatch.setattr(server, "_sessions", SessionStore(str(state_dir / "harness_sessions.json")))
     monkeypatch.setattr(server, "_runners", SessionRunnerRegistry(
         on_drop=server._fold_runner_meters_into_boot_carry,
     ))
-    monkeypatch.setattr(server, "_session", Session(server._cfg))
-    monkeypatch.setattr(server, "_pilot", server._build_conversational_pilot())
+    monkeypatch.setattr(server, "_session", Session(offline))
+    monkeypatch.setattr(server, "_pilot", server._build_conversational_pilot(config=offline))
     return server._sessions
 
 
