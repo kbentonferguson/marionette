@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -649,3 +651,49 @@ def test_reader_safety_instrumentation_rejects_source_reads_and_writes(env, monk
         with connection(reader.sources.stores[0].handle, metadata_only=True) as c:
             c.execute('CREATE TABLE forbidden_write (id INTEGER)')
     assert hashes(store.root) == before
+
+
+def test_session_snapshot_prepends_known_canonical_beyond_page_scan(env):
+    """First session page surfaces a known PM job even when id-order buries it."""
+    store, _, ctx, _, active = env
+    jobs = []
+    for i in range(70):
+        created = store.create_job(f'foreign-{i}', origin='marionette', session_id='other')
+        store.save_job(replace(created, status=JobStatus.RUNNING))
+        jobs.append(created)
+    target = max(jobs, key=lambda item: item.id)
+    store.save_job(replace(target, session_id=ctx.session_id, goal='session-owned-beyond-page',
+                           status=JobStatus.RUNNING))
+    ref = store.job_ref(target.id)
+    local = SimpleNamespace(lock=threading.RLock(), rows={
+        'local-swarm-target': dict(
+            session_id=ctx.session_id, deleted=False,
+            canonical=dict(source='harness', job_ref=ref.as_dict(),
+                           session_id=ctx.session_id, dispatch_id='dispatch-target'),
+        ),
+    })
+    sources = KnownSources.from_roots([
+        ('harness', store.root, store.backend_name, False),
+    ])
+    selection = sources.stores[0].selection
+    reader = MetadataReader(lambda: active[0], sources, local)
+
+    without = store.list_job_summaries(
+        session_id=ctx.session_id, status='running', **dict(limit=50, max_scan=51, max_bytes=32768))
+    assert without.outcome == 'partial' and without.scanned == 51 and not without.items
+
+    code, result = get_job_metadata(query(ctx, selection, mode='snapshot', status='running'), reader)
+    assert code == 200
+    ids = [row['selection']['job_ref']['job_id'] for row in result['rows']]
+    assert target.id in ids
+    assert len(result['rows']) <= result['page']['scanned']
+    assert all(row['revision'] <= result['page']['revision'] for row in result['rows'])
+    assert len(ids) == len(set(ids))
+
+    other = replace(ctx, session_id='session-B')
+    active[0] = ActiveContext(other.session_id, other.repo, other.view_generation)
+    other_reader = MetadataReader(lambda: active[0], sources, local)
+    code, foreign = get_job_metadata(query(other, selection, mode='snapshot', status='running'),
+                                     other_reader)
+    assert code == 200
+    assert all(row['selection']['job_ref']['job_id'] != target.id for row in foreign['rows'])

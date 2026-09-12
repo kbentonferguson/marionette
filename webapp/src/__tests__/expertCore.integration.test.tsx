@@ -45,21 +45,24 @@ describe('current expert contract boundary', () => {
     expect(parsed.expert?.tasks[0].usage).toMatchObject({ tokens: 120, est_cost_usd: 0, cost_provenance: 'provider', source_artifact_id: 'artifact-1' });
     expect(parsed.expert?.header?.cost.source).toBe('unavailable');
     const foreign = structuredClone(backend); foreign.economics.tasks['task-1'].source_artifact_id = 'foreign';
-    expect(() => parseExpertMetadata(foreign)).toThrow();
+    expect(parseExpertMetadata(foreign).tasks[0].usage.source_artifact_id).toBeNull();
   });
   it('binds current bodies to exact selected task and artifact refs and page revisions', () => {
     expect(parseMetadataDetail(selected(), context, selection(), cursors).expert?.tasks[0].model).toBe('gpt-6-astra');
     const bad = selected(); bad.expert!.tasks[0].id = 'foreign';
-    expect(() => parseMetadataDetail(bad, context, selection(), cursors)).toThrow();
+    expect(parseMetadataDetail(bad, context, selection(), cursors).expert?.kind).toBe('unavailable');
     const badLink = selected(); badLink.expert!.artifacts[0].task_id = 'foreign';
-    expect(() => parseMetadataDetail(badLink, context, selection(), cursors)).toThrow();
-    const badRevision = selected(); badRevision.artifacts.page.revision++;
-    expect(() => parseMetadataDetail(badRevision, context, selection(), cursors)).toThrow();
+    expect(parseMetadataDetail(badLink, context, selection(), cursors).expert?.kind).toBe('unavailable');
+    const badRevision = selected();
+    badRevision.artifacts.page = { ...badRevision.artifacts.page, revision: badRevision.artifacts.page.revision + 1, checkpoint: badRevision.artifacts.page.revision + 1 };
+    const skewed = parseMetadataDetail(badRevision, context, selection(), cursors);
+    expect(skewed.expert?.kind).toBe('unavailable');
+    expect(skewed.expert?.reason).toBe('lane_revision_skew');
     expect(() => parseMetadataDetail(selected(), context, { ...selection(), source: 'cli' }, cursors)).toThrow();
   });
   it('rejects unknown keys, unsafe timestamps, duplicate refs and invalid numeric facts', () => {
     expect(() => parseExpertMetadata({ ...facts(), secret: 'unexpected' })).toThrow();
-    expect(() => parseExpertHeader({ ...facts().header, created_at: 'not-a-clock' })).toThrow();
+    expect(parseExpertHeader({ ...facts().header, created_at: 'not-a-clock' })?.created_at).toBeNull();
     const duplicate = facts(); duplicate.tasks.push(duplicate.tasks[0]);
     expect(() => parseExpertMetadata(duplicate)).toThrow();
     const invalid = facts(); invalid.tasks[0].usage.tokens_in = Infinity;
@@ -74,7 +77,8 @@ describe('current expert contract boundary', () => {
     } };
     const accepted = parseMetadataDetail({ ...payload, expert: capped }, context, selection(), cursors);
     expect(accepted.expert?.tasks[0].usage.source_artifact_id).toBe('artifact-1');
-    expect(() => parseMetadataDetail({ ...payload, artifacts: { ...payload.artifacts, rows: [] }, expert: capped }, context, selection(), cursors)).toThrow();
+    const orphaned = parseMetadataDetail({ ...payload, artifacts: { ...payload.artifacts, rows: [] }, expert: capped }, context, selection(), cursors);
+    expect(orphaned.expert?.tasks[0].usage.source_artifact_id).toBeNull();
   });
   it('preserves live economics independently from the terminal header and rejects incomplete shapes', () => {
     const live = { created_at: null, completed_at: null, updated_at: null, latest_task_updated_at: null,

@@ -116,6 +116,9 @@ it('selected native action pages and output are bounded and explicit, PM control
   await act(async () => { fireEvent.click(screen.getByText('Inspect output')); });
   expect(screen.getByText('Native output fixture')).toBeInTheDocument();
   cleanup();
+  // Same-target reopen keeps membership traversal; the PM half needs a fresh store so the
+  // fixture's per-page revision counter does not outrun its fixed detail revision.
+  store.dispose(); store = new JobMetadataStore(new JobMetadataClient(1000));
   await open(); for (let i = 0; i < 8; i++) await store.advance();
   const pm = metadataJobs(store.getSnapshot()).find(j => j.source === 'harness')!;
   render(<JobMetadataContext.Provider value={store}><MetadataInspection job={pm} /></JobMetadataContext.Provider>);

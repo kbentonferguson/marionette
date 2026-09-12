@@ -27,13 +27,26 @@ def number(value):
 
 
 def timestamp(value):
+    """Wire timestamps must end in Z or ±HH:MM; normalize colon-less offsets."""
     if not isinstance(value, str) or len(value) > 64:
         return None
+    candidate = value.replace('Z', '+00:00')
+    if len(candidate) >= 5 and candidate[-5] in '+-' and candidate[-4:].isdigit():
+        candidate = candidate[:-2] + ':' + candidate[-2:]
     try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        return value if parsed.tzinfo else None
+        parsed = datetime.fromisoformat(candidate)
     except ValueError:
         return None
+    if not parsed.tzinfo:
+        return None
+    if value.endswith('Z') or (len(value) >= 6 and value[-6] in '+-' and value[-3] == ':'):
+        return value
+    return parsed.isoformat()
+
+
+def confidence_value(value):
+    amount = number(value)
+    return None if amount is None or amount > 1 else amount
 
 
 def unavailable(reason):
@@ -130,6 +143,13 @@ def current_artifact(artifact, task):
                 >= datetime.fromisoformat(start.replace('Z', '+00:00')))
 
 
+def model_name(value):
+    name = text(value)
+    if name is None or not name.strip() or len(name) > 256:
+        return None
+    return name
+
+
 def task_projection(task, usage):
     payload = task.payload
     instruction = text(task.instruction, 2048) or ''
@@ -137,7 +157,7 @@ def task_projection(task, usage):
     cost = number(facts.get('real_cost_usd'))
     return dict(id=task.id, role=text(task.role) or '', instruction=instruction,
                 instruction_truncated=len(task.instruction) > 2048,
-                adapter=text(task.adapter) or '', model=text(payload.get('model')),
+                adapter=text(task.adapter) or '', model=model_name(payload.get('model')),
                 created_at=timestamp(task.created_at), updated_at=timestamp(task.updated_at),
                 usage=dict(tokens_in=number(facts.get('tokens_in')), tokens_out=number(facts.get('tokens_out')),
                            est_cost_usd=cost, estimated=False if cost is not None else None,
@@ -162,10 +182,11 @@ def artifact_projection(artifact):
         created_by=text(artifact.created_by) or '', created_at=timestamp(artifact.created_at),
         headline=headline, detail=text(p.get('detail', p.get('reason', p.get('why', p.get('mitigation')))), 2048),
         result=result, failure=text(p.get('failure', p.get('failure_class'))),
-        confidence=number(artifact.confidence), model=text(p.get('adapter_model_name') or p.get('model') or p.get('model_id')),
+        confidence=confidence_value(artifact.confidence),
+        model=model_name(p.get('adapter_model_name') or p.get('model') or p.get('model_id')),
         adapter=text(p.get('adapter')), policy=text(p.get('policy')), provider=text(p.get('provider')),
         role=text(p.get('role')), est_cost_usd=number(p.get('estimated_cost_usd', p.get('est_cost_usd'))),
-        rejected=[dict(model=text(r.get('model', r.get('model_id'))) or '', reason=text(r.get('reason')) or '')
+        rejected=[dict(model=model_name(r.get('model', r.get('model_id'))) or '', reason=text(r.get('reason')) or '')
                   for r in rejected[:8] if isinstance(r, dict)] if isinstance(rejected, list) else [],
         check_result=check)
 

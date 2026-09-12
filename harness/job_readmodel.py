@@ -253,6 +253,81 @@ class MetadataReader:
                           display=self._display(row), economics=dict(kind='unavailable', reason='selected_only'))
         return result
 
+    @staticmethod
+    def _coerce_store_job_ref(value, state_id):
+        if isinstance(value, JobRef):
+            return value if value.state_id == state_id else None
+        if not isinstance(value, dict):
+            return None
+        raw = value.get('job_ref') if isinstance(value.get('job_ref'), dict) else value
+        if not isinstance(raw, dict):
+            return None
+        try:
+            version = raw.get('version', 1)
+            ref = JobRef(raw['job_id'], raw['state_id'], version=int(version),
+                         incarnation=raw.get('incarnation'))
+        except (ValueError, KeyError, TypeError):
+            return None
+        return ref if ref.state_id == state_id else None
+
+    def _session_known_job_refs(self, ctx, selection):
+        """PM refs the harness already associates with this session (local + registry)."""
+        found = {}
+
+        def remember(ref):
+            if ref is not None and ref.job_id not in found:
+                found[ref.job_id] = ref
+
+        handle = self.local_handle
+        if handle is not None:
+            rows = getattr(handle, 'rows', None)
+            if isinstance(rows, dict):
+                def collect_local():
+                    for jid in sorted(rows):
+                        row = rows[jid]
+                        if not isinstance(row, dict) or row.get('deleted'):
+                            continue
+                        if row.get('session_id') != ctx.session_id:
+                            continue
+                        canonical = row.get('canonical')
+                        if (not isinstance(canonical, dict) or canonical.get('source') != 'harness'
+                                or canonical.get('session_id') != ctx.session_id):
+                            continue
+                        remember(self._coerce_store_job_ref(canonical.get('job_ref'), selection.state_id))
+                lock = getattr(handle, 'lock', None)
+                if lock is not None:
+                    with lock:
+                        collect_local()
+                else:
+                    collect_local()
+        for entry in self._registry:
+            if isinstance(entry, dict):
+                sid = entry.get('session_id')
+                payload = entry
+            else:
+                sid = getattr(entry, 'session_id', None)
+                payload = getattr(entry, 'job_ref', None)
+                if payload is None:
+                    payload = entry
+            if sid != ctx.session_id:
+                continue
+            remember(self._coerce_store_job_ref(payload, selection.state_id))
+        return tuple(found[key] for key in sorted(found)[:50])
+
+    def _exact_owned_row(self, store, job_ref, known, ctx, status):
+        try:
+            page = store.list_job_summaries(job_ref=job_ref, **EXACT_BUDGET)
+        except Exception:
+            return None
+        if page.outcome != 'complete' or len(page.items) != 1 or page.items[0].deleted:
+            return None
+        row = page.items[0]
+        if row.job_ref != job_ref or not self._owned(row, known, ctx):
+            return None
+        if status is not None and row.status != status:
+            return None
+        return row
+
     def read_job_page(self, ctx, selection, *, mode='snapshot', cursor=None, after_revision=0, status=None):
         if (mode not in ('snapshot', 'changes') or type(after_revision) is not int or after_revision < 0
                 or (status is not None and status not in PM_STATUSES)):
@@ -281,6 +356,15 @@ class MetadataReader:
             return result
         filters = dict(session_id=ctx.session_id if ctx.scope == 'session' else None,
                        origin='marionette' if selection.source == 'cli' else None, status=status)
+        # Exact reads run before the scan so every prepended row's revision is
+        # <= the scan page revision (the client parser requires it).
+        prepended = []
+        if (mode == 'snapshot' and pm_cursor is None and ctx.scope == 'session'
+                and selection.source == 'harness' and not known.cross_project):
+            for ref in self._session_known_job_refs(ctx, selection):
+                row = self._exact_owned_row(store, ref, known, ctx, status)
+                if row is not None:
+                    prepended.append(row)
         method = store.list_job_summaries if mode == 'snapshot' else store.read_job_summary_changes
         try:
             page = method(cursor=pm_cursor, after_revision=after_revision, **filters, **PAGE_BUDGET)
@@ -296,10 +380,23 @@ class MetadataReader:
             seen = self._seen.get(key, {})
             updates = []
             uncertain = False
+            present = set()
+            for row in prepended:
+                if len(result['rows']) >= 50 or row.job_ref in present:
+                    continue
+                present.add(row.job_ref)
+                result['rows'].append(self._summary(row, ctx, selection))
+                updates.append((row.job_ref, row.revision))
             for row in page.items:
                 owned = not row.deleted and self._owned(row, known, ctx)
                 previous_owned = self._previous_owned(row, known, ctx, status)
                 if owned:
+                    if row.job_ref in present:
+                        updates.append((row.job_ref, row.revision))
+                        continue
+                    if len(result['rows']) >= 50:
+                        continue
+                    present.add(row.job_ref)
                     result['rows'].append(self._summary(row, ctx, selection))
                     updates.append((row.job_ref, row.revision))
                 elif row.job_ref in seen or previous_owned:
@@ -310,6 +407,8 @@ class MetadataReader:
             if uncertain:
                 result.update(page=_page(checkpoint=after_revision), rows=[])
                 result['missing'].append('previous_membership_unavailable')
+            elif prepended and result['page']['outcome'] in ('complete', 'partial'):
+                result['page']['scanned'] = max(result['page']['scanned'], len(result['rows']))
             if _size(result) > 65536:
                 result.update(page=_page(checkpoint=after_revision), rows=[])
                 result['missing'].append('response_budget')
@@ -406,11 +505,17 @@ class MetadataReader:
             return result
         result.update(lifecycle=row.status, display=self._display(row),
                       task_count=row.task_count, artifact_count=row.artifact_count)
+        # Task and artifact lanes are separate bounded reads; a write landing between
+        # them skews their revisions. Re-read a bounded number of times for a matched pair.
         selected_pages = {}
-        for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
-            self.check(ctx)
-            page = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
-            selected_pages[lane] = page
+        for _ in range(3):
+            selected_pages = {}
+            for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs)):
+                self.check(ctx)
+                selected_pages[lane] = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
+            if selected_pages['tasks'].revision == selected_pages['artifacts'].revision:
+                break
+        for lane, page in selected_pages.items():
             rows = []
             for item in page.items:
                 if item.job_ref != selection.job_ref:
@@ -434,7 +539,10 @@ class MetadataReader:
             result['history'] = self._history(store, selection, bindings, history_cursors)
             if result['history']['kind'] == 'available':
                 result['missing'].remove('history')
-        result['expert'] = self._expert(store, row, selection, selected_pages, cursors)
+        if selected_pages['tasks'].revision != selected_pages['artifacts'].revision:
+            result['expert'] = job_expert.unavailable('lane_revision_skew')
+        else:
+            result['expert'] = self._expert(store, row, selection, selected_pages, cursors)
         # Separate bounded reads are not a transaction. Never return lanes from a
         # selection that lost ownership or changed while they were being read.
         _, current, reason = self._selected(selection)
@@ -468,10 +576,16 @@ class MetadataReader:
         if job.id != row.job_ref.job_id or str(job.status) != row.status:
             return None
         cursors = dict(tasks=None, artifacts=None)
-        pages = {lane: method(selection.job_ref, cursor=None, **PAGE_BUDGET)
-                 for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs))}
-        expert = self._expert(store, row, selection, pages, cursors, job=job, pin=True, for_header=True)
-        header = job_expert.summary_header(job, expert)
+        for _ in range(3):
+            pages = {lane: method(selection.job_ref, cursor=None, **PAGE_BUDGET)
+                     for lane, method in (('tasks', store.list_task_refs), ('artifacts', store.list_artifact_refs))}
+            if pages['tasks'].revision == pages['artifacts'].revision:
+                break
+        if pages['tasks'].revision != pages['artifacts'].revision:
+            header = job_expert.summary_header(job, job_expert.unavailable('lane_revision_skew'))
+        else:
+            expert = self._expert(store, row, selection, pages, cursors, job=job, pin=True, for_header=True)
+            header = job_expert.summary_header(job, expert)
         with self._lock:
             self._headers[key] = (time.monotonic(), header)
             self._headers.move_to_end(key)
@@ -482,6 +596,8 @@ class MetadataReader:
     def _expert(self, store, row, selection, pages, cursors, *, job=None, pin=False, for_header=False):
         if selection.job_ref.version != 2:
             return job_expert.unavailable('legacy_ref')
+        if pages['tasks'].revision != pages['artifacts'].revision:
+            return job_expert.unavailable('lane_revision_skew')
         deadline = time.monotonic() + 2
         _, current, reason = self._selected(selection, pin=pin)
         if reason or current.revision != row.revision:
@@ -538,6 +654,8 @@ class MetadataReader:
             current = method(selection.job_ref, cursor=cursors[lane], **PAGE_BUDGET)
             if current != pages[lane]:
                 return job_expert.unavailable('selection_changed')
+        if pages['tasks'].revision != pages['artifacts'].revision:
+            return job_expert.unavailable('lane_revision_skew')
         if time.monotonic() >= deadline:
             return job_expert.unavailable('deadline')
         projected = job_expert.project(job, tasks, artifacts, coverage, registry=self._registry, compaction=compaction)
@@ -550,6 +668,20 @@ class MetadataReader:
             omitted = projected[lane].pop()
             if lane == 'tasks':
                 projected['economics']['tasks'].pop(omitted['id'], None)
+                header = projected['economics']['header']
+                remaining = len(projected['tasks'])
+                header['selected_workers'] = remaining
+                header['completed_workers'] = min(header.get('completed_workers', 0), remaining)
+                header['usage']['selected_workers'] = remaining
+                header['usage']['tokens_known_workers'] = min(header['usage']['tokens_known_workers'], remaining)
+                header['usage']['cost_known_workers'] = min(header['usage']['cost_known_workers'], remaining)
+                if header['cost'].get('plan_workers') is not None:
+                    header['cost']['plan_workers'] = min(header['cost']['plan_workers'], remaining)
+            else:
+                omitted_id = omitted['id']
+                for usage in projected['economics']['tasks'].values():
+                    if usage.get('source_artifact_id') == omitted_id:
+                        usage['source_artifact_id'] = None
             projected['coverage'][lane] = 'partial'
             projected.update(kind='partial', reason='response_budget', quality='unverified')
             projected['economics']['header']['usage']['complete'] = False

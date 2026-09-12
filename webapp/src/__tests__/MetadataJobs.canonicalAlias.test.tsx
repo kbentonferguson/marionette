@@ -1,0 +1,556 @@
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import SwarmPane from '../components/SwarmPane';
+import { currentExpert, metadataJobs, JobMetadataContext } from '../lib/jobMetadataContext';
+import { JobMetadataClient, metadataSelectionKey } from '../lib/jobMetadata';
+import type { MetadataContext, MetadataSelection, MetadataSummary } from '../lib/jobMetadata';
+import { JobMetadataStore } from '../lib/useJobMetadata';
+import type { JobMetadataState } from '../lib/useJobMetadata';
+import type { LocalObservation, LocalSummary } from '../lib/localJobMetadata';
+import { nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
+import { handshake, list, view } from './jobMetadata.fixtures';
+import { clearSWRCache } from '../lib/useStaleWhileRevalidate';
+
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      swarmLive: vi.fn(),
+      swarmCancel: vi.fn(),
+      artifacts: vi.fn(),
+      dashboard: vi.fn().mockResolvedValue({
+        ok: true, reused: true, host: '127.0.0.1', port: 8787,
+        url: 'http://127.0.0.1:8787/?job=job_canonical&embed=1',
+        embed_url: 'http://127.0.0.1:8787/?job=job_canonical&embed=1',
+      }),
+      sessions: vi.fn().mockResolvedValue([]),
+    },
+  };
+});
+
+const incarnation = 'fbd538fe321b61223e2ad6903f225d52';
+const canonical = {
+  source: 'harness' as const,
+  job_ref: {
+    job_id: 'job_4ba915d01102',
+    state_id: 'state_canonical',
+    version: 2 as const,
+    incarnation: '7e62abcd-1234-4234-8234-123456789abc',
+  },
+  session_id: 'sess-test',
+  dispatch_id: 'dispatch-canonical',
+};
+
+function context(session_id = 'sess-test'): MetadataContext {
+  return { session_id, repo: '/repo', view_generation: `generation-${session_id}`, scope: 'all' };
+}
+
+function pmSelection(c: MetadataContext = context()): MetadataSelection {
+  return {
+    source: 'harness',
+    session_id: c.session_id,
+    repo: c.repo,
+    job_ref: canonical.job_ref,
+  };
+}
+
+function localSummary(overrides: Partial<LocalSummary> = {}): LocalSummary {
+  return {
+    local_ref: { job_id: 'local-swarm-call_00_alias', incarnation },
+    revision: 7,
+    deleted: false,
+    session_id: canonical.session_id,
+    lifecycle: 'running',
+    kind: 'provider',
+    parent_ref: null,
+    task_count: 1,
+    action_count: 0,
+    artifact_count: 0,
+    child_count: null,
+    created_at: 1,
+    updated_at: 1,
+    receipts: { terminal: false, launch: false, recovery: false, child: false },
+    economics: { kind: 'unavailable' },
+    display: { label: 'Provider worker', model: '', adapter: 'agentic', truncated: false },
+    canonical,
+    ...overrides,
+  };
+}
+
+function pmRow(c: MetadataContext = context()): MetadataSummary {
+  return {
+    selection: pmSelection(c),
+    revision: 11,
+    deleted: false,
+    lifecycle: 'running',
+    ownership: { origin: 'marionette', session_id: canonical.session_id, project_id: null },
+    task_count: 4,
+    artifact_count: 8,
+    stamp: 'known',
+    display: {
+      kind: 'available',
+      goal_preview: 'canonical swarm goal',
+      goal_preview_truncated: false,
+      delivery: 'pending',
+      quality: 'unverified',
+    },
+    economics: { kind: 'unavailable', reason: 'selected_only' },
+  };
+}
+
+function fourTaskDetail(selected: MetadataSelection, c: MetadataContext) {
+  const ids = ['task-a', 'task-b', 'task-c', 'task-d'];
+  const revision = 100;
+  const tasks = ids.map((id, index) => ({
+    id,
+    status: index === 0 ? 'running' : 'queued',
+    stamp: 'known',
+    revision: 2,
+    binding: { task_id: id, generation: 1, lease_id: `lease-${id}`, owner: 'worker' },
+  }));
+  const findings = ids.map((id) => ({
+    id: `artifact-${id}`,
+    status: null,
+    stamp: 'known',
+    revision: 3,
+    task_id: id,
+    type: 'finding',
+    sha256: 'a'.repeat(64),
+    presence: 'recorded',
+    check_result: 'unavailable',
+  }));
+  const routes = ids.map((id) => ({
+    id: `route-${id}`,
+    status: null,
+    stamp: 'known',
+    revision: 3,
+    task_id: id,
+    type: 'routing',
+    sha256: 'b'.repeat(64),
+    presence: 'recorded',
+    check_result: 'unavailable',
+  }));
+  const artifactRows = [...findings, ...routes];
+  return {
+    version: 1,
+    selection: selected,
+    context: c,
+    lifecycle: 'running',
+    display: {
+      kind: 'available',
+      goal_preview: 'canonical swarm goal',
+      goal_preview_truncated: false,
+      delivery: 'pending',
+      quality: 'unverified',
+    },
+    task_count: 4,
+    artifact_count: artifactRows.length,
+    tasks: {
+      page: { outcome: 'complete', revision, scanned: tasks.length, checkpoint: revision, next_cursor: null },
+      rows: tasks,
+    },
+    artifacts: {
+      page: { outcome: 'complete', revision, scanned: artifactRows.length, checkpoint: revision, next_cursor: null },
+      rows: artifactRows,
+    },
+    expert: {
+      kind: 'available',
+      reason: null,
+      header: {
+        created_at: '2026-09-11T12:00:00Z',
+        completed_at: null,
+        selected_workers: 4,
+        completed_workers: 0,
+        workers_complete: false,
+        model: 'deepseek-v4-flash',
+        model_provenance: 'job_routing',
+        usage: {
+          tokens: 1690000,
+          tokens_known_workers: 4,
+          cost_known_workers: 0,
+          selected_workers: 4,
+          complete: true,
+        },
+        savings: {
+          routing_usd: null,
+          cache_usd: null,
+          compaction_usd: null,
+          compact_tokens: null,
+          selected_usd: null,
+          basis: 'estimated',
+          source: 'selected_current_records',
+        },
+        cost: {
+          selected_usd: null,
+          source: 'selected_current_records',
+          basis: 'estimated',
+          measured_cost_usd: null,
+          estimated_cost_usd: null,
+          complete: true,
+          plan_workers: 0,
+        },
+      },
+      tasks: ids.map((id, index) => ({
+        id,
+        role: `Worker ${index + 1}`,
+        instruction: `Do work ${index + 1}`,
+        instruction_truncated: false,
+        adapter: 'agentic',
+        model: 'deepseek-v4-flash',
+        created_at: null,
+        updated_at: null,
+        usage: { tokens_in: 10, tokens_out: 5, est_cost_usd: null, estimated: null, cost_provenance: null },
+      })),
+      artifacts: [
+        ...findings.map((row, index) => ({
+          id: row.id,
+          task_id: row.task_id,
+          type: 'FINDING',
+          created_by: 'worker',
+          created_at: `2026-09-11T12:0${index}:00Z`,
+          headline: `Evidence ${index + 1}`,
+          detail: null,
+          result: 'recorded',
+          failure: null,
+          confidence: null,
+          model: null,
+          adapter: null,
+          policy: null,
+          provider: null,
+          role: null,
+          est_cost_usd: null,
+          rejected: [],
+          check_result: 'unavailable',
+        })),
+        ...routes.map((row, index) => ({
+          id: row.id,
+          task_id: row.task_id,
+          type: 'ROUTING',
+          created_by: 'router',
+          created_at: `2026-09-11T12:0${index}:00Z`,
+          headline: 'route',
+          detail: 'matched',
+          result: null,
+          failure: null,
+          confidence: null,
+          model: 'deepseek-v4-flash',
+          adapter: 'agentic',
+          policy: 'balanced',
+          provider: null,
+          role: null,
+          est_cost_usd: null,
+          rejected: [],
+          check_result: 'unavailable',
+        })),
+      ],
+      coverage: { tasks: 'complete', artifacts: 'complete' },
+      quality: 'unverified',
+    },
+    history: { kind: 'unavailable', reason: 'public_read_unbounded' },
+    cost: { kind: 'unavailable', reason: 'not_in_metadata' },
+    cancellation_authority: false,
+    missing: ['history', 'cost'],
+  };
+}
+
+function localEnvelope(c: MetadataContext, rows: LocalSummary[], lane: 'active' | 'history' = 'active') {
+  return {
+    version: 1,
+    context: c,
+    incarnation,
+    lane,
+    rows,
+    page: { outcome: 'complete', revision: 11, checkpoint: 11, scanned: rows.length, next_cursor: null },
+    coverage: {
+      membership: lane === 'active' ? 'retained_local_active' : 'retained_local_history',
+      metadata: 'live_during_traversal',
+      historical: 'unavailable',
+      ordering: 'id',
+    },
+    missing: [],
+  };
+}
+
+const stores: JobMetadataStore[] = [];
+
+afterEach(() => {
+  cleanup();
+  stores.forEach((store) => store.dispose());
+  stores.length = 0;
+  vi.unstubAllGlobals();
+  Reflect.deleteProperty(window, 'harnessIPC');
+  localStorage.clear();
+  sessionStorage.clear();
+  clearSWRCache();
+});
+
+async function mountCanonicalAlias(options: { includePmList?: boolean } = {}) {
+  let pmPresent = options.includePmList === true;
+  const c = context();
+  const selected = pmSelection(c);
+  const summary = localSummary();
+  const requestJSON = vi.fn(async (_method: string, path: string) => {
+    const url = new URL(path, 'http://fixture');
+    if (url.pathname === '/api/endpoint') {
+      return { kind: 'response', status: 200, correlationId: '', text: JSON.stringify(handshake) };
+    }
+    if (url.pathname.endsWith('/view')) {
+      return {
+        kind: 'response',
+        status: 200,
+        correlationId: '',
+        text: JSON.stringify({
+          ...view(c.view_generation),
+          context: { session_id: c.session_id, repo: c.repo, view_generation: c.view_generation },
+          local: {
+            available: true,
+            incarnation,
+            version: 1,
+            lanes: ['active', 'history'],
+            active_statuses: nativeActiveStatuses,
+            attention_statuses: nativeAttentionStatuses,
+          },
+          sources: [{ source: 'harness', state_id: canonical.job_ref.state_id, cross_project: false, available: true }],
+        }),
+      };
+    }
+    if (url.pathname.endsWith('/local') || url.pathname.includes('/metadata/local')) {
+      if (url.pathname.endsWith('/detail')) {
+        const lane = url.searchParams.get('lane') ?? 'tasks';
+        const rows = lane === 'tasks'
+          ? [{
+            task_id: `${summary.local_ref.job_id}-w0`,
+            role: 'explore (agentic)',
+            instruction: 'Synthetic alias instruction',
+            status: 'running',
+            adapter: 'agentic',
+            model: '',
+            model_kind: 'unavailable',
+            truncated: false,
+          }]
+          : [];
+        return {
+          kind: 'response',
+          status: 200,
+          correlationId: '',
+          text: JSON.stringify({
+            version: 1,
+            context: c,
+            local_ref: summary.local_ref,
+            summary,
+            lane,
+            rows,
+            total: rows.length,
+            selected_context: {
+              source: 'goal',
+              request: { text: 'Synthetic alias instruction', truncated: false },
+              cwd: null,
+              omission: 'none',
+            },
+            page: { outcome: 'complete', revision: summary.revision, checkpoint: summary.revision, scanned: rows.length, next_cursor: null },
+            coverage: { membership: 'retained_local_active', ordering: 'id', historical: 'unavailable' },
+            missing: [],
+            cancellation_authority: false,
+          }),
+        };
+      }
+      const lane = (url.searchParams.get('lane') ?? 'history') as 'active' | 'history';
+      return {
+        kind: 'response',
+        status: 200,
+        correlationId: '',
+        text: JSON.stringify(localEnvelope(c, [summary], lane)),
+      };
+    }
+    if (url.pathname === '/api/jobs/metadata') {
+      const status = url.searchParams.get('status');
+      const rows = pmPresent && (!status || status === 'running') ? [pmRow(c)] : [];
+      return {
+        kind: 'response',
+        status: 200,
+        correlationId: '',
+        text: JSON.stringify({
+          ...list(rows),
+          context: c,
+          store: { source: 'harness', state_id: canonical.job_ref.state_id },
+          mode: url.searchParams.get('mode'),
+          page: {
+            outcome: 'complete',
+            revision: 11,
+            checkpoint: 11,
+            scanned: rows.length,
+            next_cursor: null,
+          },
+        }),
+      };
+    }
+    if (url.pathname.endsWith('/detail')) {
+      return {
+        kind: 'response',
+        status: 200,
+        correlationId: '',
+        text: JSON.stringify(fourTaskDetail(selected, c)),
+      };
+    }
+    throw Error(`unexpected ${path}`);
+  });
+  Object.defineProperty(window, 'harnessIPC', {
+    configurable: true,
+    value: { endpointHeaders: true, requestJSON },
+  });
+  const store = new JobMetadataStore(new JobMetadataClient(1000));
+  stores.push(store);
+  await act(async () => {
+    store.setTarget({ repo: c.repo, session_id: c.session_id, scope: 'all' });
+    await store.readView();
+    await store.advance(true);
+    await (store as unknown as { advanceLocal: (lane: 'active' | 'history') => Promise<unknown> }).advanceLocal('active');
+    for (let turn = 0; turn < 24; turn++) await store.advance();
+  });
+  localStorage.setItem('marionette.jobScope.v1', 'repo');
+  const ui = render(
+    <JobMetadataContext.Provider value={store}>
+      <SwarmPane />
+    </JobMetadataContext.Provider>,
+  );
+  return {
+    store,
+    requestJSON,
+    setPmPresent(value: boolean) { pmPresent = value; },
+    ...ui,
+  };
+}
+
+describe('metadataJobs alias dedupe', () => {
+  it('dedupes the same local job_id from observations and localDetail by freshest revision', () => {
+    const older = localSummary({ revision: 3, local_ref: { job_id: 'local-swarm-call_00_alias', incarnation: 'old-incarnation' } });
+    const newer = localSummary({ revision: 9 });
+    const c = context();
+    const state = {
+      view: {
+        kind: 'view',
+        target: { repo: c.repo, session_id: c.session_id, scope: 'all' },
+        context: c,
+        view: {
+          ...view(c.view_generation),
+          context: { session_id: c.session_id, repo: c.repo, view_generation: c.view_generation },
+          local: { available: true, incarnation, version: 1 },
+        },
+        refresh: 'idle',
+      },
+      observations: [],
+      pins: [],
+      local: {
+        observations: [
+          { row: older, freshness: 'observed', observedAt: 1 },
+          { row: newer, freshness: 'observed', observedAt: 2 },
+        ] satisfies LocalObservation[],
+        traversal: { mode: 'snapshot', after_revision: 0, cursor: null },
+        state: 'complete',
+        missing: [],
+        observedAt: 2,
+      },
+      localDetail: {
+        selection: newer.local_ref,
+        lane: 'tasks',
+        observation: {
+          lane: 'tasks',
+          local_ref: newer.local_ref,
+          summary: { ...newer, revision: 12 },
+          rows: [],
+          page: { outcome: 'complete', revision: 12, checkpoint: 12, scanned: 0, next_cursor: null },
+          missing: [],
+          total: 0,
+        },
+        summaryFreshness: 'observed',
+        laneFreshness: 'observed',
+        error: null,
+      },
+      detail: { kind: 'none' },
+      detailCache: {},
+      headers: {},
+      working: false,
+      error: null,
+    } as unknown as JobMetadataState;
+    const jobs = metadataJobs(state);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe('local-swarm-call_00_alias');
+    expect(jobs[0].local_ref?.incarnation).toBe(incarnation);
+  });
+
+  it('keeps a hydrated expert when detail freshness is stale from an unrelated lane error', () => {
+    const c = context();
+    const selected = pmSelection(c);
+    const key = metadataSelectionKey(selected);
+    const detail = fourTaskDetail(selected, c);
+    const state = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      observations: [{ row: pmRow(c), freshness: 'observed' }],
+      pins: [],
+      detail: { kind: 'none' },
+      detailCache: {
+        [key]: {
+          kind: 'selected',
+          selection: selected,
+          cursors: { task_cursor: null, artifact_cursor: null },
+          observation: detail,
+          freshness: 'stale',
+          error: null,
+        },
+      },
+      headers: {},
+      error: 'invalid_metadata',
+      working: false,
+    } as unknown as JobMetadataState;
+    const expert = currentExpert(state, key);
+    expect(expert?.kind).toBe('available');
+    expect(expert?.tasks).toHaveLength(4);
+  });
+});
+
+describe('SwarmPane canonical alias presentation', () => {
+  it('renders canonical goal, job id, and a 4-worker PM roster for an alias with canonical', async () => {
+    const fixture = await mountCanonicalAlias({ includePmList: false });
+    try {
+      const row = await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`);
+      expect(within(row).queryAllByRole('button', { name: /Provider worker|canonical swarm goal/ })).toHaveLength(1);
+      fireEvent.click(within(row).getByRole('button', { name: /Provider worker|canonical swarm goal|Synthetic alias/ }));
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: `Job ${canonical.job_ref.job_id}` })).toBeVisible();
+      });
+      await waitFor(() => {
+        expect(screen.getAllByText('canonical swarm goal').length).toBeGreaterThan(0);
+      });
+      const roster = await screen.findByRole('group', { name: 'Workers' });
+      expect(within(roster).getByText('Worker 1')).toBeVisible();
+      expect(within(roster).getByText('Worker 2')).toBeVisible();
+      expect(within(roster).getByText('Worker 3')).toBeVisible();
+      expect(within(roster).getByText('Worker 4')).toBeVisible();
+      expect(screen.queryByText(/workers loaded · partial coverage/i)).toBeNull();
+      expect(screen.getAllByTestId(`inspect-local-${localSummary().local_ref.job_id}`)).toHaveLength(1);
+    } finally {
+      fixture.unmount();
+    }
+  });
+
+  it('hides the alias once the canonical PM row is observed', async () => {
+    const fixture = await mountCanonicalAlias({ includePmList: false });
+    try {
+      expect(await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`)).toBeVisible();
+      fixture.setPmPresent(true);
+      await act(async () => {
+        fixture.store.restartTraversal();
+        for (let turn = 0; turn < 24; turn++) await fixture.store.advance();
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId(`inspect-local-${localSummary().local_ref.job_id}`)).toBeNull();
+      });
+      expect(screen.getByTestId(`inspect-harness-${canonical.job_ref.job_id}`)).toBeVisible();
+      expect(metadataJobs(fixture.store.getSnapshot()).map((job) => job.id)).toEqual([canonical.job_ref.job_id]);
+    } finally {
+      fixture.unmount();
+    }
+  });
+});

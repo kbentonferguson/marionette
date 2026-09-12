@@ -137,17 +137,40 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       void store.readDetail();
     }
   };
-  const hydratePM = selectedPM ?? canonicalSelection;
   useEffect(() => {
-    if (deferAutoRead || initialPMRead.current || !hydratePM || detail?.observation || state.working || state.view.kind !== 'view') return;
+    if (deferAutoRead || initialPMRead.current || !selectedPM || detail?.observation || state.working || state.view.kind !== 'view') return;
     initialPMRead.current = true;
     try {
-      store.select(hydratePM);
+      store.select(selectedPM);
       void store.readDetail();
     } catch {
       initialPMRead.current = false;
     }
-  }, [hydratePM, detail?.observation, state.working, state.view, store]);
+  }, [deferAutoRead, selectedPM, detail?.observation, state.working, state.view, store]);
+  // A local alias with a canonical PM ref hydrates that job cache-only: it never takes over
+  // the selection and re-attempts whenever the store settles idle without an observation
+  // or error for the key (at most every 2s), so a reset after invalidate cannot strand it.
+  const canonicalKey = !selectedPM && canonicalSelection ? metadataSelectionKey(canonicalSelection) : '';
+  const canonicalRef = useRef(canonicalSelection);
+  canonicalRef.current = canonicalSelection;
+  useEffect(() => {
+    if (deferAutoRead || !canonicalKey || state.view.kind !== 'view') return;
+    let last: number | null = null;
+    const attempt = () => {
+      const selection = canonicalRef.current;
+      const snap = store.getSnapshot();
+      if (!selection || snap.working || snap.view.kind !== 'view') return;
+      const current = snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === canonicalKey
+        ? snap.detail : snap.detailCache[canonicalKey];
+      if (current?.observation || current?.error) return;
+      const at = Date.now();
+      if (last !== null && at - last < 2000) return;
+      last = at;
+      void store.hydrateDetail(selection);
+    };
+    attempt();
+    return store.subscribe(attempt);
+  }, [deferAutoRead, canonicalKey, state.view.kind, store]);
   const initialNativeRead = useRef(false);
   const initialRoutingRead = useRef(false);
   useEffect(() => {
@@ -178,7 +201,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     store.select(selectedPM);
     void store.readDetail();
   }, [compact, deferAutoRead, navigation, selectedPM, state.working, state.view, store]);
-  const observation = hydratePM ? detail?.observation : undefined;
+  const observation = selectedPM ?? canonicalSelection ? detail?.observation : undefined;
   const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
   const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:
@@ -227,13 +250,24 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
   );
   const expert = currentExpert(state, expertKey);
   const nativeRows = native?.tasks?.rows ?? [];
-  const expertRows = nativeRows.length === 0 && expert && expert.kind !== 'unavailable' ? expert.tasks : [];
+  const preferCanonicalRoster = !!canonical && !!expert && expert.kind !== 'unavailable' && expert.tasks.length > 0;
+  const expertRows = (preferCanonicalRoster || nativeRows.length === 0) && expert && expert.kind !== 'unavailable' ? expert.tasks : [];
   const taskStatusById = new Map((observation?.tasks.rows ?? []).map(task => [task.id, task.status ?? 'unknown']));
-  const adapter = nativeSummary?.display?.adapter || nativeRows[0]?.adapter || expertRows[0]?.adapter || '';
+  for (const task of expertRows) {
+    if (!taskStatusById.has(task.id)) taskStatusById.set(task.id, observation?.lifecycle ?? job.status);
+  }
+  const headerJobId = canonical?.job_ref.job_id ?? job.id;
+  const canonicalGoal = observation?.display?.kind === 'available' ? observation.display.goal_preview : undefined;
+  const instructionFallback = native?.observation?.selected_context?.request?.text?.trim() || undefined;
+  const cardTitle = canonicalGoal || (canonical ? instructionFallback : undefined) || jobDisplayTitle(job);
+  const adapter = (preferCanonicalRoster ? expertRows[0]?.adapter : undefined)
+    || nativeSummary?.display?.adapter || nativeRows[0]?.adapter || expertRows[0]?.adapter || '';
   const activityAt = nativeSummary && nativeActiveStatuses.includes(nativeSummary.lifecycle)
     ? nativeSummary.updated_at ?? nativeSummary.created_at : null;
   const since = relativeSince(activityAt, now);
-  const workerCount = nativeRows.length || expertRows.length || nativeSummary?.task_count || 0;
+  const workerCount = preferCanonicalRoster
+    ? expertRows.length
+    : nativeRows.length || expertRows.length || nativeSummary?.task_count || 0;
   const workerKill = local && view.kind === 'view' && job.session_id === view.context.session_id ? {
     disabled: !nativeSelection || !nativeFresh || (nativeSummary != null && terminal.has(nativeSummary.lifecycle)) || state.working || stopping,
     request: () => void nativeStop(),
@@ -285,9 +319,10 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     </> : null;
   return <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10 text-xs text-muted">
     <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
-      <button className="self-start font-mono text-[9px] text-faint hover:text-muted" aria-label={`Job ${job.id}`} onClick={() => {
-        void navigator.clipboard.writeText(job.id).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
-      }}>Job {job.id}</button>
+      {canonical && cardTitle && <p className="text-[11px] font-semibold text-txt break-words">{cardTitle}</p>}
+      <button className="self-start font-mono text-[9px] text-faint hover:text-muted" aria-label={`Job ${headerJobId}`} onClick={() => {
+        void navigator.clipboard.writeText(headerJobId).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
+      }}>Job {headerJobId}</button>
       {compact && !showDump && <ExpertCost header={costHeader} now={now} compact />}
       {adapter && <p className="text-faint lowercase">{adapter}</p>}
       {since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
@@ -296,17 +331,26 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       </div>}
     </div>
     {workerCount > 0 && <CompactSwarmDashboard
-      title={jobDisplayTitle(job)} lifecycle={nativeSummary?.lifecycle ?? job.status}
-      workerStatuses={taskStatusById} expert={expert && expert.kind !== 'unavailable' ? expert : undefined}
+      title={cardTitle} lifecycle={observation?.lifecycle ?? nativeSummary?.lifecycle ?? job.status}
+      workerStatuses={taskStatusById}
+      expert={(preferCanonicalRoster || nativeRows.length === 0) && expert && expert.kind !== 'unavailable' ? expert : undefined}
       headerModel={expertHeaderModel(currentHeader(state, expertKey)) ?? nativeSummary?.display?.model ?? undefined}
-      nativeTasks={nativeRows} nativeRoutes={nativeRouteByTask} routeCoverage={nativeRows.length ? nativeRouteCoverage : undefined}
-      artifactCount={nativeSummary?.artifact_count ?? observation?.artifact_count ?? null}
-      workerCount={nativeSummary?.task_count ?? observation?.task_count ?? job.task_count ?? null}
-      workerCoverage={local ? nativeFresh && native?.tasks?.page.outcome === 'complete'
+      nativeTasks={preferCanonicalRoster ? undefined : nativeRows}
+      nativeRoutes={preferCanonicalRoster ? undefined : nativeRouteByTask}
+      routeCoverage={preferCanonicalRoster ? undefined : (nativeRows.length ? nativeRouteCoverage : undefined)}
+      artifactCount={preferCanonicalRoster
+        ? (observation?.artifact_count ?? expert?.artifacts.filter(a => a.type.toUpperCase() !== 'ROUTING').length ?? null)
+        : (nativeSummary?.artifact_count ?? observation?.artifact_count ?? null)}
+      workerCount={preferCanonicalRoster
+        ? (observation?.task_count ?? expert?.header?.selected_workers ?? expertRows.length)
+        : (nativeSummary?.task_count ?? observation?.task_count ?? job.task_count ?? null)}
+      workerCoverage={preferCanonicalRoster
+        ? (expert?.coverage.tasks === 'complete' ? 'complete' : 'partial')
+        : local ? nativeFresh && native?.tasks?.page.outcome === 'complete'
         && native.tasks.page.revision === nativeSummary?.revision ? 'complete' : 'partial'
         : expert?.coverage.tasks === 'complete' ? 'complete' : 'partial'}
       usage={costHeader?.usage?.tokens ?? (nativeSummary?.usage?.kind === 'reported' ? nativeSummary.usage.tokens : null)}
-      cancel={nativeRows.length ? workerKill : undefined}
+      cancel={preferCanonicalRoster ? undefined : (nativeRows.length ? workerKill : undefined)}
     />}
     {compact && onOpenDashboard && <div className="flex flex-wrap gap-1">
       <button type="button" className={button} onClick={onOpenDashboard}>See in Puppetmaster dashboard</button>
@@ -467,10 +511,22 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const hidden = scoped.filter(j => !isActive(j) && !isNativeActivity(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
   const createdAt = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o.row.created_at]));
   for (const job of jobs) {
-    const date = currentHeader(state, job.metadata_key ?? '')?.created_at;
+    const listedLocal = job.local_ref
+      ? state.local.observations.find(o => localKey(o.row.local_ref) === localKey(job.local_ref!))?.row : undefined;
+    const key = expertLookupKey(job.metadata_key, listedLocal?.canonical, state.view.kind === 'view' ? state.view.context.repo : undefined);
+    const date = currentHeader(state, key)?.created_at;
     if (date) createdAt.set(job.metadata_key ?? '', Date.parse(date));
   }
-  const quality = (job: Job) => { const expert = currentExpert(state, job.metadata_key ?? ''); return expert ? expertJobQuality(expert) : currentHeader(state, job.metadata_key ?? '')?.quality ?? 'unverified'; };
+  const quality = (job: Job) => {
+    const listedLocal = job.local_ref
+      ? state.local.observations.find(o => localKey(o.row.local_ref) === localKey(job.local_ref!))?.row
+        ?? (state.localDetail?.observation?.summary && localKey(state.localDetail.selection) === localKey(job.local_ref)
+          ? state.localDetail.observation.summary : undefined)
+      : undefined;
+    const key = expertLookupKey(job.metadata_key, listedLocal?.canonical, state.view.kind === 'view' ? state.view.context.repo : undefined);
+    const expert = currentExpert(state, key);
+    return expert ? expertJobQuality(expert) : currentHeader(state, key)?.quality ?? 'unverified';
+  };
   const selectedSummary = state.localDetail?.observation?.summary;
   if (selectedSummary && !createdAt.has(localKey(selectedSummary.local_ref))) createdAt.set(localKey(selectedSummary.local_ref), selectedSummary.created_at);
   const shown = scoped.filter(j => !hidden.includes(j)).filter(j => {
@@ -525,9 +581,15 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   };
   const renderJob = (job: Job) => {
     const key = job.metadata_key ?? '', title = jobDisplayTitle(job), open = preferences.expanded.includes(key);
-    const expert = currentExpert(state, key), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, key));
+    const listedLocal = job.local_ref
+      ? state.local.observations.find(o => localKey(o.row.local_ref) === localKey(job.local_ref!))?.row
+        ?? (state.localDetail?.observation?.summary && localKey(state.localDetail.selection) === localKey(job.local_ref)
+          ? state.localDetail.observation.summary : undefined)
+      : undefined;
+    const expertKey = expertLookupKey(key, listedLocal?.canonical, state.view.kind === 'view' ? state.view.context.repo : undefined);
+    const expert = currentExpert(state, expertKey), model = (expert ? expertJobModel(expert) : null) ?? expertHeaderModel(currentHeader(state, expertKey));
     const routing = expert && expert.kind !== 'unavailable' && expert.coverage.tasks === 'complete' && expert.tasks.length === 0 && isLiveObservation(job) && !model;
-    const header = currentHeader(state, key);
+    const header = currentHeader(state, expertKey);
     const workerCount = header?.selected_workers;
     const finishedWorkers = header?.completed_workers;
     const showWorkerProgress = workerCount !== undefined && workerCount > 0 && finishedWorkers !== undefined;
