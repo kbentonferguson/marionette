@@ -919,6 +919,35 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
         pass
 
 
+def persist_live_transcript(
+    pilot: Any,
+    state_dir: str,
+    session_id: str,
+    writer: Any = None,
+) -> None:
+    """Export and write the runner transcript under its single-writer lock.
+
+    Mid-turn SSE checkpoints used to snapshot ``export_transcript_data()``
+    without ``_busy_meta``. Compaction can replace ``_history`` and write the
+    residual first; a stale full snapshot then overwrites native disk. The
+    next steer or send fails ``input_publication_conflict`` ("history absent
+    from this runner") because disk still has the pre-compact prefix.
+    OpenCode Go turns hit this constantly: huge reasoning transcripts
+    checkpoint every 2s and auto-compact at advisor ``now``.
+    """
+    from contextlib import nullcontext
+
+    if not session_id or pilot is None:
+        return
+    lock = getattr(pilot, "_busy_meta", None)
+    write = writer if callable(writer) else save_transcript
+    with lock if lock is not None else nullcontext():
+        export = getattr(pilot, "export_transcript_data", None)
+        if not callable(export):
+            return
+        write(state_dir, session_id, export())
+
+
 def load_transcript(state_dir: str, session_id: str) -> Any:
     if not session_id:
         return []

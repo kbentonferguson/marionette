@@ -4,7 +4,7 @@ import { localKey, nativeActiveStatuses } from './localJobMetadata';
 import type { LocalRef, LocalDetail, LocalObservation, LocalLane } from './localJobMetadata';
 import { useSyncExternalStore } from 'react';
 import {
-  JobMetadataClient, MetadataError, advanceMetadataStream, initialMetadataStream, mergeMetadataRows,
+  JobMetadataClient, MetadataError, advanceMetadataStream, canonicalExpertSelection, initialMetadataStream, mergeMetadataRows,
   metadataSelectionKey, metadataStreamKey, metadataStreams, sameMetadataContext, validateMetadataTarget, parseMetadataSelection,
 } from './jobMetadata';
 import type {
@@ -226,7 +226,7 @@ export class JobMetadataStore {
     this.listeners.clear();
   }
   private current(epoch: number): boolean { return !this.disposed && this.state.epoch === epoch; }
-  private async run(work: (epoch: number) => Promise<void>, onError?: (error: MetadataErrorCode) => void, listScope?: { kind: 'pm'; stream: MetadataStream } | { kind: 'local'; lane: LocalLane } | { kind: 'detail'; key: string }): Promise<MetadataActionResult> {
+  private async run(work: (epoch: number) => Promise<void>, onError?: (error: MetadataErrorCode) => void, listScope?: { kind: 'pm'; stream: MetadataStream } | { kind: 'local'; lane: LocalLane } | { kind: 'detail'; key: string; selection?: MetadataSelection }): Promise<MetadataActionResult> {
     if (this.disposed || this.inFlight) return 'skipped';
     const epoch = this.state.epoch;
     this.inFlight = true;
@@ -248,8 +248,15 @@ export class JobMetadataStore {
       // error. A list-lane failure must not blank rosters that were read successfully, and
       // the refresh loops recover stale entries on their own cadence.
       const detailError = (key: string, prior: MetadataErrorCode | null) => listScope?.kind === 'detail' && listScope.key === key ? errorCode : prior;
+      const detailCache = Object.fromEntries(Object.entries(this.state.detailCache).map(([key, cached]) => [key, { ...cached, freshness: 'stale' as const, error: detailError(key, cached.error) }]));
+      if (listScope?.kind === 'detail' && listScope.selection && !detailCache[listScope.key]) {
+        detailCache[listScope.key] = {
+          kind: 'selected', selection: listScope.selection, observation: null, freshness: 'stale',
+          cursors: { task_cursor: null, artifact_cursor: null }, error: errorCode,
+        };
+      }
       this.publish({ ...this.state, error: metadataBannerAfterError(listScope, errorCode, this.state.error), errorDetail: detail ?? this.state.errorDetail, headers: Object.fromEntries(Object.entries(this.state.headers).map(([key, h]) => [key, pmAffected(h.observation) ? { ...h, observation: { ...h.observation, freshness: 'stale' } } : h])), local: { ...this.state.local, observations: this.state.local.observations.map(o => localAffected(o) ? { ...o, freshness: 'stale' } : o) }, observations: this.state.observations.map(o => pmAffected(o) ? { ...o, freshness: 'stale' } : o),
-        detailCache: Object.fromEntries(Object.entries(this.state.detailCache).map(([key, cached]) => [key, { ...cached, freshness: 'stale', error: detailError(key, cached.error) }])),
+        detailCache,
         pins: this.state.pins.map(p => p.observation && pmAffected(p.observation) ? { ...p, observation: { ...p.observation, freshness: 'stale' } } : p),
         detail: this.state.detail.kind === 'none' ? this.state.detail : { ...this.state.detail, freshness: 'stale', error: detailError(metadataSelectionKey(this.state.detail.selection), this.state.detail.error) } });
       if (errorCode === 'view_changed' || errorCode === 'endpoint_changed') {
@@ -358,6 +365,7 @@ export class JobMetadataStore {
     if (activeAvailable && (initial ? !this.state.localActive.initialized : slot === 0 || slot === 4)) return this.advanceLocal('active');
     if (!initial && slot === 6 && this.state.detail.kind === 'selected' && this.state.detail.observation?.expert !== undefined && Date.now() - this.state.selectedRefreshedAt >= 4000) return this.readDetail('refresh', true);
     if (!initial && turn % 16 === 10 && this.headerBatch().length) return this.refreshHeaders(true);
+    if (!initial && slot === 3 && this.detailHydrateBatch(true).length) return this.hydrateListedDetails(true);
     if (!initial && turn % 16 === 6 && this.state.pins.length) return this.refreshPins(true);
     if (!initial && slot === 7 && this.state.followedLocal.length) return this.advanceFollowedLocal();
     if (!initial && !liveOnly && slot === 2 && nativeEligible) return this.advanceLocal('history');
@@ -654,6 +662,14 @@ export class JobMetadataStore {
       && (!source.cross_project || v.context.scope !== 'repo'))) throw new MetadataError('invalid_request');
     return selected;
   }
+  /** Prefetch must not throw: a local alias can point at a canonical the current view cannot select. */
+  private tryCaptureSelection(s: MetadataSelection): MetadataSelection | null {
+    try { return this.captureSelection(s); }
+    catch (error) {
+      if (error instanceof MetadataError) return null;
+      throw error;
+    }
+  }
   setPins(selections: MetadataSelection[]): void {
     if (this.disposed) return;
     if (selections.length + this.state.followedLocal.length > 8) throw new MetadataError('invalid_request');
@@ -731,6 +747,46 @@ export class JobMetadataStore {
     }
     return reads;
   }
+  private detailHydrateBatch(retryErrors = false): MetadataSelection[] {
+    const view = this.state.view;
+    if (view.kind !== 'view' || view.refresh !== 'idle') return [];
+    const repo = view.context.repo;
+    const seen = new Set<string>();
+    const out: MetadataSelection[] = [];
+    const consider = (selection: MetadataSelection, listedRevision = 0) => {
+      const captured = this.tryCaptureSelection(selection);
+      if (!captured) return;
+      const key = metadataSelectionKey(captured);
+      if (seen.has(key)) return;
+      seen.add(key);
+      selection = captured;
+      const cached = this.state.detailCache[key];
+      if (cached?.error) {
+        if (retryErrors) out.push(selection);
+        return;
+      }
+      if (!cached || !cached.observation || cached.freshness === 'stale') {
+        out.push(selection);
+        return;
+      }
+      const hydrated = Math.max(cached.observation.tasks.page.revision, cached.observation.artifacts.page.revision);
+      if (listedRevision > hydrated) out.push(selection);
+    };
+    for (const observation of this.state.local.observations) {
+      const canonical = observation.row.canonical;
+      if (!canonical) continue;
+      const selection = canonicalExpertSelection(canonical, repo);
+      const listed = this.state.observations.find(row => metadataSelectionKey(row.row.selection) === metadataSelectionKey(selection));
+      consider(selection, listed?.row.revision ?? 0);
+    }
+    return out.slice(0, 8);
+  }
+  /** Prefetch PM detail for local aliases so titles/quality do not wait on a click. */
+  hydrateListedDetails(retryErrors = false): Promise<MetadataActionResult> {
+    const batch = this.detailHydrateBatch(retryErrors);
+    if (!batch.length) return Promise.resolve('skipped');
+    return this.hydrateDetail(batch[0], { prefetch: true });
+  }
   select(selection: MetadataSelection | null): void {
     if (this.disposed) return;
     const captured = selection === null ? null : this.captureSelection(selection);
@@ -742,10 +798,12 @@ export class JobMetadataStore {
   /** Read a PM job's detail into detailCache without taking over the current selection.
    *  Fenced by context, not by selection epoch, so a local inspection opened mid-read keeps
    *  its lane while the canonical roster still lands. */
-  hydrateDetail(selection: MetadataSelection): Promise<MetadataActionResult> {
+  hydrateDetail(selection: MetadataSelection, opts?: { prefetch?: boolean }): Promise<MetadataActionResult> {
     const view = this.state.view;
     if (view.kind !== 'view' || view.refresh !== 'idle') return Promise.resolve('skipped');
-    const captured = this.captureSelection(selection);
+    const prefetch = Boolean(opts?.prefetch);
+    const captured = prefetch ? this.tryCaptureSelection(selection) : this.captureSelection(selection);
+    if (!captured) return Promise.resolve('skipped');
     const key = metadataSelectionKey(captured);
     const contextEpoch = this.state.contextEpoch;
     const cursors: DetailCursors = { task_cursor: null, artifact_cursor: null };
@@ -764,10 +822,11 @@ export class JobMetadataStore {
           freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null };
       const current = this.state.detail;
       const retained = Object.entries(this.state.detailCache).filter(([cached]) => cached !== key).slice(-7);
-      this.publish({ ...this.state, selectedRefreshedAt: Date.now(),
-        detail: current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
+      this.publish({ ...this.state,
+        selectedRefreshedAt: prefetch ? this.state.selectedRefreshedAt : Date.now(),
+        detail: !prefetch && current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
         detailCache: Object.fromEntries([...retained, [key, entry]]) });
-    }, undefined, { kind: 'detail', key });
+    }, undefined, { kind: 'detail', key, selection: captured });
   }
   /** Refresh starts both lanes; advance carries the other lane's independent cursor unchanged. */
   readDetail(advance: 'refresh' | 'tasks' | 'artifacts' | HistoryLaneName = 'refresh', scheduled = false): Promise<MetadataActionResult> {

@@ -211,6 +211,13 @@ class SessionActionStore:
                 "recover_requires_expected_turn_id",
                 "recover requires expected_turn_id",
             )
+        if resolved is ActionKind.RECOVER and expected is not None:
+            current = self._current_turn_id
+            if current is not None and current != expected:
+                raise SessionActionIllegalTransition(
+                    "recover_turn_mismatch",
+                    "recover expected_turn_id does not match current",
+                )
         if resolved is ActionKind.STEER and expected is not None:
             current = self._current_turn_id
             if current != expected:
@@ -330,8 +337,8 @@ class SessionActionStore:
     ) -> SessionAction:
         """Admit, then move that action to the front of the queue."""
         action = self.admit(kind, text, **kwargs)
-        if self._actions and self._actions[-1] is action:
-            self._actions = [action] + self._actions[:-1]
+        if action in self._actions:
+            self._actions = [action] + [row for row in self._actions if row is not action]
         return action
 
     def append_action(self, action: SessionAction) -> None:
