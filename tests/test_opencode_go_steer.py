@@ -18,8 +18,13 @@ import pytest
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
-from harness.input_receipts import InputReceiptError
-from harness.sessions import load_transcript, persist_live_transcript, save_transcript
+from harness.input_receipts import InputReceiptError, session_input_store
+from harness.sessions import (
+    _write_transcript,
+    load_transcript,
+    persist_live_transcript,
+    save_transcript,
+)
 from pmharness.drivers.codex_responses import _messages_to_responses_input
 
 
@@ -88,16 +93,65 @@ def _compact_runner(session):
     ]
 
 
-def test_stale_full_disk_blocks_steer_after_runner_compacts(session):
-    """Characterize the screenshot: compacted runner, full native disk."""
+def _deliver_steer_without_persist(session, text):
+    """Admit + append like inject, but skip the live persist seam."""
+    session.enqueue_steer(text)
+    actions = session._drain_steer_actions()
+    assert actions
+    contents = [session._format_steer_user_content(action.text) for action in actions]
+    for action, content in zip(actions, contents):
+        session._history.append({"role": "user", "content": content, "input_id": action.id})
+    return [action.id for action in actions]
+
+
+def test_stale_full_disk_blocks_publish_without_persist(session):
+    """Receipt layer stays fail-closed: compacted export vs fat disk."""
     _fat_opencode_history(session)
     save_transcript(session.state_dir, session.harness_session_id, session.export_transcript_data())
     _compact_runner(session)
-    session.enqueue_steer("grab em, adapt em, ship it all. thanks")
+    input_ids = _deliver_steer_without_persist(session, "grab em, adapt em, ship it all. thanks")
     with pytest.raises(InputReceiptError) as failure:
-        list(session._check_and_inject_steer())
+        session_input_store(session).publish_injected(
+            input_ids, session.export_transcript_data(),
+        )
     assert failure.value.code == "input_publication_conflict"
     assert "absent from this runner" in str(failure.value)
+
+
+def test_steer_inject_syncs_disk_after_in_memory_compact(session):
+    """Screenshot path on 476: compact in memory, then steer, no extra persist."""
+    _fat_opencode_history(session)
+    save_transcript(session.state_dir, session.harness_session_id, session.export_transcript_data())
+    _compact_runner(session)
+    session.enqueue_steer("why are these failing? we need to understand why. is it opencode go issue?")
+    events = list(session._check_and_inject_steer())
+    assert [e.kind for e in events] == ["steer"]
+    assert all(r["status"] == "injected" for r in session.input_receipts())
+    disk = load_transcript(session.state_dir, session.harness_session_id)
+    assert disk["history"][0].get("_compressed_summary") is True
+    assert "is it opencode go issue" in disk["history"][-1]["content"]
+
+
+def test_steer_survives_sanitize_recast_of_orphan_tool(session):
+    """Failed weave leaves an orphan tool row on disk; export recasts it."""
+    session._history.extend([
+        {"role": "user", "content": "pin the weave", "input_ids": ["seed-user"]},
+        {"role": "assistant", "content": "running swarm"},
+        {"role": "tool", "tool_call_id": "call_orphan_weave", "content": "incomplete tasks"},
+        {
+            "role": "assistant",
+            "content": "The pinned weave failed — swarm exited with incomplete tasks.",
+        },
+    ])
+    _write_transcript(session.state_dir, session.harness_session_id, {
+        "history": [row for row in session._history if row.get("role") != "system"],
+        "display": [],
+        "job_ids": [],
+    })
+    session.enqueue_steer("why are these failing? we need to understand why. is it opencode go issue?")
+    events = list(session._check_and_inject_steer())
+    assert [e.kind for e in events] == ["steer"]
+    assert all(r["status"] == "injected" for r in session.input_receipts())
 
 
 def test_locked_persist_lets_opencode_steer_publish_after_compact(session):

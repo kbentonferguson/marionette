@@ -1198,7 +1198,8 @@ class SendLoopMixin:
                     display_row['input_id'] = input_id
                 self._display_transcript.append(display_row)
                 if input_id:
-                    receipts.publish_injected([input_id], self.export_transcript_data())
+                    from .input_receipts import publish_session_injected
+                    publish_session_injected(self, [input_id])
 
         if image_encode_error is not None:
             if input_id:

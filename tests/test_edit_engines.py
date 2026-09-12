@@ -228,6 +228,48 @@ def test_agentic_store_failure_snapshot_unknown_usage_is_not_measured_zero():
     assert snap["task_ids"] == ["t9"]
 
 
+def test_agentic_store_failure_snapshot_surfaces_go_tool_choice_body():
+    """Verification artifacts store the Go 400; the task row is only http_status:400."""
+    go_body = (
+        '{"error":{"param":null,"type":"invalid_request_error",'
+        '"code":"invalid_request_error","message":"Error from provider '
+        "(Console Go): Upstream request failed: [invalid_request_error] "
+        'Thinking mode does not support this tool_choice"}}'
+    )
+
+    class _Store:
+        def list_jobs(self):
+            return [type("J", (), {"id": "job_77181745385a"})()]
+
+        def list_tasks(self, job_id):
+            return [type("T", (), {"id": "t1", "role": "explore", "status": "failed"})()]
+
+        def read_events(self, job_id):
+            return []
+
+        def list_artifacts(self, job_id):
+            art = type("A", (), {})()
+            art.payload = {
+                "adapter": "agentic",
+                "failure": "http_status:400",
+                "http_status": 400,
+                "provider": "opencode-go",
+                "model": "deepseek-flash",
+                "provider_body": go_body,
+            }
+            return [art]
+
+    snap = _agentic_store_failure_snapshot(_Store())
+    assert snap["worker_failure"] == "http_status:400"
+    assert "Thinking mode does not support this tool_choice" in snap["provider_body"]
+    summary = _format_agentic_engine_error(
+        RuntimeError("swarm exited with incomplete tasks"),
+        snap,
+    )
+    assert "incomplete tasks" in summary
+    assert "Thinking mode does not support this tool_choice" in summary
+
+
 def test_require_diff_without_worker_no_diff_evidence_stays_orchestrator_failure():
     assert classify_agentic_exception(
         RuntimeError("swarm exited with incomplete tasks"),

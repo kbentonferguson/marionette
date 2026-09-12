@@ -752,6 +752,25 @@ class InputReceiptStore:
             self._write(document)
 
 
+def publish_session_injected(session, input_ids):
+    """Persist the live runner transcript, then publish receipt IDs onto it.
+
+    Steer and follow-up send used to call ``publish_injected`` on an in-memory
+    export while native disk still held a pre-compact or pre-sanitize
+    snapshot. ``_preserves_history`` correctly rejects that. Sync disk first
+    so the check compares the same residual the runner holds.
+    """
+    from .sessions import persist_live_transcript
+
+    state_dir = getattr(session, "state_dir", None)
+    session_id = getattr(session, "harness_session_id", None)
+    if state_dir and session_id:
+        persist_live_transcript(session, state_dir, session_id)
+    session_input_store(session).publish_injected(
+        list(input_ids), session.export_transcript_data(),
+    )
+
+
 def session_input_store(session):
     store = getattr(session, '_input_receipts', None)
     if store is not None:
