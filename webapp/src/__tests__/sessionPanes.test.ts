@@ -40,6 +40,13 @@ describe("retainSessionPanes", () => {
   it("defaults the dormant cap", () => {
     expect(MAX_DORMANT_SESSION_PANES).toBe(3);
   });
+
+  it("clears every pane when there is no active session", () => {
+    expect(retainSessionPanes({
+      prev: ["sess-a", "sess-b"],
+      activeId: null,
+    })).toEqual([]);
+  });
 });
 
 describe("shouldReleaseOutgoingSessionChrome", () => {

@@ -15,6 +15,9 @@ export function retainSessionPanes(args: {
 }): string[] {
   const maxDormant = args.maxDormant ?? MAX_DORMANT_SESSION_PANES;
   const active = String(args.activeId || "").trim();
+  // Explicit clear / no session: tear down keep-alive panes so deleted
+  // history cannot stay queryable in a hidden list.
+  if (!active) return [];
   const busy = new Set(
     (args.busyIds || []).map((id) => String(id || "").trim()).filter(Boolean),
   );
