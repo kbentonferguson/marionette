@@ -1,4 +1,4 @@
-import { parseExpertMetadata, parseExpertHeader } from './expertMetadata';
+import { parseExpertMetadata, parseExpertHeader, ExpertParseError } from './expertMetadata';
 import type { ExpertMetadata, ExpertHeader } from './expertMetadata';
 import { parseMetadataDisplay, parseSelectedEconomics, parseSelectedHistory, historyCursors } from './selectedMetadataEvidence';
 import type { MetadataDisplay, SelectedEconomics, SelectedHistory, HistoryCursorName } from './selectedMetadataEvidence';
@@ -246,12 +246,7 @@ export function parseMetadataDetail(v: unknown, c: MetadataContext, selected: Me
   if (o.expert !== undefined) {
     try { expert = parseExpertMetadata(o.expert, artifacts.rows); }
     catch (error) {
-      if (error instanceof Error && (error.message === 'invalid_metadata' || error.message.startsWith('invalid_metadata:'))) {
-        const detail = 'detail' in error && typeof (error as { detail?: unknown }).detail === 'string'
-          ? (error as { detail: string }).detail
-          : error.message.startsWith('invalid_metadata:') ? error.message.slice('invalid_metadata:'.length) : 'expert';
-        throw new MetadataError('invalid_metadata', detail);
-      }
+      if (error instanceof ExpertParseError) throw new MetadataError('invalid_metadata', error.detail);
       throw error;
     }
   }
@@ -293,9 +288,8 @@ export function parseMetadataPins(v: unknown, c: MetadataContext, selections: Me
         if (header !== undefined) {
           try { parsedHeader = parseExpertHeader(header); }
           catch (error) {
-            if (error instanceof Error && (error.message === 'invalid_metadata' || error.message.startsWith('invalid_metadata:'))) {
-              parsedHeader = null;
-            } else throw error;
+            if (!(error instanceof ExpertParseError)) throw error;
+            parsedHeader = null;
           }
         }
         return { selection: s, result: { kind: 'present', row: { ...r, ...(parsedHeader === undefined ? {} : { header: parsedHeader }) } } } satisfies MetadataPinResult;

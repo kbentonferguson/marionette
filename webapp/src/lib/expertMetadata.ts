@@ -16,11 +16,11 @@ export type ExpertArtifact = { id: string; task_id: string | null; type: string;
 export type ExpertMetadata = { kind: 'available' | 'partial' | 'unavailable'; reason: string | null; header: ExpertHeader | null; live_economics?: ExpertHeader | null; compaction?: { coverage: 'complete' | 'partial' | 'unavailable'; reason: string };
   tasks: ExpertTask[]; artifacts: ExpertArtifact[]; coverage: { tasks: 'complete' | 'partial' | 'unknown'; artifacts: 'complete' | 'partial' | 'unknown' };
   quality: 'ok' | 'degraded' | 'unverified' };
-function invalid(detail?: string): never {
-  const error = new Error(detail ? `invalid_metadata:${detail}` : 'invalid_metadata');
-  if (detail) (error as Error & { detail?: string }).detail = detail;
-  throw error;
+export class ExpertParseError extends Error {
+  readonly detail: string;
+  constructor(detail = 'expert') { super(`invalid_metadata:${detail}`); this.detail = detail; }
 }
+function invalid(detail?: string): never { throw new ExpertParseError(detail); }
 function object(value: unknown, keys?: string[], optional: string[] = [], path = 'object'): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid(path);
   const result = Object.fromEntries(Object.entries(value));
