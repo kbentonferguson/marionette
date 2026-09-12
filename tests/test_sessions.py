@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from harness.api.sessions import SessionServices, post_session_fork
+from harness.api.sessions import SessionServices, post_session_fork, post_sessions_rename
 from harness.sessions import (
     SessionStore,
     load_transcript,
@@ -111,6 +111,29 @@ def _session_svc(store: SessionStore, state_dir: str) -> SessionServices:
         parse_bool=lambda v: bool(v),
         set_codegraph_status=lambda *_a, **_k: None,
     )
+
+
+def test_post_sessions_rename_missing_is_404(tmp_path):
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    svc = _session_svc(store, str(tmp_path))
+    code, payload = post_sessions_rename(
+        {"session": "missing", "title": "New name"}, svc
+    )
+    assert code == 404
+    assert payload.get("ok") is not True
+
+
+def test_post_sessions_rename_activity_headline_is_400(tmp_path):
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = store.create(title="Keep me", repo=str(tmp_path), workspace_root=str(tmp_path))
+    svc = _session_svc(store, str(tmp_path))
+    code, payload = post_sessions_rename(
+        {"session": row["id"], "title": "Investigating"}, svc
+    )
+    assert code == 400
+    assert "invalid" in str(payload.get("error", "")).lower()
+    kept = next(s for s in store.rows() if s["id"] == row["id"])
+    assert kept["title"] == "Keep me"
 
 
 def test_post_session_fork_peel_404_and_400(tmp_path):

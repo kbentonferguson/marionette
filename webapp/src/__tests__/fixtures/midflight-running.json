@@ -18,57 +18,57 @@
       "rows": [
         {
           "check_result": "unavailable",
-          "id": "artifact_31edec2b2a15",
-          "presence": "recorded",
-          "revision": 15,
-          "sha256": "d385354af95a40e9131f704592f79c0fcde0aabbe435db519372a9d48383b69c",
-          "stamp": "known",
-          "status": "unknown",
-          "task_id": "task_2fa1153f008c",
-          "type": "routing"
-        },
-        {
-          "check_result": "unavailable",
-          "id": "artifact_4c1e09d47801",
-          "presence": "recorded",
-          "revision": 21,
-          "sha256": "601ebf4a6f03a19ecef9df29b493a45cf990ba638a80ed4601da1f212dd8d47a",
-          "stamp": "known",
-          "status": "unknown",
-          "task_id": "task_2a568f666725",
-          "type": "finding"
-        },
-        {
-          "check_result": "unavailable",
-          "id": "artifact_6265f46e383e",
-          "presence": "recorded",
-          "revision": 17,
-          "sha256": "026d985302b114659214fa33c033130f301daaa1da9b2c05b3913b2aebb01b0d",
-          "stamp": "known",
-          "status": "unknown",
-          "task_id": "task_becff782f9fb",
-          "type": "routing"
-        },
-        {
-          "check_result": "unavailable",
-          "id": "artifact_681e93b90e9a",
+          "id": "artifact_6ce087169f64",
           "presence": "recorded",
           "revision": 23,
-          "sha256": "12d209f4227725619f4ce2268ab03b6557c90fb0121cd6790c8c5eebaa41a338",
+          "sha256": "b4f141391dfaa37d73ded81c1a6ea324ef6b2c8a03dcf8bf25ad2c574aa84b71",
           "stamp": "known",
           "status": "unknown",
-          "task_id": "task_becff782f9fb",
+          "task_id": "task_4ea261081edb",
           "type": "finding"
         },
         {
           "check_result": "unavailable",
-          "id": "artifact_da25adc5aaa4",
+          "id": "artifact_87e21a48fefe",
           "presence": "recorded",
           "revision": 19,
-          "sha256": "4ba11dfa977839aabd8501651a84eae7878c052c61725fb6dddca0603f4acc92",
+          "sha256": "c31480a37c442ac9826bf1b8e456cc0b3fdbdedf6a6be199550feb71fc40355d",
           "stamp": "known",
           "status": "unknown",
-          "task_id": "task_2a568f666725",
+          "task_id": "task_4d696ea08606",
+          "type": "routing"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_93f5cf5cd66a",
+          "presence": "recorded",
+          "revision": 17,
+          "sha256": "6d5d10a470123154fcc2354c76a7b689b6d30f058aaca15ea0b6a835783b2091",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_4ea261081edb",
+          "type": "routing"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_c41c2c893f97",
+          "presence": "recorded",
+          "revision": 21,
+          "sha256": "55ea6d63a18d84070ea70abda024e376abb5c424b993ff564ee8b1077b21c513",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_4d696ea08606",
+          "type": "finding"
+        },
+        {
+          "check_result": "unavailable",
+          "id": "artifact_fc74b7c8fab3",
+          "presence": "recorded",
+          "revision": 15,
+          "sha256": "b5efd2a0e68785d435b1a878098a86927044d4df8ca147b48512e883a02824d8",
+          "stamp": "known",
+          "status": "unknown",
+          "task_id": "task_5171d5fd34a8",
           "type": "routing"
         }
       ]
@@ -83,9 +83,9 @@
     "cost": {
       "coverage": "unknown",
       "job_ref": {
-        "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-        "job_id": "job_197af2ae19e0",
-        "state_id": "state_dbb49fdaf92e99c9",
+        "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+        "job_id": "job_6d7fb101cf4d",
+        "state_id": "state_78cae64bdb4ebd87",
         "version": 2
       },
       "kind": "unavailable",
@@ -108,103 +108,103 @@
     "expert": {
       "artifacts": [
         {
-          "adapter": "agentic",
-          "check_result": "unavailable",
-          "confidence": 0.9,
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "created_by": "router",
-          "detail": null,
-          "est_cost_usd": 0.02,
-          "failure": null,
-          "headline": "",
-          "id": "artifact_31edec2b2a15",
-          "model": "deepseek-v4-flash",
-          "policy": "balanced",
-          "provider": null,
-          "rejected": [],
-          "result": null,
-          "role": "explore",
-          "task_id": "task_2fa1153f008c",
-          "type": "routing"
-        },
-        {
-          "adapter": null,
-          "check_result": "unavailable",
-          "confidence": 0.8,
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "created_by": "worker",
-          "detail": null,
-          "est_cost_usd": null,
-          "failure": null,
-          "headline": "tests passed",
-          "id": "artifact_4c1e09d47801",
-          "model": null,
-          "policy": null,
-          "provider": null,
-          "rejected": [],
-          "result": null,
-          "role": null,
-          "task_id": "task_2a568f666725",
-          "type": "finding"
-        },
-        {
-          "adapter": "agentic",
-          "check_result": "unavailable",
-          "confidence": 0.9,
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "created_by": "router",
-          "detail": null,
-          "est_cost_usd": 0.02,
-          "failure": null,
-          "headline": "",
-          "id": "artifact_6265f46e383e",
-          "model": "deepseek-v4-flash",
-          "policy": "balanced",
-          "provider": null,
-          "rejected": [],
-          "result": null,
-          "role": "review",
-          "task_id": "task_becff782f9fb",
-          "type": "routing"
-        },
-        {
           "adapter": null,
           "check_result": "unavailable",
           "confidence": 0.4,
-          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_at": "2026-09-12T08:06:21+00:00",
           "created_by": "worker",
           "detail": null,
           "est_cost_usd": null,
           "failure": null,
           "headline": "still looking",
-          "id": "artifact_681e93b90e9a",
+          "id": "artifact_6ce087169f64",
           "model": null,
           "policy": null,
           "provider": null,
           "rejected": [],
           "result": null,
           "role": null,
-          "task_id": "task_becff782f9fb",
+          "task_id": "task_4ea261081edb",
           "type": "finding"
         },
         {
           "adapter": "agentic",
           "check_result": "unavailable",
           "confidence": 0.9,
-          "created_at": "2026-09-12T01:23:58+00:00",
+          "created_at": "2026-09-12T08:06:21+00:00",
           "created_by": "router",
           "detail": null,
           "est_cost_usd": 0.02,
           "failure": null,
           "headline": "",
-          "id": "artifact_da25adc5aaa4",
+          "id": "artifact_87e21a48fefe",
           "model": "deepseek-v4-flash",
           "policy": "balanced",
           "provider": null,
           "rejected": [],
           "result": null,
           "role": "test",
-          "task_id": "task_2a568f666725",
+          "task_id": "task_4d696ea08606",
+          "type": "routing"
+        },
+        {
+          "adapter": "agentic",
+          "check_result": "unavailable",
+          "confidence": 0.9,
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "created_by": "router",
+          "detail": null,
+          "est_cost_usd": 0.02,
+          "failure": null,
+          "headline": "",
+          "id": "artifact_93f5cf5cd66a",
+          "model": "deepseek-v4-flash",
+          "policy": "balanced",
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": "review",
+          "task_id": "task_4ea261081edb",
+          "type": "routing"
+        },
+        {
+          "adapter": null,
+          "check_result": "unavailable",
+          "confidence": 0.8,
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "created_by": "worker",
+          "detail": null,
+          "est_cost_usd": null,
+          "failure": null,
+          "headline": "tests passed",
+          "id": "artifact_c41c2c893f97",
+          "model": null,
+          "policy": null,
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": null,
+          "task_id": "task_4d696ea08606",
+          "type": "finding"
+        },
+        {
+          "adapter": "agentic",
+          "check_result": "unavailable",
+          "confidence": 0.9,
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "created_by": "router",
+          "detail": null,
+          "est_cost_usd": 0.02,
+          "failure": null,
+          "headline": "",
+          "id": "artifact_fc74b7c8fab3",
+          "model": "deepseek-v4-flash",
+          "policy": "balanced",
+          "provider": null,
+          "rejected": [],
+          "result": null,
+          "role": "explore",
+          "task_id": "task_5171d5fd34a8",
           "type": "routing"
         }
       ],
@@ -229,8 +229,8 @@
             "selected_usd": 0.05,
             "source": "selected_current_records"
           },
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "latest_task_updated_at": "2026-09-12T01:23:58+00:00",
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "latest_task_updated_at": "2026-09-12T08:06:21+00:00",
           "savings": {
             "basis": "estimated",
             "cache_usd": null,
@@ -252,7 +252,7 @@
           "workers_complete": true
         },
         "tasks": {
-          "task_091c41ecc0b1": {
+          "task_1ef76f65de1a": {
             "cost_provenance": "unknown",
             "est_cost_usd": null,
             "estimated": null,
@@ -263,49 +263,49 @@
             "tokens_in": null,
             "tokens_out": null
           },
-          "task_2a568f666725": {
+          "task_39eea24e2484": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": null,
+            "source_artifact_id": null,
+            "tokens": null,
+            "tokens_in": null,
+            "tokens_out": null
+          },
+          "task_4d696ea08606": {
             "cost_provenance": "provider",
             "est_cost_usd": 0.05,
             "estimated": false,
             "plan_billed": false,
             "route_forecast_usd": 0.02,
-            "source_artifact_id": "artifact_4c1e09d47801",
+            "source_artifact_id": "artifact_c41c2c893f97",
             "tokens": 1200,
             "tokens_in": 1000,
             "tokens_out": 200
           },
-          "task_2fa1153f008c": {
+          "task_4ea261081edb": {
             "cost_provenance": "unknown",
             "est_cost_usd": null,
             "estimated": null,
             "plan_billed": false,
             "route_forecast_usd": 0.02,
-            "source_artifact_id": null,
-            "tokens": null,
-            "tokens_in": null,
-            "tokens_out": null
-          },
-          "task_51c67ffe5a87": {
-            "cost_provenance": "unknown",
-            "est_cost_usd": null,
-            "estimated": null,
-            "plan_billed": false,
-            "route_forecast_usd": null,
-            "source_artifact_id": null,
-            "tokens": null,
-            "tokens_in": null,
-            "tokens_out": null
-          },
-          "task_becff782f9fb": {
-            "cost_provenance": "unknown",
-            "est_cost_usd": null,
-            "estimated": null,
-            "plan_billed": false,
-            "route_forecast_usd": 0.02,
-            "source_artifact_id": "artifact_681e93b90e9a",
+            "source_artifact_id": "artifact_6ce087169f64",
             "tokens": 510,
             "tokens_in": 500,
             "tokens_out": 10
+          },
+          "task_5171d5fd34a8": {
+            "cost_provenance": "unknown",
+            "est_cost_usd": null,
+            "estimated": null,
+            "plan_billed": false,
+            "route_forecast_usd": 0.02,
+            "source_artifact_id": null,
+            "tokens": null,
+            "tokens_in": null,
+            "tokens_out": null
           }
         }
       },
@@ -318,7 +318,7 @@
           "selected_usd": null,
           "source": "unavailable"
         },
-        "created_at": "2026-09-12T01:23:58+00:00"
+        "created_at": "2026-09-12T08:06:21+00:00"
       },
       "kind": "available",
       "quality": "unverified",
@@ -327,7 +327,7 @@
         {
           "adapter": "agentic",
           "created_at": null,
-          "id": "task_091c41ecc0b1",
+          "id": "task_1ef76f65de1a",
           "instruction": "instruction for security",
           "instruction_truncated": false,
           "model": null,
@@ -343,42 +343,8 @@
         },
         {
           "adapter": "agentic",
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "id": "task_2a568f666725",
-          "instruction": "instruction for test",
-          "instruction_truncated": false,
-          "model": "deepseek-v4-flash",
-          "role": "test",
-          "updated_at": "2026-09-12T01:23:58+00:00",
-          "usage": {
-            "cost_provenance": "provider",
-            "est_cost_usd": 0.05,
-            "estimated": false,
-            "tokens_in": null,
-            "tokens_out": null
-          }
-        },
-        {
-          "adapter": "agentic",
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "id": "task_2fa1153f008c",
-          "instruction": "instruction for explore",
-          "instruction_truncated": false,
-          "model": "deepseek-v4-flash",
-          "role": "explore",
-          "updated_at": "2026-09-12T01:23:58+00:00",
-          "usage": {
-            "cost_provenance": null,
-            "est_cost_usd": null,
-            "estimated": null,
-            "tokens_in": null,
-            "tokens_out": null
-          }
-        },
-        {
-          "adapter": "agentic",
           "created_at": null,
-          "id": "task_51c67ffe5a87",
+          "id": "task_39eea24e2484",
           "instruction": "not started yet",
           "instruction_truncated": false,
           "model": null,
@@ -394,13 +360,47 @@
         },
         {
           "adapter": "agentic",
-          "created_at": "2026-09-12T01:23:58+00:00",
-          "id": "task_becff782f9fb",
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "id": "task_4d696ea08606",
+          "instruction": "instruction for test",
+          "instruction_truncated": false,
+          "model": "deepseek-v4-flash",
+          "role": "test",
+          "updated_at": "2026-09-12T08:06:21+00:00",
+          "usage": {
+            "cost_provenance": "provider",
+            "est_cost_usd": 0.05,
+            "estimated": false,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "id": "task_4ea261081edb",
           "instruction": "instruction for review",
           "instruction_truncated": false,
           "model": "deepseek-v4-flash",
           "role": "review",
-          "updated_at": "2026-09-12T01:23:58+00:00",
+          "updated_at": "2026-09-12T08:06:21+00:00",
+          "usage": {
+            "cost_provenance": null,
+            "est_cost_usd": null,
+            "estimated": null,
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        },
+        {
+          "adapter": "agentic",
+          "created_at": "2026-09-12T08:06:21+00:00",
+          "id": "task_5171d5fd34a8",
+          "instruction": "instruction for explore",
+          "instruction_truncated": false,
+          "model": "deepseek-v4-flash",
+          "role": "explore",
+          "updated_at": "2026-09-12T08:06:21+00:00",
           "usage": {
             "cost_provenance": null,
             "est_cost_usd": null,
@@ -425,18 +425,18 @@
           {
             "facts": {
               "adapter": "agentic",
-              "attempt_id": "run_19f1f177e884",
-              "job_id": "job_197af2ae19e0",
+              "attempt_id": "run_06405a52f1f6",
+              "job_id": "job_6d7fb101cf4d",
               "model": "deepseek-v4-flash",
               "provider": "deepseek",
-              "run_id": "run_19f1f177e884",
-              "started_at": "2026-09-12T01:23:58+00:00",
-              "task_id": "task_becff782f9fb"
+              "run_id": "run_06405a52f1f6",
+              "started_at": "2026-09-12T08:06:21+00:00",
+              "task_id": "task_4ea261081edb"
             },
             "job_ref": {
-              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-              "job_id": "job_197af2ae19e0",
-              "state_id": "state_dbb49fdaf92e99c9",
+              "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+              "job_id": "job_6d7fb101cf4d",
+              "state_id": "state_78cae64bdb4ebd87",
               "version": 2
             },
             "kind": "attempt",
@@ -467,29 +467,29 @@
         "rows": [
           {
             "facts": {
-              "attempt_id": "run_19f1f177e884",
+              "attempt_id": "run_06405a52f1f6",
               "cache_read_tokens": null,
               "cache_write_tokens": null,
               "cost_basis": "api",
               "cost_state": "measured",
               "cost_usd": 0.01,
               "identity_state": "available",
-              "job_id": "job_197af2ae19e0",
+              "job_id": "job_6d7fb101cf4d",
               "observation_id": "obs-1",
-              "observed_at": "2026-09-12T01:23:58+00:00",
+              "observed_at": "2026-09-12T08:06:21+00:00",
               "returncode": null,
-              "run_id": "run_19f1f177e884",
+              "run_id": "run_06405a52f1f6",
               "source": "sdk",
-              "task_id": "task_becff782f9fb",
+              "task_id": "task_4ea261081edb",
               "timed_out": null,
               "tokens_in": 10,
               "tokens_out": 1,
               "usage_state": "measured"
             },
             "job_ref": {
-              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-              "job_id": "job_197af2ae19e0",
-              "state_id": "state_dbb49fdaf92e99c9",
+              "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+              "job_id": "job_6d7fb101cf4d",
+              "state_id": "state_78cae64bdb4ebd87",
               "version": 2
             },
             "kind": "observation",
@@ -522,28 +522,28 @@
             "completion": {
               "intent_digest": null,
               "job_ref": {
-                "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-                "job_id": "job_197af2ae19e0",
-                "state_id": "state_dbb49fdaf92e99c9",
+                "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+                "job_id": "job_6d7fb101cf4d",
+                "state_id": "state_78cae64bdb4ebd87",
                 "version": 2
               },
               "outcome": "legacy_unknown",
-              "run_id": "run_19f1f177e884"
+              "run_id": "run_06405a52f1f6"
             },
             "facts": {
               "completed_at": null,
-              "id": "run_19f1f177e884",
-              "job_id": "job_197af2ae19e0",
+              "id": "run_06405a52f1f6",
+              "job_id": "job_6d7fb101cf4d",
               "role": "review",
-              "started_at": "2026-09-12T01:23:58+00:00",
+              "started_at": "2026-09-12T08:06:21+00:00",
               "status": "running",
-              "task_id": "task_becff782f9fb",
+              "task_id": "task_4ea261081edb",
               "worker_id": "worker-1"
             },
             "job_ref": {
-              "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-              "job_id": "job_197af2ae19e0",
-              "state_id": "state_dbb49fdaf92e99c9",
+              "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+              "job_id": "job_6d7fb101cf4d",
+              "state_id": "state_78cae64bdb4ebd87",
               "version": 2
             },
             "kind": "run",
@@ -558,9 +558,9 @@
     ],
     "selection": {
       "job_ref": {
-        "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-        "job_id": "job_197af2ae19e0",
-        "state_id": "state_dbb49fdaf92e99c9",
+        "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+        "job_id": "job_6d7fb101cf4d",
+        "state_id": "state_78cae64bdb4ebd87",
         "version": 2
       },
       "repo": "/repo",
@@ -582,9 +582,9 @@
             "generation": 0,
             "lease_id": null,
             "owner": null,
-            "task_id": "task_091c41ecc0b1"
+            "task_id": "task_1ef76f65de1a"
           },
-          "id": "task_091c41ecc0b1",
+          "id": "task_1ef76f65de1a",
           "revision": 9,
           "stamp": "known",
           "status": "queued"
@@ -594,33 +594,9 @@
             "generation": 0,
             "lease_id": null,
             "owner": null,
-            "task_id": "task_2a568f666725"
+            "task_id": "task_39eea24e2484"
           },
-          "id": "task_2a568f666725",
-          "revision": 7,
-          "stamp": "known",
-          "status": "complete"
-        },
-        {
-          "binding": {
-            "generation": 1,
-            "lease_id": "lease_d9fc21d4672d",
-            "owner": "worker-1",
-            "task_id": "task_2fa1153f008c"
-          },
-          "id": "task_2fa1153f008c",
-          "revision": 11,
-          "stamp": "known",
-          "status": "running"
-        },
-        {
-          "binding": {
-            "generation": 0,
-            "lease_id": null,
-            "owner": null,
-            "task_id": "task_51c67ffe5a87"
-          },
-          "id": "task_51c67ffe5a87",
+          "id": "task_39eea24e2484",
           "revision": 13,
           "stamp": "known",
           "status": "queued"
@@ -630,10 +606,34 @@
             "generation": 0,
             "lease_id": null,
             "owner": null,
-            "task_id": "task_becff782f9fb"
+            "task_id": "task_4d696ea08606"
           },
-          "id": "task_becff782f9fb",
+          "id": "task_4d696ea08606",
+          "revision": 7,
+          "stamp": "known",
+          "status": "complete"
+        },
+        {
+          "binding": {
+            "generation": 0,
+            "lease_id": null,
+            "owner": null,
+            "task_id": "task_4ea261081edb"
+          },
+          "id": "task_4ea261081edb",
           "revision": 5,
+          "stamp": "known",
+          "status": "running"
+        },
+        {
+          "binding": {
+            "generation": 1,
+            "lease_id": "lease_668882ec7f59",
+            "owner": "worker-1",
+            "task_id": "task_5171d5fd34a8"
+          },
+          "id": "task_5171d5fd34a8",
+          "revision": 11,
           "stamp": "known",
           "status": "running"
         }
@@ -717,9 +717,9 @@
         "revision": 27,
         "selection": {
           "job_ref": {
-            "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-            "job_id": "job_197af2ae19e0",
-            "state_id": "state_dbb49fdaf92e99c9",
+            "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+            "job_id": "job_6d7fb101cf4d",
+            "state_id": "state_78cae64bdb4ebd87",
             "version": 2
           },
           "repo": "/repo",
@@ -732,7 +732,7 @@
     ],
     "store": {
       "source": "harness",
-      "state_id": "state_dbb49fdaf92e99c9"
+      "state_id": "state_78cae64bdb4ebd87"
     },
     "version": 1
   },
@@ -774,8 +774,8 @@
                 "selected_usd": 0.05,
                 "source": "selected_current_records"
               },
-              "created_at": "2026-09-12T01:23:58+00:00",
-              "latest_task_updated_at": "2026-09-12T01:23:58+00:00",
+              "created_at": "2026-09-12T08:06:21+00:00",
+              "latest_task_updated_at": "2026-09-12T08:06:21+00:00",
               "model": null,
               "model_provenance": "unknown",
               "quality": "unverified",
@@ -808,9 +808,9 @@
             "revision": 27,
             "selection": {
               "job_ref": {
-                "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-                "job_id": "job_197af2ae19e0",
-                "state_id": "state_dbb49fdaf92e99c9",
+                "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+                "job_id": "job_6d7fb101cf4d",
+                "state_id": "state_78cae64bdb4ebd87",
                 "version": 2
               },
               "repo": "/repo",
@@ -823,9 +823,9 @@
         },
         "selection": {
           "job_ref": {
-            "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-            "job_id": "job_197af2ae19e0",
-            "state_id": "state_dbb49fdaf92e99c9",
+            "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+            "job_id": "job_6d7fb101cf4d",
+            "state_id": "state_78cae64bdb4ebd87",
             "version": 2
           },
           "repo": "/repo",
@@ -838,9 +838,9 @@
   },
   "selection": {
     "job_ref": {
-      "incarnation": "5440ef08-3364-45e0-8349-2c2106286a0f",
-      "job_id": "job_197af2ae19e0",
-      "state_id": "state_dbb49fdaf92e99c9",
+      "incarnation": "89ce1966-b647-4ecb-8410-8daccd874a4b",
+      "job_id": "job_6d7fb101cf4d",
+      "state_id": "state_78cae64bdb4ebd87",
       "version": 2
     },
     "repo": "/repo",

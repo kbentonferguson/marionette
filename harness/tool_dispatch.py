@@ -89,6 +89,32 @@ def _slice_header(start_line: int, end_line: int, total_lines: int) -> str:
     return header + "]\n"
 
 
+def _restore_text_file(target_path: str, original: Optional[str], existed: bool) -> None:
+    """Put ``target_path`` back after a failed post-write verify."""
+    try:
+        if not existed:
+            if os.path.lexists(target_path):
+                os.remove(target_path)
+            return
+        if original is None:
+            return
+        target_dir = os.path.dirname(target_path) or "."
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-restore-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(original)
+            os.replace(temp_path, target_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+    except OSError:
+        pass
+
+
 def _result_limit(raw: Any, default: int = 50) -> int:
     try:
         return int(raw) if raw is not None else default
@@ -204,15 +230,18 @@ def _recoverable_command_output(session: Any, output: str) -> tuple[str, dict]:
         "output_chars": meta.get("output_chars", len(text)),
         "output_spilled": bool(spill_uri or meta.get("spill_path")),
     }
-    capped = text[:_FOREGROUND_OUTPUT_CAP]
+    head = text[:4096]
+    tail = text[-4096:]
     if spill_uri:
         recovery["spill_uri"] = spill_uri
-        capped += (
-            f"\n\n... (output truncated to 50KB; full {len(text):,} chars saved "
-            f"to {spill_uri} — read_file works on that URI) ..."
+        capped = (
+            f"{head}\n\n... (middle omitted; full {len(text):,} chars saved "
+            f"to {spill_uri} — read_file works on that URI) ...\n\n{tail}"
         )
     else:
-        capped += "\n\n... (output truncated to 50KB) ..."
+        capped = (
+            f"{head}\n\n... (output truncated to head+tail of {len(text):,} chars) ...\n\n{tail}"
+        )
     return capped, recovery
 
 
@@ -430,11 +459,20 @@ class ToolDispatchMixin:
             for entry in os.scandir(target_path):
                 if entry.name in skip_names:
                     continue
-                is_dir = entry.is_dir()
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    is_dir = False
+                size = 0
+                if not is_dir:
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        size = 0
                 entries.append({
                     "name": entry.name,
                     "is_dir": is_dir,
-                    "size": entry.stat().st_size if not is_dir else 0
+                    "size": size,
                 })
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
             text_list = []
@@ -1214,7 +1252,13 @@ class ToolDispatchMixin:
             lines.append(f"[{offset + i}] {role}: {text}")
         body = "\n".join(lines)
         if len(body) > max_chars:
-            body = truncate_bytes(body, max_chars) + "\n... [truncated to 8KiB]"
+            head = max(256, max_chars // 2)
+            tail = max(256, max_chars - head - 48)
+            body = (
+                truncate_bytes(body, head)
+                + "\n... [middle omitted; peek_history head+tail] ...\n"
+                + body[-tail:]
+            )
         return True, "success", body
 
     def _peek_live_local_artifact(self, uri: str) -> str | None:
@@ -1306,12 +1350,142 @@ class ToolDispatchMixin:
         truncated = False
         encoded_len = len(content.encode("utf-8"))
         if encoded_len > max_bytes:
-            content = truncate_bytes(content, max_bytes)
+            head = max(256, max_bytes // 2)
+            tail = max(256, max_bytes - head - 32)
+            content = (
+                truncate_bytes(content, head)
+                + "\n... [middle omitted; peek_artifact head+tail] ...\n"
+                + content[-tail:]
+            )
             truncated = True
         header = f"uri={uri} bytes={encoded_len} max_bytes={max_bytes}"
         if truncated:
             header += " truncated=true"
         return True, "success", f"{header}\n{content}"
+
+    def _iter_job_artifact_dicts(self, job_id: str):
+        live = getattr(self, "_local_jobs", None) or {}
+        job = live.get(job_id)
+        if isinstance(job, dict):
+            artifacts = job.get("artifacts") or []
+            if isinstance(artifacts, list):
+                for artifact in artifacts:
+                    if isinstance(artifact, dict):
+                        yield artifact
+                return
+        try:
+            ctx = self._internal_uri_context()
+            store = ctx.store()
+            if store is None:
+                return
+            listed = store.list_artifacts(job_id)
+        except Exception:
+            return
+        for art in listed or []:
+            if isinstance(art, dict):
+                yield art
+            else:
+                row = {
+                    "id": getattr(art, "id", "") or "",
+                    "type": getattr(art, "type", "") or "",
+                    "headline": getattr(art, "headline", "") or "",
+                    "body": getattr(art, "body", "") or getattr(art, "content", "") or "",
+                }
+                yield row
+
+    def _do_job_findings(self, act: PilotAction) -> tuple[bool, str, str]:
+        from .context_budget import truncate_bytes
+
+        args = act.arguments if isinstance(act.arguments, dict) else {}
+        job_id = str(args.get("job_id") or act.path or act.goal or "").strip()
+        if not job_id:
+            return False, "invalid_arguments", "job_findings requires job_id"
+        try:
+            max_bytes = int(args.get("max_bytes") if args.get("max_bytes") is not None else 32768)
+        except (TypeError, ValueError):
+            max_bytes = 32768
+        max_bytes = max(1024, min(64 * 1024, max_bytes))
+        wanted = {"finding", "risk", "decision", "bug"}
+        blocks: list[str] = []
+        counted = 0
+        for artifact in self._iter_job_artifact_dicts(job_id):
+            kind = str(artifact.get("type") or "").strip().lower()
+            if kind not in wanted:
+                continue
+            counted += 1
+            aid = str(artifact.get("id") or "").strip() or f"{job_id}:{counted}"
+            headline = str(artifact.get("headline") or artifact.get("title") or "")
+            body = str(artifact.get("body") or artifact.get("content") or artifact.get("text") or "")
+            blocks.append(f"## {kind.upper()} {aid}\n{headline}\n{body}".rstrip())
+        live = getattr(self, "_local_jobs", None) or {}
+        job = live.get(job_id) if isinstance(live, dict) else None
+        status = ""
+        if isinstance(job, dict):
+            status = str(job.get("status") or "")
+        if not blocks:
+            reason = (
+                f"empty findings: job_id={job_id} status={status or 'unknown'} "
+                f"matching_types=0 (no FINDING/RISK/DECISION/BUG artifacts)"
+            )
+            return True, "success", reason
+        body = f"job_id={job_id} findings={counted} status={status or 'unknown'}\n\n"
+        body += "\n\n".join(blocks)
+        encoded_len = len(body.encode("utf-8"))
+        if encoded_len > max_bytes:
+            head = max(512, max_bytes // 2)
+            tail = max(512, max_bytes - head - 48)
+            body = (
+                truncate_bytes(body, head)
+                + "\n... [middle omitted; job_findings head+tail] ...\n"
+                + body[-tail:]
+            )
+        return True, "success", body
+
+    def _do_cancel_job(self, act: PilotAction) -> tuple[bool, str, str]:
+        args = act.arguments if isinstance(act.arguments, dict) else {}
+        job_id = str(args.get("job_id") or act.path or act.goal or "").strip()
+        if not job_id:
+            return False, "invalid_arguments", "cancel_job requires job_id"
+        notes: list[str] = []
+        local_ok = False
+        cancel_local = getattr(self, "cancel_local_job", None)
+        if callable(cancel_local) and (
+            job_id.startswith("local-") or job_id in (getattr(self, "_local_jobs", None) or {})
+        ):
+            try:
+                local_ok = bool(cancel_local(job_id))
+            except Exception as exc:
+                notes.append(f"local_error={exc}")
+            else:
+                notes.append("local_event=1" if local_ok else "local_event=0")
+        store = None
+        try:
+            store = self.state().store
+        except Exception:
+            store = None
+        repo = str(getattr(getattr(self, "config", None), "repo", "") or "")
+        durable = None
+        try:
+            from .job_cancel import cancel_job_dual_store
+
+            durable = cancel_job_dual_store(
+                job_id,
+                harness_store=store,
+                repo_root=repo,
+            )
+        except Exception as exc:
+            notes.append(f"durable_error={exc}")
+        if durable:
+            notes.append(
+                f"durable=1 marked={int(bool(durable.get('marked')))}"
+            )
+        elif durable is None and not job_id.startswith("local-"):
+            notes.append("durable=unknown")
+        if local_ok or (durable and durable.get("ok")):
+            return True, "success", f"cancelled {job_id} ({'; '.join(notes) or 'ok'})"
+        if job_id.startswith("local-") and not local_ok:
+            return False, "not_found", f"cancel_job: local job {job_id} not cancellable"
+        return False, "not_found", f"cancel_job: {job_id} not found ({'; '.join(notes) or 'no store hit'})"
 
     def _do_search_tools(self, act: PilotAction) -> tuple[bool, str, str]:
         from .tool_discovery import ToolCatalog
@@ -1447,6 +1621,14 @@ class ToolDispatchMixin:
         refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
         if refused is not None:
             return refused
+        existed = os.path.lexists(target_path)
+        original: Optional[str] = None
+        if existed and os.path.isfile(target_path):
+            try:
+                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    original = f.read()
+            except OSError:
+                original = None
         try:
             target_dir = os.path.dirname(target_path)
             os.makedirs(target_dir, exist_ok=True)
@@ -1463,6 +1645,7 @@ class ToolDispatchMixin:
 
             mismatch = verify_written_text(target_path, act.content)
             if mismatch:
+                _restore_text_file(target_path, original, existed)
                 return False, "verification_failed", mismatch
             bytes_written = len(act.content.encode("utf-8"))
             return True, "success", bytes_written
@@ -1559,6 +1742,7 @@ class ToolDispatchMixin:
                 raise
             mismatch = verify_written_text(target_path, new_content)
             if mismatch:
+                _restore_text_file(target_path, original_content, True)
                 return False, "verification_failed", mismatch
             return True, "success", headline
         except Exception as e:

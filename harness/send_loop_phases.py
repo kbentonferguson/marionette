@@ -76,7 +76,7 @@ _JOB_ID_RE = re.compile(r"\b(job_[a-fA-F0-9]{12})\b")
 READ_ONLY_KINDS: frozenset[str] = frozenset({
     "read_file", "list_dir", "search_codegraph", "search_files",
     "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
-    "peek_history", "peek_artifact",
+    "peek_history", "peek_artifact", "job_findings",
 })
 
 # Honest composer wait-hint when the provider stream goes quiet mid-turn.
@@ -112,6 +112,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "browser_get_text", "browser_screenshot", "browser_auth_handoff",
     "query_wiki", "call_mcp", "manage_mcp",
     "request_secret",
+    "cancel_job",
 })
 
 # Mutating / side-effecting kinds blocked in plan mode (same gate as write/edit
@@ -123,7 +124,7 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "run_implement", "run_parallel",
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch", "run_ipython",
-    "call_mcp", "manage_mcp", "memory",
+    "call_mcp", "manage_mcp", "memory", "cancel_job",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot", "browser_auth_handoff",
@@ -1141,6 +1142,8 @@ def run_prefetch(
             return idx, session._do_peek_history(act)
         elif kind == "peek_artifact":
             return idx, session._do_peek_artifact(act)
+        elif kind == "job_findings":
+            return idx, session._do_job_findings(act)
     except Exception as exc:
         return idx, (False, "exception", str(exc))
     return idx, (False, "exception", f"Unknown prefetch kind {kind}")
@@ -1293,6 +1296,9 @@ def action_display_goal(act: PilotAction) -> Any:
                 else ""
             )
         )
+    elif act.kind in ("job_findings", "cancel_job"):
+        _p = act.arguments or {}
+        act_goal = str(_p.get("job_id") or act.path or act.goal or "").strip()
     elif act.kind == "search_tools":
         act_goal = act.query or ",".join(act.arguments.get("activate") or [])
     elif act.kind == "query_wiki":
@@ -2862,6 +2868,23 @@ def dispatch_readonly_action(
             session._append_action_result(act, aid, f"(peek_artifact failed: {val})", is_native)
         return
 
+    if act.kind == "job_findings":
+        if idx in prefetch:
+            ok, status, val = prefetch[idx]
+        else:
+            ok, status, val = session._do_job_findings(act)
+        if ok:
+            jid = (act.arguments or {}).get("job_id") or act.path or "job"
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["job_findings"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "job_findings", "headline": f"job_findings {jid}"}],
+            })
+            session._append_action_result(act, aid, f"(job_findings returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(job_findings failed: {val})", is_native)
+        return
+
     # Unknown READ_ONLY_KINDS member — surface so a catalog drift cannot hang.
     err = f"Unhandled read-only action kind: {act.kind}"
     yield ConvEvent("action_result", {"id": aid, "error": err})
@@ -4132,6 +4155,22 @@ def dispatch_local_action(
         session._append_action_result(
             act, aid, f"(manage_mcp {headline} returned)\n{text}", is_native,
         )
+        return
+
+    if act.kind == "cancel_job":
+        try:
+            ok, status, val = session._do_cancel_job(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["cancel_job"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "cancel_job", "headline": act_goal or "cancel_job"}],
+            })
+            session._append_action_result(act, aid, f"(cancel_job returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(cancel_job failed: {val})", is_native)
         return
 
     err = f"Unhandled local action kind: {act.kind}"

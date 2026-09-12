@@ -82,6 +82,8 @@ ActionKind = Literal[
     "clear_kernel",
     "peek_history",
     "peek_artifact",
+    "job_findings",
+    "cancel_job",
     "open_project",
     "relocate_session",
     "session_bank",
@@ -343,6 +345,13 @@ class PilotAction:
                     "peek_artifact requires artifact:// uri (or path) "
                     "or both job_id and artifact_id"
                 )
+        if self.kind in ("cancel_job", "job_findings"):
+            args = self.arguments if isinstance(self.arguments, dict) else {}
+            job_id = str(
+                args.get("job_id") or self.path or self.goal or ""
+            ).strip()
+            if not job_id:
+                raise PilotError(f"{self.kind} requires job_id")
         if self.kind == "wait":
             raw_seconds = None
             if isinstance(self.arguments, dict):
@@ -608,6 +617,19 @@ def from_wire(
             or raw.get("url")
             or ""
         )
+    if kind in ("cancel_job", "job_findings"):
+        job_id = (
+            raw.get("job_id")
+            or arguments.get("job_id")
+            or path
+            or raw.get("goal")
+            or ""
+        )
+        job_id = str(job_id).strip()
+        if job_id:
+            arguments["job_id"] = job_id
+            if not str(path).strip():
+                path = job_id
     if kind == "read_archived_chat" and not str(path).strip():
         path = raw.get("chat_id") or arguments.get("chat_id") or ""
 
@@ -800,6 +822,18 @@ def from_wire(
             acceptance_criteria = normalize_acceptance_criteria(raw_criteria)
         except Exception:
             acceptance_criteria = []
+        try:
+            from harness.environment_fingerprint import normalize_prior_findings
+            raw_prior = (
+                raw.get("prior_findings")
+                if "prior_findings" in raw
+                else arguments.get("prior_findings")
+            )
+            prior = normalize_prior_findings(raw_prior)
+            if prior:
+                arguments["prior_findings"] = prior
+        except Exception:
+            pass
 
     resolved_tool = tool or raw.get("tool") or ""
     resolved_tc_id = tool_call_id or raw.get("tool_call_id") or ""
@@ -1476,6 +1510,15 @@ def build_tools_schema(
                                 "workers get no checklist."
                             ),
                         },
+                        "prior_findings": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional settled findings from a prior round. "
+                                "Workers must not re-litigate these unless this "
+                                "dispatch re-observes them on disk."
+                            ),
+                        },
                         "repo": {
                             "type": "string",
                             "description": (
@@ -1993,6 +2036,52 @@ def build_tools_schema(
                     },
                 },
                 "required": [],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "job_findings",
+            "description": (
+                "Read FINDING/RISK/DECISION artifacts for a known job_id in "
+                "one shot (head+tail, default 32 KiB). Prefer this over "
+                "repeated peek_artifact calls when a swarm returned many findings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "Durable or local job id",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Total byte cap (default 32768, clamped)",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    })
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "cancel_job",
+            "description": (
+                "Cooperatively cancel an in-flight local or durable job by "
+                "job_id. Sets the per-job cancel event and marks the store. "
+                "Does not force-kill threads."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "local-* or job_* id from a prior dispatch",
+                    },
+                },
+                "required": ["job_id"],
             },
         },
     })
@@ -2823,6 +2912,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_command_batch`: run 1-6 independent shell commands as one batch. Requires `commands`.
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
+- `cancel_job`: cooperatively cancel an in-flight local or durable worker by `job_id`.
+- `job_findings`: read FINDING/RISK/DECISION artifacts for a known `job_id` in one bounded head+tail dump.
 - `todo`: nested phased checklist for multi-step work. `init` a `{list:[{phase, items}]}` tree, then `start` / `done` / `append` / `block` / `view`. Address tasks by their full content text. One in_progress task at a time; the result names Next. Do not restate the whole plan in prose.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; use an exact enabled provider:model pair or canonical registry ID. An unavailable explicit pin fails; it never authorizes choosing a different model. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
@@ -2847,7 +2938,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `store_scratch` / `load_scratch` / `list_scratch` / `clear_scratch`: session-local scratch bindings (survive compaction). Scratch is NOT durable cross-session memory — use `memory` for lasting user preferences/facts.
 - `bind_kernel` / `show_kernel` / `list_kernel` / `clear_kernel`: L2 persistent REPL bindings (large eval/log output stays in the session Python kernel until `show_kernel` serializes it). Prefer `run_ipython` for stateful probes; bind spill:// handles when tool output was offloaded.
 - `peek_history`: bounded slice of the durable transcript (after compact) with compaction_generation.
-- `peek_artifact`: inspect a known artifact:// handle (or job_id+artifact_id). Do not use it to discover which evidence exists; the delivery receipt already lists the set.
+- `peek_artifact`: inspect a known artifact:// handle (or job_id+artifact_id). Do not use it to discover which evidence exists; the delivery receipt already lists the set. Truncated peeks return head+tail.
+- `job_findings`: bulk-read FINDING/RISK/DECISION bodies for a known job_id (head+tail). Use after a swarm receipt lists many findings.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 - `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
 

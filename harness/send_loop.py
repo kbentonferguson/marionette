@@ -1219,7 +1219,8 @@ class SendLoopMixin:
             and not _skip_cg
         ):
             with timed_phase(timing, "auto_codegraph"):
-                cg_context = self._get_codegraph_context(user_message)
+                from .codegraph_inject import working_query
+                cg_context = self._get_codegraph_context(working_query(self, user_message))
                 if cg_context:
                     self._history.append({"role": "user", "content": cg_context})
         return user_message
@@ -1343,41 +1344,24 @@ class SendLoopMixin:
                     # Recomputing it on every step of a multi-step turn (identical
                     # query) just stacks dead time in front of the model. Compute it
                     # once on the first step, reuse it for the rest of this turn.
-                    if self._cg_cache_key == user_message:
+                    from .codegraph_inject import working_query, wrap_slice
+                    _cg_query = working_query(self, user_message)
+                    if self._cg_cache_key == _cg_query:
                         cg_section = self._cg_cache_section
                         cg_symbol_count = self._cg_cache_symbols
                     else:
                         try:
-                            from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
-                            cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
+                            from puppetmaster.codegraph import codegraph_context
+                            cg_slice = codegraph_context(task=_cg_query, cwd=self.config.repo)
                             if cg_slice:
-                                # Count located symbols (entry points + related symbols) so the
-                                # UI can show that CodeGraph was consulted this turn.
-                                cg_symbol_count = cg_slice.count("- **") + cg_slice.count("#### ")
-                                # Prepend an AUTHORITATIVE directive so the model leans on the
-                                # already-injected CodeGraph slice instead of redundantly raw-reading
-                                # whole files (qwen tends to dump files even with context present).
-                                authoritative = (
-                                    "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
-                                    "symbols, definitions, and code are provided in the section below. "
-                                    "USE THIS as your primary source. Do NOT re-read entire files that "
-                                    "already appear here -- only read_file specific additional lines you "
-                                    "still need (with start_line + limit), or call search_codegraph to "
-                                    "widen the graph. Whole-file dumps when the answer is already below "
-                                    "are wasteful and wrong.\n"
-                                )
-                                cg_section = authoritative + codegraph_prompt_section(cg_slice)
-                            # Cache the result (even an empty slice) so we never re-run
-                            # the subprocess for the same message this turn.
-                            self._cg_cache_key = user_message
+                                cg_section, cg_symbol_count = wrap_slice(cg_slice)
+                            self._cg_cache_key = _cg_query
                             self._cg_cache_section = cg_section
                             self._cg_cache_symbols = cg_symbol_count
-                            # Visibility: tell the UI CodeGraph was consulted -- only on
-                            # the first compute, so the chip shows once per turn.
                             if cg_section and not _no_deleg:
                                 cg_event = {
                                     "symbols": cg_symbol_count,
-                                    "query": (user_message or "")[:120],
+                                    "query": (_cg_query or "")[:120],
                                 }
                         except Exception:
                             pass

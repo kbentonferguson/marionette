@@ -77,6 +77,8 @@ _PILOT_EXTRAS: Set[str] = {
     "clear_kernel",
     "peek_history",
     "peek_artifact",
+    "job_findings",
+    "cancel_job",
     "manage_mcp",
     "open_project",
     "relocate_session",

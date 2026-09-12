@@ -74,7 +74,7 @@ it.each(['partial', 'unavailable', 'cursor_expired'] as const)('refuses a %s vie
   const stop = screen.getByRole('button', { name: 'Stop selected workers' });
   expect(stop).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(stop);
   expect(api.requestCancellation).not.toHaveBeenCalled();
-  expect(screen.getByRole('status')).toHaveTextContent('maximum 200');
+  expect(screen.getByRole('status')).toHaveTextContent('missing worker bindings');
 });
 it.each(['stale_binding', 'already_terminal', 'conflict', 'requested', 'observed_stop'] as const)('renders %s separately', async outcome => {
   vi.mocked(api.requestCancellation).mockImplementation(async request => response(request, outcome, 'partial'));

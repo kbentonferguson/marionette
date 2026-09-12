@@ -69,7 +69,7 @@ export default function JobCancellationControl({ job, repo, sessionId, disabled 
   const message = attempt?.kind === 'receipt' ? cancellationMessage(attempt.receipt)
     : attempt?.kind === 'unknown' ? `Stop unconfirmed. ${attempt.message}`
     : attempt?.kind === 'pending' ? 'Awaiting cancellation acknowledgement; stop is unconfirmed.'
-    : unavailable ? job.job_ref && job.job_ref.version !== 2 ? 'Stop unavailable: legacy identity is read-only. Refresh job metadata to select the current incarnation.' : 'Stop unavailable: refresh a complete task view (maximum 200 workers).' : '';
+    : unavailable ? job.job_ref && job.job_ref.version !== 2 ? 'Stop unavailable: legacy identity is read-only. Refresh job metadata to select the current incarnation.' : 'Stop unavailable: missing worker bindings for this job. Refresh the task view.' : '';
   return (
     <span className="flex flex-col items-start gap-1 text-[10px]" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
       <span className="flex gap-2">

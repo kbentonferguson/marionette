@@ -26,6 +26,25 @@ except Exception as _e:  # pragma: no cover - engine should always be importable
     _engine = None
     _ENGINE_ERR = f"browser engine unavailable: {_e}"
 
+
+def _install_browser_url_gate() -> None:
+    """Swap in-process CDP URL checks to is_safe_browser_url (loopback ok)."""
+    if _engine is None:
+        return
+    try:
+        from .url_safety import is_safe_browser_url
+    except Exception:
+        return
+
+    def _url_ok(url: str):
+        ok, reason = is_safe_browser_url(url)
+        return bool(ok), ("" if ok else str(reason))
+
+    _engine._url_ok = _url_ok
+
+
+_install_browser_url_gate()
+
 # macOS bundle names, probed under both /Applications (system-wide) and
 # ~/Applications (per-user installs, which is where Chrome lands for anyone
 # without admin rights and where Beta/Dev/Canary channels usually live).

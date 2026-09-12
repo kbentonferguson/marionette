@@ -19,7 +19,7 @@ export type LocalSummary = { local_ref: LocalRef; revision: number; deleted: fal
   artifact_count: number | null; child_count: number | null; created_at: number | null; updated_at: number | null;
   receipts: { terminal: boolean; launch: boolean; recovery: boolean; child: boolean }; economics: LocalEconomics;
   canonical?: CanonicalPMRef;
-  display?: { label: string; model: string; adapter: string; truncated: boolean };
+  display?: { label: string; model: string; adapter: string; truncated: boolean; goal_preview?: string };
   usage?: { kind: 'unknown' } | { kind: 'reported'; tokens: number; source: 'local_job_tokens' };
   accounting?: { kind: 'declared' | 'excluded' | 'unresolved'; aggregation_authority: false } };
 export type LocalRow = LocalSummary | { local_ref: LocalRef; revision: number; deleted: true; session_id: string };
@@ -87,7 +87,14 @@ function operatorFacts(r: Record<string, unknown>, kind: LocalSummary['kind']): 
     const d = obj(r.display);
     const labels = { provider: 'Provider worker', run_command: 'Command', run_command_batch: 'Command batch', parallel_wave: 'Parallel wave' };
     if (d.label !== labels[kind]) return fail();
-    display = { label: labels[kind], model: str(d.model, 160), adapter: str(d.adapter, 40), truncated: bool(d.truncated) };
+    const goal_preview = d.goal_preview === undefined ? undefined : str(d.goal_preview, 160);
+    display = {
+      label: labels[kind],
+      model: str(d.model, 160),
+      adapter: str(d.adapter, 40),
+      truncated: bool(d.truncated),
+      ...(goal_preview ? { goal_preview } : {}),
+    };
   }
   if (r.usage !== undefined) {
     const u = obj(r.usage);

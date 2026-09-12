@@ -102,6 +102,29 @@ def test_format_folder_mention_skip_and_failure():
     assert "... failed to list: boom" in fail
 
 
+def test_workspace_files_folder_cap_is_flagged(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from harness.api.files import FileServices, get_workspace_files
+
+    monkeypatch.setenv("HARNESS_WORKSPACE_FOLDERS_CAP", "2")
+    (tmp_path / "aaa").mkdir()
+    (tmp_path / "bbb").mkdir()
+    (tmp_path / "ccc").mkdir()
+    (tmp_path / "aaa" / "f.txt").write_text("x", encoding="utf-8")
+    svc = FileServices(
+        cfg=SimpleNamespace(repo=str(tmp_path)),
+        sessions=None,
+        upload_dir=str(tmp_path),
+    )
+    code, data = get_workspace_files(svc)
+    assert code == 200
+    assert data["folders_truncated"] is True
+    assert data["folders_total"] == 3
+    assert data["folders_capped"] == 2
+    assert data["folders"] == ["aaa", "bbb"]
+
+
 def test_workspace_files_includes_folders():
     httpd, port, srv = _server()
     try:

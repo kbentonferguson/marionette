@@ -655,15 +655,25 @@ Yields the same ConvEvent stream. Generator return value is ``None``
 (continue the action loop) or ``"return"`` (close the turn / exit send).
 """
     from .conversation import ConvEvent
+    from harness.environment_fingerprint import (
+        format_prior_findings_block,
+        normalize_acceptance_criteria,
+        normalize_prior_findings,
+    )
     _acceptance_criteria = list(getattr(act, 'acceptance_criteria', None) or [])
-    if not _acceptance_criteria and isinstance(getattr(act, 'arguments', None), dict):
+    _prior_findings = []
+    if isinstance(getattr(act, 'arguments', None), dict):
         try:
-            from harness.environment_fingerprint import normalize_acceptance_criteria
-            _acceptance_criteria = normalize_acceptance_criteria(
-                act.arguments.get('acceptance_criteria')
+            if not _acceptance_criteria:
+                _acceptance_criteria = normalize_acceptance_criteria(
+                    act.arguments.get('acceptance_criteria')
+                )
+            _prior_findings = normalize_prior_findings(
+                act.arguments.get('prior_findings')
             )
         except Exception:
-            _acceptance_criteria = []
+            _acceptance_criteria = _acceptance_criteria or []
+            _prior_findings = []
     _sync_local_id = f'local-swarm-{aid}'
     # An explicit subject repo audits a DIFFERENT checkout read-only. It fails
     # closed on a non-git/missing path (same contract as run_implement) and
@@ -694,9 +704,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 )
                 return None
         _swarm_repo = resolve_effective_repo(_session_repo) if _session_repo else ''
+    _swarm_goal = act.goal
+    if _prior_findings:
+        _prior_block = format_prior_findings_block(_prior_findings)
+        if _prior_block:
+            _swarm_goal = f"{act.goal}\n\n{_prior_block}"
     intent = DriverIntent(
         action='run_swarm',
-        goal=act.goal,
+        goal=_swarm_goal,
         roles=act.roles or None,
         rationale='pilot',
         model=(act.model or '').strip() or None,

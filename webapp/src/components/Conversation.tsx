@@ -2011,8 +2011,13 @@ export default function Conversation({
           setAllFiles(res.files);
           setAllFolders(Array.isArray(res.folders) ? res.folders : []);
           setMentionListingCap(
-            res.truncated
-              ? { total: res.total, capped: res.capped }
+            res.truncated || res.folders_truncated
+              ? {
+                  ...(res.truncated ? { total: res.total, capped: res.capped } : {}),
+                  ...(res.folders_truncated
+                    ? { folders_total: res.folders_total, folders_capped: res.folders_capped }
+                    : {}),
+                }
               : null,
           );
         }

@@ -164,8 +164,9 @@ def operator_facts(jid, row, kind):
     display['label'] = {'provider': 'Provider worker', 'run_command': 'Command',
                         'run_command_batch': 'Command batch',
                         'parallel_wave': 'Parallel wave'}[kind]
-    display['truncated'] = any(isinstance(row.get(key), str) and len(row[key]) > cap
-                               for key, cap in caps.items())
+    display['truncated'] = any(
+        isinstance(row.get(key), str) and len(row[key]) > cap
+        for key, cap in caps.items())
     excluded = (row.get('accounting_owned') is False
                 or row.get('accounting_scope') == 'visibility_only')
     accounting = dict(kind='excluded' if excluded else

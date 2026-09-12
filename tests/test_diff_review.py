@@ -338,6 +338,20 @@ def test_apply_review_keeps_pending_on_failure(temp_git_repo):
     assert review_id not in session._pending_reviews
 
 
+def test_review_edits_before_apply_reads_true_case_insensitive(temp_git_repo, monkeypatch):
+    monkeypatch.setenv("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "TRUE")
+    monkeypatch.setenv("HARNESS_WIKI_AUTO", "TRUE")
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=tempfile.mkdtemp(),
+        wiki_auto=True,
+    )
+    cfg.repo = temp_git_repo
+    session = ConversationalSession(cfg)
+    assert session._review_edits_before_apply is True
+    assert session._wiki_auto is True
+
+
 def test_review_edits_before_apply_off_by_default(temp_git_repo):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_git_repo

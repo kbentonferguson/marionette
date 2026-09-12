@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 from harness.api.doctor import DoctorServices, get_diagnostics_bundle
-from harness.diag_bundle import build_manifest, write_diag_bundle
+from harness.diag_bundle import build_manifest, collect_session_rows, write_diag_bundle
 from harness import cli
 
 
@@ -49,6 +49,15 @@ def _seed_state(tmp_path: Path) -> Path:
     }
     (state / "harness_sessions.json").write_text(json.dumps(sessions), encoding="utf-8")
     return state
+
+
+def test_collect_session_rows_clamps_huge_limit(tmp_path, monkeypatch):
+    from harness import diag_bundle as db
+
+    state = _seed_state(tmp_path)
+    monkeypatch.setattr(db, "MAX_SESSION_LIMIT", 2)
+    rows = collect_session_rows(999999, state_dir=str(state))
+    assert len(rows) == 2
 
 
 def test_write_diag_bundle_manifest_and_redaction(tmp_path, monkeypatch):

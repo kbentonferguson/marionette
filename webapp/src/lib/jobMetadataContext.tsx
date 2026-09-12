@@ -26,6 +26,8 @@ function preferFresherLocal(a: LocalObservation, b: LocalObservation): LocalObse
 
 function localGoalFallback(row: LocalObservation['row'], selectedContextRequest?: string): string {
   if (selectedContextRequest?.trim()) return selectedContextRequest.trim();
+  const preview = row.display?.goal_preview?.trim();
+  if (preview) return preview;
   if (row.display) return `${row.display.label}${row.display.model ? ` · ${row.display.model}` : ''}`;
   return row.kind.replaceAll('_', ' ');
 }

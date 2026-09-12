@@ -866,6 +866,16 @@ class TestOptionalReadiness:
 
     def test_localhost_browsing_is_policy_not_a_defect(self, monkeypatch, stub_probe):
         monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
+        monkeypatch.delenv("HARNESS_BROWSER_ALLOW_LOOPBACK", raising=False)
+        facts = _facts(stub_probe)
+        policy = {fact.name: fact for fact in facts.readiness}["browser_localhost_policy"]
+        assert policy.classification == CLASSIFICATION_POLICY
+        assert policy.status == VERIFIED
+        assert "loopback" in policy.detail
+
+    def test_disabled_browser_loopback_is_policy(self, monkeypatch, stub_probe):
+        monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
+        monkeypatch.setenv("HARNESS_BROWSER_ALLOW_LOOPBACK", "0")
         facts = _facts(stub_probe)
         policy = {fact.name: fact for fact in facts.readiness}["browser_localhost_policy"]
         assert policy.classification == CLASSIFICATION_POLICY

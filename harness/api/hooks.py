@@ -77,6 +77,8 @@ def post_hooks_remove(body: dict) -> tuple[int, JsonPayload]:
     if not hid:
         return 400, {"error": "missing hook id"}
     hooks = _hk.get_hooks()
-    hooks = [h for h in hooks if h["id"] != hid]
-    _hk.save_hooks(hooks)
+    kept = [h for h in hooks if h["id"] != hid]
+    if len(kept) == len(hooks):
+        return 404, {"error": "hook not found"}
+    _hk.save_hooks(kept)
     return 200, {"ok": True}

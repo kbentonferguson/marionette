@@ -81,6 +81,53 @@ def allow_private_urls() -> bool:
     return _is_truthy_value(os.environ.get("HARNESS_ALLOW_PRIVATE_URLS"))
 
 
+def browser_allow_loopback() -> bool:
+    """True when interactive browser tools may open loopback hosts.
+
+    Product default is on. web_fetch / is_safe_url stay blocked for
+    127.0.0.1 and localhost so SSRF does not ride the same hatch.
+    Opt out with HARNESS_BROWSER_ALLOW_LOOPBACK=0.
+    """
+    raw = os.environ.get("HARNESS_BROWSER_ALLOW_LOOPBACK")
+    if raw is None or str(raw).strip() == "":
+        return True
+    return _is_truthy_value(raw)
+
+
+def _host_is_loopback(host: str) -> bool:
+    host_lc = (host or "").lower().rstrip(".")
+    if host_lc in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        ip = _unwrap_ipv4_mapped(ipaddress.ip_address(host_lc))
+    except ValueError:
+        return False
+    return bool(ip.is_loopback)
+
+
+def is_safe_browser_url(url: str) -> Tuple[bool, str]:
+    """URL gate for Chrome CDP navigation.
+
+    Allows loopback when browser_allow_loopback() is on. Metadata endpoints
+    stay blocked. RFC1918 / CGNAT stay blocked unless HARNESS_ALLOW_PRIVATE_URLS
+    is set. Public http(s) uses the same rules as is_safe_url.
+    """
+    if allow_private_urls():
+        return is_safe_url(url)
+    if not browser_allow_loopback():
+        return is_safe_url(url)
+    ok, reason, pinned = _is_safe_url_impl(
+        url, use_dns_cache=True, allow_private=True
+    )
+    if not ok:
+        return False, reason
+    parsed = urllib.parse.urlsplit((url or "").strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if _host_is_loopback(host) or (pinned and _host_is_loopback(pinned)):
+        return True, ""
+    return is_safe_url(url)
+
+
 def _unwrap_ipv4_mapped(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
     """Return the embedded IPv4 address for ::ffff:x.x.x.x, else *ip*.
 
