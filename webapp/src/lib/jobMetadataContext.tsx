@@ -3,9 +3,32 @@ import type { ReactNode } from 'react';
 import { JobMetadataStore, useJobMetadata } from './useJobMetadata';
 import type { JobMetadataState } from './useJobMetadata';
 import type { Job } from './api';
-import { canonicalPMReplacesLocal, metadataSelectionKey } from './jobMetadata';
+import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey } from './jobMetadata';
+import type { LocalObservation } from './localJobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
 import { isCommandJob } from './jobClassification';
+
+/** Prefer the freshest local observation when the same job_id appears under multiple keys. */
+function preferFresherLocal(a: LocalObservation, b: LocalObservation): LocalObservation {
+  const winner = a.row.revision !== b.row.revision
+    ? (a.row.revision > b.row.revision ? a : b)
+    : a.freshness !== b.freshness
+      ? (a.freshness === 'observed' ? a : b)
+      : (a.observedAt >= b.observedAt ? a : b);
+  const other = winner === a ? b : a;
+  // localDetail summaries are inserted as stale/observedAt 0; keep list freshness when they win on revision.
+  if (winner.freshness === 'stale' && winner.observedAt === 0 && other.freshness === 'observed'
+    && other.row.local_ref.job_id === winner.row.local_ref.job_id) {
+    return { ...winner, freshness: 'observed', observedAt: other.observedAt };
+  }
+  return winner;
+}
+
+function localGoalFallback(row: LocalObservation['row'], selectedContextRequest?: string): string {
+  if (selectedContextRequest?.trim()) return selectedContextRequest.trim();
+  if (row.display) return `${row.display.label}${row.display.model ? ` · ${row.display.model}` : ''}`;
+  return row.kind.replaceAll('_', ' ');
+}
 
 const inactive = new JobMetadataStore();
 export const JobMetadataContext = createContext(inactive);
@@ -42,9 +65,12 @@ export function metadataActivity(state: JobMetadataState): { count: number; labe
 /** Current selected facts are valid only for this exact source and revision. */
 export function currentExpert(state: JobMetadataState, key: string) {
   const selected = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === key ? state.detail : state.detailCache[key];
-  if (!selected || selected.freshness !== 'observed' || selected.error || !selected.observation) return undefined;
+  if (!selected?.observation || selected.error) return undefined;
   const listed = state.observations.find(o => metadataSelectionKey(o.row.selection) === key);
   if (listed?.freshness === 'stale') return undefined;
+  // An unrelated lane failure stamps every cached detail stale; a hydrated expert
+  // whose own list row is still fresh stays visible.
+  if (selected.freshness !== 'observed' && !selected.observation.expert) return undefined;
   const latest = Math.max(0, ...[...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision), state.headers[key]?.observation.row.revision ?? 0);
   return selected.observation.tasks.page.revision >= latest && selected.observation.artifacts.page.revision >= latest ? selected.observation.expert : undefined;
 }
@@ -88,20 +114,53 @@ export function metadataJobs(state: JobMetadataState): Job[] {
     unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
     ...(row.task_count === null ? {} : { task_count: row.task_count }),
   }));
-  const nativeObserved = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o]));
+  // Dedupe by job_id: local.observations and localDetail.summary can both contribute
+  // the same alias under different localKeys (incarnation churn) and double the Active list.
+  const nativeByJobId = new Map<string, LocalObservation>();
+  for (const observation of state.local.observations) {
+    const id = observation.row.local_ref.job_id;
+    const existing = nativeByJobId.get(id);
+    nativeByJobId.set(id, existing ? preferFresherLocal(existing, observation) : observation);
+  }
   const selectedSummary = state.localDetail?.observation?.summary;
-  if (selectedSummary && !nativeObserved.has(localKey(selectedSummary.local_ref))) nativeObserved.set(localKey(selectedSummary.local_ref), { row: selectedSummary, freshness: 'stale', observedAt: 0 });
-  const local: Job[] = [...nativeObserved.values()]
-    .filter(local => !canonicalPMReplacesLocal(local, [...observed.values()]))
-    .map(({ row, freshness }) => ({
-    id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local', metadata_only: true,
-    metadata_key: localKey(row.local_ref), goal: (row.display ? `${row.display.label}${row.display.model ? ` · ${row.display.model}` : ''}` : row.kind.replaceAll('_', ' ')),
-    status: row.lifecycle, session_id: row.session_id, job_kind: row.kind, role: row.kind,
-    adapter: row.display?.adapter,
-    ...(row.parent_ref ? { parent_ref: row.parent_ref } : {}),
-    ...(freshness === 'stale' ? { read_status: 'unavailable' } : {}),
-    updated_at: row.updated_at, unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
-    ...(row.task_count === null ? {} : { task_count: row.task_count }),
-  }));
+  if (selectedSummary) {
+    const candidate: LocalObservation = { row: selectedSummary, freshness: 'stale', observedAt: 0 };
+    const id = selectedSummary.local_ref.job_id;
+    const existing = nativeByJobId.get(id);
+    nativeByJobId.set(id, existing ? preferFresherLocal(existing, candidate) : candidate);
+  }
+  const selectedRequest = state.localDetail?.observation?.selected_context?.request?.text;
+  const repo = state.view.kind === 'view' ? state.view.context.repo : '';
+  const local: Job[] = [...nativeByJobId.values()]
+    .filter(localObs => !canonicalPMReplacesLocal(localObs, [...observed.values()]))
+    .map(({ row, freshness }) => {
+      const canonical = row.canonical;
+      const canonKey = canonical && repo ? metadataSelectionKey(canonicalExpertSelection(canonical, repo)) : '';
+      const detailObservation = canonKey
+        ? (state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === canonKey
+          ? state.detail.observation : state.detailCache[canonKey]?.observation) ?? undefined
+        : undefined;
+      let goalFromPm: string | undefined;
+      if (detailObservation?.display?.kind === 'available' && detailObservation.display.goal_preview) {
+        goalFromPm = detailObservation.display.goal_preview;
+      } else if (canonKey) {
+        const listed = [...observed.values()].find(o => metadataSelectionKey(o.row.selection) === canonKey);
+        if (listed?.row.display.kind === 'available' && listed.row.display.goal_preview) {
+          goalFromPm = listed.row.display.goal_preview;
+        }
+      }
+      const sameDetail = selectedSummary && localKey(selectedSummary.local_ref) === localKey(row.local_ref);
+      return {
+        id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local' as const, metadata_only: true as const,
+        metadata_key: localKey(row.local_ref),
+        goal: goalFromPm || localGoalFallback(row, sameDetail ? selectedRequest : undefined),
+        status: row.lifecycle, session_id: row.session_id, job_kind: row.kind, role: row.kind,
+        adapter: row.display?.adapter,
+        ...(row.parent_ref ? { parent_ref: row.parent_ref } : {}),
+        ...(freshness === 'stale' ? { read_status: 'unavailable' as const } : {}),
+        updated_at: row.updated_at, unavailable_fields: ['artifacts', 'tasks'], artifacts_complete: false,
+        ...(row.task_count === null ? {} : { task_count: row.task_count }),
+      };
+    });
   return [...pm, ...local];
 }
