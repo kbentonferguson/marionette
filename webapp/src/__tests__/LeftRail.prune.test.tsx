@@ -102,3 +102,34 @@ it("reports protected targets after pruning", async () => {
   });
   window.removeEventListener("harness-toast", toast);
 });
+
+it("still reports protected targets when the rail flickers switching during prune", async () => {
+  let finish: (value: Awaited<ReturnType<typeof api.pruneEditBranches>>) => void = () => {};
+  vi.mocked(api.pruneEditBranches).mockImplementation(
+    () => new Promise((resolve) => { finish = resolve; }),
+  );
+  const toast = vi.fn();
+  window.addEventListener("harness-toast", toast);
+  render(<LeftRail jobsRefresh={0} />);
+  await waitFor(() => expect(api.workspaces).toHaveBeenCalled());
+  await screen.findByRole("button", { name: "main", exact: true }, { timeout: 5000 });
+  await act(async () => { fireEvent.click(pruneButton()); });
+  await waitFor(() => expect(api.pruneEditBranches).toHaveBeenCalledWith("/workspace"));
+  await act(async () => {
+    window.dispatchEvent(new CustomEvent("harness-project-switching", { detail: { switching: true } }));
+    finish({
+      ok: true,
+      count: 0,
+      deleted: [],
+      skipped: [
+        { path: "/workspace/tree", reason: "Locked worktree" },
+        { branch: "pmedit-unique", path: "", reason: "Commits not retained by a non-prunable local branch" },
+      ],
+    });
+  });
+  await waitFor(() => {
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("/workspace/tree (Locked worktree)") }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining("pmedit-unique (Commits not retained") }));
+  });
+  window.removeEventListener("harness-toast", toast);
+});

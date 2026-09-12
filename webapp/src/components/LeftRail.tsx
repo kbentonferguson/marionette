@@ -151,7 +151,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const pruneEpoch = useRef(0);
   useEffect(() => {
     const invalidate = () => { pruneEpoch.current += 1; };
-    const events = ["harness-project-switching", "harness-project-selected", "harness-session-changed", "harness-config-changed"];
+    const events = ["harness-project-selected", "harness-session-changed", "harness-config-changed"];
     events.forEach(event => window.addEventListener(event, invalidate));
     return () => {
       invalidate();

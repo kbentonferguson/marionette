@@ -43,6 +43,43 @@ def matching_green_run(
     return None
 
 
+def should_skip_push_suite(
+    event_name,  # type: str
+    target_tree,  # type: str
+    runs,  # type: Iterable[Dict[str, Any]]
+    tree_for_sha,  # type: Callable[[str], Optional[str]]
+    current_run_id=None,  # type: Optional[Any]
+):
+    # type: (...) -> bool
+    """True when a main-push can reuse a successful tests run for this tree.
+
+    Pull requests always run the suite. A push whose tree already has a
+    successful ``tests`` workflow (not this run) skips the lottery. A
+    conflict-resolution tree with no match fails closed and runs.
+    """
+    if (event_name or "") != "push":
+        return False
+    skip_ids = set()
+    if current_run_id not in (None, ""):
+        skip_ids.add(str(current_run_id))
+    filtered = []
+    for run in filter_successful_runs(runs):
+        run_id = run.get("databaseId") or run.get("id")
+        if run_id is not None and str(run_id) in skip_ids:
+            continue
+        filtered.append(run)
+    return matching_green_run(target_tree, filtered, tree_for_sha) is not None
+
+
+def write_github_output(name, value, path=None):
+    # type: (str, str, Optional[str]) -> None
+    dest = path if path is not None else os.environ.get("GITHUB_OUTPUT")
+    if not dest:
+        return
+    with open(dest, "a", encoding="utf-8") as handle:
+        handle.write("{}={}\n".format(name, value))
+
+
 def matching_installer_run(
     target_tree,  # type: str
     runs,  # type: Iterable[Dict[str, Any]]
@@ -243,6 +280,44 @@ def cmd_require_green(args):
     sys.stdout.write(
         "tests workflow green for tree {} via {} {}\n".format(target_tree, head, url)
     )
+    return 0
+
+
+def cmd_skip_if_green(args):
+    # type: (argparse.Namespace) -> int
+    """Always exit 0. Set skip_suite=true when this push can reuse a green tree."""
+    event_name = args.event or os.environ.get("GITHUB_EVENT_NAME") or ""
+    if (event_name or "") != "push":
+        write_github_output("skip_suite", "false")
+        sys.stdout.write("skip_suite=false event={}\n".format(event_name))
+        return 0
+    try:
+        repo = args.repo or _detect_repo()
+        current_run = args.run_id or os.environ.get("GITHUB_RUN_ID") or ""
+        target_tree = git_tree_sha(args.sha)
+        runs = _list_workflow_runs(repo, "tests", args.limit)
+        skip = should_skip_push_suite(
+            event_name,
+            target_tree,
+            runs,
+            _tree_resolver(repo),
+            current_run,
+        )
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        write_github_output("skip_suite", "false")
+        sys.stdout.write("skip_suite=false lookup failed: {}\n".format(exc))
+        return 0
+    write_github_output("skip_suite", "true" if skip else "false")
+    if skip:
+        sys.stdout.write(
+            "skip_suite=true tree {} already has a successful tests run\n".format(
+                target_tree
+            )
+        )
+    else:
+        sys.stdout.write(
+            "skip_suite=false event={} tree {}\n".format(event_name, target_tree)
+        )
     return 0
 
 
@@ -497,6 +572,17 @@ def build_parser():
     require.add_argument("--repo", default="")
     require.add_argument("--limit", type=int, default=80)
     require.set_defaults(func=cmd_require_green)
+
+    skip = sub.add_parser(
+        "skip-if-green",
+        help="set skip_suite when a successful tests run already covers this push tree",
+    )
+    skip.add_argument("--sha", default="HEAD")
+    skip.add_argument("--repo", default="")
+    skip.add_argument("--event", default="")
+    skip.add_argument("--run-id", default="")
+    skip.add_argument("--limit", type=int, default=80)
+    skip.set_defaults(func=cmd_skip_if_green)
 
     adopt = sub.add_parser(
         "adopt-installers",

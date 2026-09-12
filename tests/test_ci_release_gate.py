@@ -1,19 +1,25 @@
 """Tree-green release gate: same code is enough; SHA identity is not required."""
 from __future__ import annotations
 
+import argparse
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import ci_release_gate as gate  # noqa: E402
 from ci_release_gate import (  # noqa: E402
     _flatten_installer_files,
+    cmd_skip_if_green,
     filter_successful_runs,
     find_mac_update_zip,
     linux_release_has_appimage,
     matching_green_run,
     matching_installer_run,
     parse_mac_codesign_dump,
+    should_skip_push_suite,
+    write_github_output,
 )
 
 
@@ -55,6 +61,60 @@ def test_matching_green_run_skips_non_success():
         _tree_map({"sha-a": "tree-a"}),
     )
     assert match is None
+
+
+def test_should_skip_push_suite_only_on_push_with_other_green_tree():
+    runs = [
+        {"headSha": "pr-head", "databaseId": 11, "conclusion": "success"},
+        {"headSha": "this-push", "databaseId": 22, "conclusion": "success"},
+    ]
+    trees = {"pr-head": "tree-dest", "this-push": "tree-dest"}
+    assert should_skip_push_suite(
+        "pull_request", "tree-dest", runs, _tree_map(trees), current_run_id=22
+    ) is False
+    assert should_skip_push_suite(
+        "push", "tree-dest", runs, _tree_map(trees), current_run_id=22
+    ) is True
+    assert should_skip_push_suite(
+        "push", "tree-conflict", runs, _tree_map(trees), current_run_id=22
+    ) is False
+    assert should_skip_push_suite(
+        "push",
+        "tree-dest",
+        [{"headSha": "this-push", "databaseId": 22, "conclusion": "success"}],
+        _tree_map(trees),
+        current_run_id=22,
+    ) is False
+    assert should_skip_push_suite(
+        "push",
+        "tree-dest",
+        [{"headSha": "pr-head", "databaseId": 11, "conclusion": "failure"}],
+        _tree_map(trees),
+        current_run_id=22,
+    ) is False
+
+
+def test_cmd_skip_if_green_lookup_failure_runs_suite(monkeypatch, tmp_path):
+    dest = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(dest))
+    monkeypatch.setattr(gate, "git_tree_sha", lambda rev="HEAD": "tree-dest")
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["gh", "run", "list"])
+
+    monkeypatch.setattr(gate, "_list_workflow_runs", boom)
+    args = argparse.Namespace(
+        event="push", repo="owner/repo", run_id="99", sha="HEAD", limit=80
+    )
+    assert cmd_skip_if_green(args) == 0
+    assert dest.read_text(encoding="utf-8") == "skip_suite=false\n"
+
+
+def test_write_github_output_appends_when_path_given(tmp_path):
+    dest = tmp_path / "output"
+    write_github_output("skip_suite", "true", path=str(dest))
+    write_github_output("skip_suite", "false", path=str(dest))
+    assert dest.read_text(encoding="utf-8") == "skip_suite=true\nskip_suite=false\n"
 
 
 def test_matching_green_run_empty_tree_is_fail_closed():
@@ -202,6 +262,11 @@ def test_tests_yml_is_the_fast_dest_into_main_gate():
     assert "PYTEST_SHARD" in text
     assert "python-version: \"3.9\"" in text
     assert "macos-latest" not in text
+    assert "reuse-green-tree" in text
+    assert "skip-if-green" in text
+    assert "skip_suite" in text
+    assert "needs: reuse-green-tree" in text
+    assert "needs.reuse-green-tree.outputs.skip_suite != 'true'" in text
     full = (ROOT / ".github" / "workflows" / "tests-full.yml").read_text()
     assert "--resource-soak" in full
     assert "macos-latest" in full

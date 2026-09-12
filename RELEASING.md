@@ -58,6 +58,11 @@ and must not be adopted. Users wait `max(tests, builds)`, not tests + builds
 If a conflict resolution changes the tree, wait for `tests` on the new tree.
 That is the only exception.
 
+`tests.yml` on push to `main` calls `skip-if-green` first. When
+`merge^{tree}` already has a successful `tests` run (the dev-into-main PR),
+the pytest and frontend jobs are skipped so Latest is not a second flake
+lottery on the same bytes. A changed tree fails closed and runs the matrix.
+
 ```bash
 # Preferred ship path (version bump already on dev, dev contains main):
 # 1. Open dev -> main. Wait for that PR's tests matrix.
