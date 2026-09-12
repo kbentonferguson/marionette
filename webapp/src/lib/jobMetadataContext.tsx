@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { JobMetadataStore, useJobMetadata } from './useJobMetadata';
 import type { JobMetadataState } from './useJobMetadata';
 import type { Job } from './api';
-import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey } from './jobMetadata';
+import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey, pmActiveStatuses } from './jobMetadata';
 import type { LocalObservation } from './localJobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
 import { isCommandJob } from './jobClassification';
@@ -152,11 +152,16 @@ export function metadataJobs(state: JobMetadataState): Job[] {
         }
       }
       const sameDetail = selectedSummary && localKey(selectedSummary.local_ref) === localKey(row.local_ref);
+      // The canonical detail is re-read on a 4s cadence while the alias is live; once it
+      // reports a terminal lifecycle the row is finished even if the list lanes lag.
+      const detailLifecycle = detailObservation?.lifecycle ?? null;
+      const settledByDetail = detailLifecycle !== null && !pmActiveStatuses.some(status => status === detailLifecycle);
       return {
         id: row.local_ref.job_id, local_ref: row.local_ref, source: 'local' as const, metadata_only: true as const,
         metadata_key: localKey(row.local_ref),
         goal: goalFromPm || localGoalFallback(row, sameDetail ? selectedRequest : undefined),
-        status: row.lifecycle, session_id: row.session_id, job_kind: row.kind, role: row.kind,
+        status: settledByDetail && nativeActiveStatuses.some(status => status === row.lifecycle) ? detailLifecycle : row.lifecycle,
+        session_id: row.session_id, job_kind: row.kind, role: row.kind,
         adapter: row.display?.adapter,
         ...(row.parent_ref ? { parent_ref: row.parent_ref } : {}),
         ...(freshness === 'stale' ? { read_status: 'unavailable' as const } : {}),
