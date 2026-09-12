@@ -143,8 +143,8 @@ describe('automatic current headers and session worker usage', () => {
     expect(result.kind === 'present' && expertHeaderModel(result.row.header)).toBe('gpt-6-astra');
   });
   it('rejects unproven or malformed model metadata', () => {
-    expect(() => parseExpertHeader(header({ model_provenance: 'unknown' }))).toThrow();
-    expect(() => parseExpertHeader(header({ model: '' }))).toThrow();
+    expect(parseExpertHeader(header({ model_provenance: 'unknown' }))).toMatchObject({ model: null, model_provenance: 'unknown' });
+    expect(parseExpertHeader(header({ model: '' }))).toMatchObject({ model: null, model_provenance: 'unknown' });
     expect(() => parseExpertHeader({ ...header(), model_provenance: 'history' })).toThrow();
     expect(expertHeaderModel(header({ model: null, model_provenance: 'unknown' }))).toBeNull();
     expect(expertHeaderModel(header({ model: 'codex' }))).toBeNull();
