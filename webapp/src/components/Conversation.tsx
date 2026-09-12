@@ -221,6 +221,8 @@ import {
   appendMemoryProposal,
   classifySwarmPollEvent,
   clearSwarmAwaitWaitHint,
+  confirmedTerminalJobIds,
+  noteEmptyRecoveryDrain,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
   pruneTerminalJobIds,
@@ -607,6 +609,8 @@ export default function Conversation({
   const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
   const pendingJobIdsRef = useRef<string[]>([]);
   useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
+  // Empty result-recovery drains per terminal id; bounded by RESULT_RECOVERY_DRAIN_LIMIT.
+  const emptyRecoveryDrainsRef = useRef<Map<string, number>>(new Map());
   const processedSwarmJobIdsRef = useRef<Set<string>>(new Set());
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
   const swarmLiveJobs = metadataJobs(metadata);
@@ -2673,18 +2677,27 @@ export default function Conversation({
               terminalIds,
               itemsRef.current,
             );
+            const pollFenceHolds = () =>
+              metadataStore.getSnapshot().contextEpoch === metadataEpoch
+              && transcriptLoadGenRef.current === pollGen
+              && cachedSessionIdRef.current === pollSid;
             const pruneTerminalTrackers = () => {
-              if (!hasTerminal) return;
-              setPendingJobIds((prev) => {
-                if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || transcriptLoadGenRef.current !== pollGen || cachedSessionIdRef.current !== pollSid) return prev;
-                const delivered = new Set(itemsRef.current.flatMap(item => item.kind === 'swarm_result' && item.job_id ? [item.job_id] : []));
-                const confirmed = terminalIds.filter(id => delivered.has(id) || deliveredThisPoll.has(id));
-                const next = pruneTerminalJobIds(prev, confirmed);
-                // Sync ref so same-tick getSessionState chrome clear sees the
-                // pruned count (useEffect would lag one paint).
-                pendingJobIdsRef.current = next;
-                return next;
+              if (!hasTerminal || !pollFenceHolds()) return;
+              const delivered = new Set(itemsRef.current.flatMap(item => item.kind === 'swarm_result' && item.job_id ? [item.job_id] : []));
+              for (const id of deliveredThisPoll) delivered.add(id);
+              const confirmed = confirmedTerminalJobIds({
+                terminalIds,
+                deliveredJobIds: delivered,
+                emptyDrains: emptyRecoveryDrainsRef.current,
               });
+              const prev = pendingJobIdsRef.current;
+              const next = pruneTerminalJobIds(prev, confirmed);
+              if (next.length === prev.length) return;
+              // Sync ref so same-tick getSessionState chrome clear sees the
+              // pruned count (useEffect would lag one paint).
+              pendingJobIdsRef.current = next;
+              setPendingJobIds(next);
+              setItems((items) => pollFenceHolds() ? finalizeOrphanSwarmPills(items, next) : items);
             };
             // Do not drop the last pending id until the one-shot recovery
             // drain has had a chance to surface swarm_result. Otherwise
@@ -2721,6 +2734,7 @@ export default function Conversation({
                     return;
                   }
                   applyPolledResults(recovered?.results || []);
+                  noteEmptyRecoveryDrain(emptyRecoveryDrainsRef.current, recoveryIds.filter((id) => !deliveredThisPoll.has(id)));
                 })
                 .then(() => {
                   if (metadataStore.getSnapshot().contextEpoch !== metadataEpoch || !shouldApplySwarmLiveMerge({
