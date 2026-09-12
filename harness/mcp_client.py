@@ -172,15 +172,18 @@ class StdioMcpClient:
         self._reader_error = None
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
-        # handshake
-        resp = self._request("initialize", {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
-            "clientInfo": CLIENT_INFO,
-        }, timeout=self.startup_timeout)
-        self._server_info = resp.get("serverInfo", {})
-        self._capabilities = resp.get("capabilities", {})
-        self._notify("notifications/initialized", {})
+        try:
+            resp = self._request("initialize", {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "clientInfo": CLIENT_INFO,
+            }, timeout=self.startup_timeout)
+            self._server_info = resp.get("serverInfo", {})
+            self._capabilities = resp.get("capabilities", {})
+            self._notify("notifications/initialized", {})
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self) -> None:
         if self._proc and self._proc.poll() is None:

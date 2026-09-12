@@ -1,10 +1,13 @@
 """MCP client + manager against an in-repo fake stdio server (zero external deps)."""
 import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+import harness.mcp_client as mcp_mod
 from harness.mcp_client import StdioMcpClient, McpError
 from harness.mcp_manager import CATALOG, McpManager
 from harness.tool_discovery import mcp_tools_from_list_result
@@ -509,4 +512,48 @@ def test_stdio_cancel_unblocks_without_killing_server():
         assert any(t.name == "slow" for t in tools)
     finally:
         c.stop()
+
+
+def test_start_reaps_child_when_handshake_times_out(tmp_path):
+    """start() must stop() the process group if initialize never answers."""
+    script = tmp_path / "mute_mcp.py"
+    script.write_text(
+        "import time\ntime.sleep(60)\n",
+        encoding="utf-8",
+    )
+    spawned = []
+    real_popen = subprocess.Popen
+
+    def _capture_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    orig = mcp_mod.subprocess.Popen
+    mcp_mod.subprocess.Popen = _capture_popen
+    c = StdioMcpClient(
+        name="mute",
+        command=sys.executable,
+        args=[str(script)],
+        startup_timeout=0.4,
+    )
+    try:
+        with pytest.raises(McpError, match="timeout waiting for initialize"):
+            c.start()
+        assert spawned, "start() never spawned a child"
+        child = spawned[0]
+        deadline = time.time() + 3
+        while child.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
+        assert child.poll() is not None, "handshake timeout left the MCP child running"
+        assert c._proc is None
+    finally:
+        mcp_mod.subprocess.Popen = orig
+        try:
+            c.stop()
+        except Exception:
+            pass
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
 

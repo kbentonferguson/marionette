@@ -33,6 +33,43 @@ from .mcp_client import (
 from .web_tools import _PinnedIP
 
 
+def _sse_json_objects(raw: str) -> List[dict]:
+    """Parse SSE ``data:`` frames. Consecutive data lines are one event."""
+    objects: List[dict] = []
+    data_parts: List[str] = []
+
+    def flush() -> None:
+        if not data_parts:
+            return
+        blob = "\n".join(data_parts)
+        del data_parts[:]
+        try:
+            parsed = json.loads(blob)
+        except json.JSONDecodeError:
+            return
+        if isinstance(parsed, dict):
+            objects.append(parsed)
+
+    for line in raw.splitlines():
+        if line == "":
+            flush()
+        elif line.startswith("data:"):
+            data_parts.append(line[5:].lstrip())
+    flush()
+    return objects
+
+
+def _sse_rpc_message(raw: str) -> Optional[dict]:
+    """Last JSON-RPC result/error in an SSE body; skip progress notifications."""
+    objects = _sse_json_objects(raw)
+    for obj in reversed(objects):
+        if "result" in obj or "error" in obj:
+            return obj
+        if "id" in obj and "method" not in obj:
+            return obj
+    return None
+
+
 def mcp_allow_private_urls() -> bool:
     """Whether HTTP MCP may target loopback/LAN (Docker, local gateways).
 
@@ -334,16 +371,8 @@ class HttpMcpClient:
             raise McpError(f"MCP server '{self.name}' unreachable: {e}")
         if not raw.strip():
             return None  # notification -> empty 202
-        # SSE-framed response: extract the JSON from the last data: line
         if "text/event-stream" in ctype:
-            obj = None
-            for line in raw.splitlines():
-                if line.startswith("data:"):
-                    try:
-                        obj = json.loads(line[5:].strip())
-                    except json.JSONDecodeError:
-                        continue
-            return obj
+            return _sse_rpc_message(raw)
         try:
             return json.loads(raw)
         except json.JSONDecodeError:

@@ -3763,7 +3763,7 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
         return 1;
       },
     );
-    expect(scheduled).toBe(1);
+    expect(scheduled).toBe(0);
   });
 });
 
@@ -3809,7 +3809,7 @@ describe("streamTypewriter first reveal", () => {
     expect(refs.typeDoneRef.current).toBe(false);
   });
 
-  it("empty idle start still schedules without appending", () => {
+  it("empty idle start does not schedule a heartbeat pump", () => {
     const refs = makeRefs("");
     const chunks: string[] = [];
     let scheduled = 0;
@@ -3818,8 +3818,8 @@ describe("streamTypewriter first reveal", () => {
       return 1;
     });
     expect(chunks).toEqual([]);
-    expect(scheduled).toBe(1);
-    expect(refs.typeRafRef.current).toBe(1);
+    expect(scheduled).toBe(0);
+    expect(refs.typeRafRef.current).toBeNull();
   });
 
   it("flush and cancel invariants remain after first reveal", () => {
@@ -3864,7 +3864,7 @@ describe("streamTypewriter first reveal", () => {
     expect(chunks.join("").length).toBeLessThanOrEqual(text.length);
   });
 
-  it("empty-buffer pump with typeDone false reschedules without appending", () => {
+  it("empty-buffer pump with typeDone false stops without rescheduling", () => {
     const refs = {
       typeBufRef: { current: "" },
       typeRafRef: { current: 5 as number | null },
@@ -3877,8 +3877,8 @@ describe("streamTypewriter first reveal", () => {
       return 99;
     });
     expect(chunks).toEqual([]);
-    expect(scheduled).toBe(1);
-    expect(refs.typeRafRef.current).toBe(99);
+    expect(scheduled).toBe(0);
+    expect(refs.typeRafRef.current).toBeNull();
     expect(refs.typeBufRef.current).toBe("");
     expect(refs.typeDoneRef.current).toBe(false);
   });

@@ -10,7 +10,11 @@ from typing import Optional
 
 import pytest
 
-from harness.mcp_http_client import HttpMcpClient, SafeRedirectHandler
+from harness.mcp_http_client import (
+    HttpMcpClient,
+    SafeRedirectHandler,
+    _sse_rpc_message,
+)
 
 
 class _RedirectHandler(http.server.BaseHTTPRequestHandler):
@@ -297,3 +301,27 @@ def test_redirect_unredirected_header_precedence(redirect_handler):
     )
     assert not redirected.has_header("Authorization")
     assert redirected.get_header("Accept") == "application/json"
+
+
+def test_sse_rpc_message_skips_trailing_progress_notification():
+    raw = (
+        'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"ping"}]}}\n\n'
+        'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"p":1}}\n\n'
+    )
+    msg = _sse_rpc_message(raw)
+    assert msg is not None
+    assert msg.get("result", {}).get("tools")[0]["name"] == "ping"
+
+
+def test_sse_rpc_message_joins_multiline_data_field():
+    raw = (
+        'data: {"jsonrpc":"2.0","id":2,\n'
+        'data: "result":{"ok":true}}\n\n'
+    )
+    msg = _sse_rpc_message(raw)
+    assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+
+
+def test_sse_rpc_message_single_result_still_wins():
+    raw = 'data: {"jsonrpc":"2.0","id":3,"result":{"ok":true}}\n\n'
+    assert _sse_rpc_message(raw)["result"]["ok"] is True

@@ -14,26 +14,54 @@ import { typewriterCharsPerFrame } from "./streamBubbles";
 /** Hidden-tab fallback only. Visible paints use rAF so ticks land on vsync. */
 export const STREAM_PAINT_MS = 33;
 
-type PaintHandle = { kind: "raf" | "timeout"; id: number };
+type PaintHandle = { kind: "raf" | "timeout"; id: number; cb: () => void };
 const paintHandles = new Map<number, PaintHandle>();
 let nextPaintToken = 1;
+let visibilityBridgeBound = false;
+
+function isDocumentHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function armTimeout(token: number, cb: () => void): void {
+  const id = window.setTimeout(() => {
+    paintHandles.delete(token);
+    cb();
+  }, STREAM_PAINT_MS);
+  paintHandles.set(token, { kind: "timeout", id, cb });
+}
+
+function onVisibilityChange(): void {
+  if (!isDocumentHidden()) return;
+  for (const [token, handle] of Array.from(paintHandles.entries())) {
+    if (handle.kind !== "raf") continue;
+    cancelAnimationFrame(handle.id);
+    armTimeout(token, handle.cb);
+  }
+}
+
+function ensureVisibilityBridge(): void {
+  if (visibilityBridgeBound || typeof document === "undefined") return;
+  visibilityBridgeBound = true;
+  document.addEventListener("visibilitychange", onVisibilityChange);
+}
 
 export function scheduleStreamPaint(cb: () => void): number {
   const token = nextPaintToken++;
-  const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-  if (hidden || typeof requestAnimationFrame !== "function") {
-    const id = window.setTimeout(() => {
-      paintHandles.delete(token);
-      cb();
-    }, STREAM_PAINT_MS);
-    paintHandles.set(token, { kind: "timeout", id });
+  ensureVisibilityBridge();
+  if (isDocumentHidden() || typeof requestAnimationFrame !== "function") {
+    armTimeout(token, cb);
     return token;
   }
   const id = requestAnimationFrame(() => {
     paintHandles.delete(token);
+    if (isDocumentHidden()) {
+      armTimeout(token, cb);
+      return;
+    }
     cb();
   });
-  paintHandles.set(token, { kind: "raf", id });
+  paintHandles.set(token, { kind: "raf", id, cb });
   return token;
 }
 
@@ -43,6 +71,11 @@ export function cancelStreamPaint(id: number): void {
   paintHandles.delete(id);
   if (handle.kind === "raf") cancelAnimationFrame(handle.id);
   else clearTimeout(handle.id);
+}
+
+/** Test seam: pending scheduler tokens (rAF or timeout). */
+export function streamPaintHandleCount(): number {
+  return paintHandles.size;
 }
 
 export type TypewriterRefs = {
@@ -84,13 +117,10 @@ export function pumpTypewriterFrame(
   refs.typeRafRef.current = null;
   const buf = refs.typeBufRef.current;
   if (!buf) {
-    if (!refs.typeDoneRef.current) {
-      scheduleTypewriterPump(refs, appendStreamingText, schedule);
-    }
     return;
   }
   takeTypewriterChunk(refs, appendStreamingText);
-  if (refs.typeBufRef.current || !refs.typeDoneRef.current) {
+  if (refs.typeBufRef.current) {
     scheduleTypewriterPump(refs, appendStreamingText, schedule);
   }
 }
@@ -107,7 +137,9 @@ export function startTypewriterLoop(
   if (refs.typeBufRef.current) {
     takeTypewriterChunk(refs, appendStreamingText);
   }
-  scheduleTypewriterPump(refs, appendStreamingText, schedule);
+  if (refs.typeBufRef.current) {
+    scheduleTypewriterPump(refs, appendStreamingText, schedule);
+  }
 }
 
 export function flushTypewriterBuffer(

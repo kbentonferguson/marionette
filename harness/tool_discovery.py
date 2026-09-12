@@ -101,7 +101,10 @@ def core_visible_names(
     """Core always-visible tool names for the current pilot mode / task profile.
 
     MICRO returns the compact micro set (plus hash_edit when enabled) so prompts
-    stay small; STANDARD/DEEP keep CORE_PILOT / CORE_WORKER behavior.
+    stay small, but only for the interactive pilot (``no_delegation=False``).
+    A no-delegation leaf worker keeps CORE_WORKER — it cannot run_swarm and
+    needs the full non-delegation toolkit. STANDARD/DEEP keep CORE_PILOT /
+    CORE_WORKER regardless.
     """
     try:
         from .task_profile import MICRO, micro_visible_tool_names, normalize_profile
