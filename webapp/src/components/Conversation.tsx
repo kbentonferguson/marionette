@@ -122,6 +122,7 @@ import {
   isAtFeedTail,
   nextFeedPinState,
   applyUserSubmitFeedPin,
+  submitPinShouldAbort,
   scrollToFeedEnd,
   settleFrameResult,
   shouldShowJumpToBottom,
@@ -2998,8 +2999,13 @@ export default function Conversation({
       pinnedToBottomRef.current = true;
       scrollReleasedByGestureRef.current = false;
       scrollSettlingRef.current = true;
-      const pinSubmittedRow = () => {
-        if (scrollReleasedByGestureRef.current) return;
+      const pinSubmittedRow = (pass: "first" | "later") => {
+        if (submitPinShouldAbort({
+          pass,
+          releasedSinceSubmit: scrollReleasedByGestureRef.current,
+        })) {
+          return false;
+        }
         const el = feedRef.current;
         const scrollToEnd = scrollFeedToEndRef.current;
         if (scrollToEnd) {
@@ -3014,13 +3020,14 @@ export default function Conversation({
           el.scrollTop = next.scrollTop;
         }
         pinnedToBottomRef.current = true;
+        return true;
       };
       queueMicrotask(() => {
         requestAnimationFrame(() => {
-          pinSubmittedRow();
+          const firstPinned = pinSubmittedRow("first");
           requestAnimationFrame(() => {
-            pinSubmittedRow();
-            scrollSettlingRef.current = false;
+            pinSubmittedRow("later");
+            if (firstPinned) scrollSettlingRef.current = false;
           });
         });
       });

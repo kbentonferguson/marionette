@@ -16,8 +16,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from .cost_accounting import (
+    PRICE_SOURCE_DEFAULT,
     _cost_source_label,
+    _normalize_price_source,
     _resolve_active_prices,
+    _resolve_active_prices_with_source,
     _resolve_prices_for_runner,
     _session_cost_split,
 )
@@ -65,9 +68,10 @@ def _boot_usage_reset_for_tests() -> None:
     """Zero process-global boot carry so hermetic API tests do not inherit
     spend left by an earlier case (carry is priced into /api/usage but not
     into /api/swarm/live's pilot split -- suite order then flakes)."""
-    global _BOOT_CARRY_COST_USD, _BOOT_PLAN_BILLING, _BOOT_USAGE_RESTORED
+    global _BOOT_CARRY_COST_USD, _BOOT_CARRY_PRICE_SOURCE, _BOOT_PLAN_BILLING, _BOOT_USAGE_RESTORED
     _usage_cache_clear_for_tests()
     _BOOT_CARRY_COST_USD = 0.0
+    _BOOT_CARRY_PRICE_SOURCE = PRICE_SOURCE_DEFAULT
     _BOOT_PLAN_BILLING = False
     _BOOT_USAGE_RESTORED = False
     for attr in _BOOT_METER_ATTRS:
@@ -142,6 +146,7 @@ _BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
 # carry stay for display; cost must NOT be recomputed at a later pilot rate
 # after a model swap (that would silently reprice historical spend).
 _BOOT_CARRY_COST_USD: float = 0.0
+_BOOT_CARRY_PRICE_SOURCE: str = PRICE_SOURCE_DEFAULT
 # Cumulative pilot spend locked to the model that incurred it. Fold writes
 # here at fold-time rates; live runners are merged on read at each runner's
 # bound ``config.driver`` — never the currently selected picker model.
@@ -230,6 +235,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                     for attr in _BOOT_METER_ATTRS
                 }
                 cost_snap = float(_BOOT_CARRY_COST_USD or 0.0)
+                price_src_snap = _BOOT_CARRY_PRICE_SOURCE
             else:
                 try:
                     carry_snap = {
@@ -244,18 +250,22 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                     }
                 try:
                     resolve_prices = _server_attr(
-                        "_resolve_active_prices", _resolve_active_prices
+                        "_resolve_active_prices_with_source",
+                        _resolve_active_prices_with_source,
                     )
-                    price_in, price_out = resolve_prices()
+                    price_in, price_out, price_src = resolve_prices()
                     boot_cost = _server_attr("_boot_session_cost", _boot_session_cost)
                     cost_snap = float(boot_cost(price_in, price_out))
+                    price_src_snap = _normalize_price_source(price_src)
                 except Exception:
                     cost_snap = float(_BOOT_CARRY_COST_USD or 0.0)
+                    price_src_snap = _BOOT_CARRY_PRICE_SOURCE
             payload = {
                 "app_run_id": run_id,
                 "cost_epoch": _COST_EPOCH.isoformat(),
                 "carry": carry_snap,
                 "carry_cost_usd": cost_snap,
+                "carry_price_source": price_src_snap,
                 "plan_billing": bool(_BOOT_PLAN_BILLING),
                 "pilot_by_model": _pilot_slices_for_persist(),
                 "repos": sorted(_BOOT_REPOS),
@@ -274,7 +284,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
 
 def _restore_boot_usage() -> bool:
     """Reload boot meters when this backend shares the Electron app-run id."""
-    global _COST_EPOCH, _BOOT_USAGE_RESTORED, _BOOT_CARRY_COST_USD, _BOOT_PLAN_BILLING
+    global _COST_EPOCH, _BOOT_USAGE_RESTORED, _BOOT_CARRY_COST_USD, _BOOT_CARRY_PRICE_SOURCE, _BOOT_PLAN_BILLING
     if _BOOT_USAGE_RESTORED:
         return False
     _BOOT_USAGE_RESTORED = True
@@ -325,6 +335,12 @@ def _restore_boot_usage() -> bool:
             _BOOT_CARRY_COST_USD = float(data.get("carry_cost_usd", 0.0) or 0.0)
         except Exception:
             _BOOT_CARRY_COST_USD = 0.0
+        try:
+            _BOOT_CARRY_PRICE_SOURCE = _normalize_price_source(
+                data.get("carry_price_source")
+            )
+        except Exception:
+            _BOOT_CARRY_PRICE_SOURCE = PRICE_SOURCE_DEFAULT
         try:
             _BOOT_PLAN_BILLING = bool(data.get("plan_billing", False))
         except Exception:

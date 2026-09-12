@@ -188,6 +188,7 @@ _COST_SCALAR_ALIASES = frozenset(
     {
         "_COST_EPOCH",
         "_BOOT_CARRY_COST_USD",
+        "_BOOT_CARRY_PRICE_SOURCE",
         "_BOOT_PLAN_BILLING",
         "_BOOT_USAGE_RESTORED",
         "_BOOT_USAGE_LAST_PERSIST",
