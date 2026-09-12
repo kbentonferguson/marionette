@@ -336,6 +336,7 @@ class WikiClient:
                 title = str(hit.get("title") or slug)
                 snippet = (
                     hit.get("snippet")
+                    or hit.get("excerpt")
                     or hit.get("description")
                     or hit.get("body")
                     or ""

@@ -96,6 +96,29 @@ def test_ingest_posts_correct_payload(monkeypatch):
     assert captured["auth"] == "Bearer secret"
 
 
+def test_search_pages_maps_portable_wiki_excerpt_to_snippet(monkeypatch):
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"results": [{
+                "title": "Session review artifact overwrite",
+                "slug": "incident-session-review-artifact-overwrite",
+                "excerpt": "A review agent silently replaced 4,847 bytes.",
+            }]}).encode()
+
+    monkeypatch.setattr(
+        "harness.wiki._wiki_safe_urlopen", lambda req, timeout=0: FakeResp()
+    )
+
+    hits = WikiClient(base_url="https://wiki.example.com", token="secret").search_pages(
+        "artifact overwrite"
+    )
+
+    assert hits[0]["snippet"] == "A review agent silently replaced 4,847 bytes."
+
+
 def test_strip_cross_host_auth_headers():
     import urllib.request
     from harness.wiki import _strip_cross_host_auth_headers
