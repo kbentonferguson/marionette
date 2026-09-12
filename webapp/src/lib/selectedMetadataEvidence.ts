@@ -24,7 +24,7 @@ export type SelectedHistory = { kind: 'unavailable'; reason: string } | ({ kind:
   captured_attempts: number | null; captured_runs: number | null; captured_process_outcomes: number | null; captured_observations: number | null;
   outcome: 'available' | 'unavailable'; coverage: 'captured' | 'partial' | 'unknown'; complete_invocation_history: false;
 } } & Record<HistoryLaneName, HistoryLane>);
-function fail(): never { throw new MetadataError('invalid_metadata'); }
+function fail(detail?: string): never { throw new MetadataError('invalid_metadata', detail); }
 function object(v: unknown): Record<string, unknown> { if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(); return v as Record<string, unknown>; }
 function string(v: unknown, max = 2048): string { if (typeof v !== 'string' || new TextEncoder().encode(v).length > max) return fail(); return v; }
 function count(v: unknown): number { if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return fail(); return v; }
