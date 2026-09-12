@@ -126,8 +126,6 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     ? native?.summaryFreshness === 'observed'
     : listed?.freshness === 'observed');
   const initialPMRead = useRef(false);
-  const pmHydrateAttempts = useRef(0);
-  const pmHydrateKey = useRef('');
   const inspect = (lane: LocalDetail['lane'] = 'actions') => {
     if (compact) return;
     revealInspection();
@@ -139,49 +137,40 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       void store.readDetail();
     }
   };
-  const hydratePM = selectedPM ?? canonicalSelection;
-  const hydrateKey = hydratePM ? metadataSelectionKey(hydratePM) : '';
   useEffect(() => {
-    if (hydrateKey !== pmHydrateKey.current) {
-      pmHydrateKey.current = hydrateKey;
-      initialPMRead.current = false;
-      pmHydrateAttempts.current = 0;
-    }
-  }, [hydrateKey]);
-  useEffect(() => {
-    if (deferAutoRead || !hydratePM || detail?.observation || detail?.error || state.view.kind !== 'view') return;
-    if (state.working) return;
-    if (pmHydrateAttempts.current >= 8) return;
-    pmHydrateAttempts.current += 1;
+    if (deferAutoRead || initialPMRead.current || !selectedPM || detail?.observation || state.working || state.view.kind !== 'view') return;
     initialPMRead.current = true;
     try {
-      store.select(hydratePM);
+      store.select(selectedPM);
       void store.readDetail();
     } catch {
       initialPMRead.current = false;
     }
-  }, [deferAutoRead, hydratePM, detail?.observation, detail?.error, state.working, state.view, store]);
+  }, [deferAutoRead, selectedPM, detail?.observation, state.working, state.view, store]);
+  // A local alias with a canonical PM ref hydrates that job cache-only: it never takes over
+  // the selection and re-attempts whenever the store settles idle without an observation
+  // or error for the key (at most every 2s), so a reset after invalidate cannot strand it.
+  const canonicalKey = !selectedPM && canonicalSelection ? metadataSelectionKey(canonicalSelection) : '';
+  const canonicalRef = useRef(canonicalSelection);
+  canonicalRef.current = canonicalSelection;
   useEffect(() => {
-    if (deferAutoRead || !hydratePM || detail?.observation || detail?.error || state.view.kind !== 'view') return;
-    if (pmHydrateAttempts.current >= 8) return;
-    const timer = window.setInterval(() => {
-      if (pmHydrateAttempts.current >= 8) return;
+    if (deferAutoRead || !canonicalKey || state.view.kind !== 'view') return;
+    let last: number | null = null;
+    const attempt = () => {
+      const selection = canonicalRef.current;
       const snap = store.getSnapshot();
-      if (snap.working || snap.view.kind !== 'view') return;
-      const key = metadataSelectionKey(hydratePM);
-      const current = snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === key ? snap.detail : snap.detailCache[key];
+      if (!selection || snap.working || snap.view.kind !== 'view') return;
+      const current = snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === canonicalKey
+        ? snap.detail : snap.detailCache[canonicalKey];
       if (current?.observation || current?.error) return;
-      pmHydrateAttempts.current += 1;
-      initialPMRead.current = true;
-      try {
-        store.select(hydratePM);
-        void store.readDetail();
-      } catch {
-        initialPMRead.current = false;
-      }
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [deferAutoRead, hydratePM, detail?.observation, detail?.error, state.view, store]);
+      const at = Date.now();
+      if (last !== null && at - last < 2000) return;
+      last = at;
+      void store.hydrateDetail(selection);
+    };
+    attempt();
+    return store.subscribe(attempt);
+  }, [deferAutoRead, canonicalKey, state.view.kind, store]);
   const initialNativeRead = useRef(false);
   const initialRoutingRead = useRef(false);
   useEffect(() => {
@@ -212,7 +201,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     store.select(selectedPM);
     void store.readDetail();
   }, [compact, deferAutoRead, navigation, selectedPM, state.working, state.view, store]);
-  const observation = hydratePM ? detail?.observation : undefined;
+  const observation = selectedPM ?? canonicalSelection ? detail?.observation : undefined;
   const detailFresh = detail?.freshness === 'observed' && (!observation?.expert || !!currentExpert(state, metadataSelectionKey(observation.selection)));
   const bindings = observation?.tasks.rows.flatMap(t => t.binding ? [t.binding] : []) ?? [];
   const authorizedJob: Job = { ...job, unavailable_fields: ['artifacts'], cancellation_view:

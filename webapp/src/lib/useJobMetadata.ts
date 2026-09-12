@@ -77,14 +77,24 @@ export class JobMetadataStore {
   private lastAdmittedView: MetadataView | null = null;
   private sessionPages = new Map<string, Pick<JobMetadataState, 'observations' | 'local' | 'headers' | 'pins'>>();
   constructor(client = new JobMetadataClient()) { this.client = client; }
-  /** Flip to target without blanking streams, observations, or detail cache. */
-  private retargetInPlace(target: MetadataTarget, reason: Extract<ViewState, { kind: 'target' }>['reason']): void {
+  /** Flip to target keeping PM membership traversal and list observations. The local
+   *  lane and selected-inspection state are fenced and reset like a fresh context. */
+  private retargetInPlace(target: MetadataTarget, reason: Extract<ViewState, { kind: 'target' }>['reason'], stale: boolean): void {
+    const fresh = blank(this.state.epoch + 1, { kind: 'target', target, reason });
     this.publish({
-      ...this.state,
-      epoch: this.state.epoch + 1,
+      ...fresh,
       contextEpoch: this.state.contextEpoch + 1,
       working: this.inFlight,
-      view: { kind: 'target', target, reason },
+      streams: this.state.streams,
+      nextStream: this.state.nextStream,
+      nextForeground: this.state.nextForeground,
+      nextPrimaryActive: this.state.nextPrimaryActive,
+      activeSnapshotKeys: this.state.activeSnapshotKeys,
+      observations: stale ? this.state.observations.map(o => ({ ...o, freshness: 'stale' })) : this.state.observations,
+      removals: this.state.removals,
+      observedAt: this.state.observedAt,
+      headers: this.state.headers,
+      pins: this.state.pins,
     });
   }
   private sessionPageKey(target: { repo: string; session_id: string }): string {
@@ -94,6 +104,8 @@ export class JobMetadataStore {
     const view = this.state.view;
     if (view.kind === 'idle' || !view.target.session_id) return;
     if (!this.state.observations.length && !this.state.local.observations.length) return;
+    // An invalidated retarget already remembered the last-good page; its stale copy must not replace it.
+    if (view.kind === 'target' && view.reason === 'invalidated') return;
     const key = this.sessionPageKey(view.target);
     this.sessionPages.delete(key);
     this.sessionPages.set(key, {
@@ -150,7 +162,7 @@ export class JobMetadataStore {
       && previous.target.repo === nextTarget.repo
       && previous.target.session_id === nextTarget.session_id;
     if (sameIds) {
-      this.retargetInPlace(nextTarget, 'not_opened');
+      this.retargetInPlace(nextTarget, 'not_opened', false);
       return;
     }
     this.lastAdmittedView = null;
@@ -177,7 +189,7 @@ export class JobMetadataStore {
       return;
     }
     if (old.kind === 'view') this.lastAdmittedView = old.view;
-    this.retargetInPlace(old.target, 'invalidated');
+    this.retargetInPlace(old.target, 'invalidated', true);
   };
   closeConnection(): void { this.client.close(); this.client = new JobMetadataClient(); }
   dispose(): void {
@@ -695,6 +707,31 @@ export class JobMetadataStore {
     this.publish({ ...this.state, epoch: this.state.epoch + 1, localDetail: null, detail: captured === null ? { kind: 'none' }
       : this.state.detailCache[metadataSelectionKey(captured)] ?? { kind: 'selected', selection: captured, observation: null, freshness: 'stale',
         cursors: { task_cursor: null, artifact_cursor: null }, error: null } });
+  }
+  /** Read a PM job's detail into detailCache without taking over the current selection.
+   *  Fenced by context, not by selection epoch, so a local inspection opened mid-read keeps
+   *  its lane while the canonical roster still lands. */
+  hydrateDetail(selection: MetadataSelection): Promise<MetadataActionResult> {
+    const view = this.state.view;
+    if (view.kind !== 'view' || view.refresh !== 'idle') return Promise.resolve('skipped');
+    const captured = this.captureSelection(selection);
+    const key = metadataSelectionKey(captured);
+    const contextEpoch = this.state.contextEpoch;
+    const cursors: DetailCursors = { task_cursor: null, artifact_cursor: null };
+    return this.run(async () => {
+      const response = await this.client.detail(view.context, captured, cursors);
+      if (this.disposed || this.state.contextEpoch !== contextEpoch || this.state.view.kind !== 'view') return;
+      const floor = Math.max(0, ...this.state.observations.filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision));
+      const incomplete = response.tasks.page.revision < floor || response.artifacts.page.revision < floor
+        || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
+      const entry: DetailState = { kind: 'selected', selection: captured, observation: response, cursors,
+        freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null };
+      const current = this.state.detail;
+      const retained = Object.entries(this.state.detailCache).filter(([cached]) => cached !== key).slice(-7);
+      this.publish({ ...this.state, selectedRefreshedAt: Date.now(),
+        detail: current.kind === 'selected' && metadataSelectionKey(current.selection) === key ? entry : current,
+        detailCache: Object.fromEntries([...retained, [key, entry]]) });
+    });
   }
   /** Refresh starts both lanes; advance carries the other lane's independent cursor unchanged. */
   readDetail(advance: 'refresh' | 'tasks' | 'artifacts' | HistoryLaneName = 'refresh', scheduled = false): Promise<MetadataActionResult> {
