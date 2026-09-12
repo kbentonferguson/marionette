@@ -148,9 +148,10 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     }
   }, [deferAutoRead, selectedPM, detail?.observation, state.working, state.view, store]);
   // A local alias with a canonical PM ref hydrates that job cache-only: it never takes over
-  // the selection and re-attempts whenever the store settles idle without an observation
-  // or error for the key (at most every 2s), so a reset after invalidate cannot strand it.
-  const canonicalKey = !selectedPM && canonicalSelection ? metadataSelectionKey(canonicalSelection) : '';
+  // the selection. While the job is live it re-hydrates when the listed row's revision moves
+  // past the cached detail or every 4s, so the roster follows routing and completion instead
+  // of freezing on the first observation. A selected inspection owns its own refresh cadence.
+  const canonicalKey = canonicalSelection ? metadataSelectionKey(canonicalSelection) : '';
   const canonicalRef = useRef(canonicalSelection);
   canonicalRef.current = canonicalSelection;
   useEffect(() => {
@@ -160,16 +161,24 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       const selection = canonicalRef.current;
       const snap = store.getSnapshot();
       if (!selection || snap.working || snap.view.kind !== 'view') return;
-      const current = snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === canonicalKey
-        ? snap.detail : snap.detailCache[canonicalKey];
-      if (current?.observation || current?.error) return;
+      if (snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === canonicalKey) return;
+      const current = snap.detailCache[canonicalKey];
       const at = Date.now();
-      if (last !== null && at - last < 2000) return;
+      let due = !current?.observation && !current?.error;
+      if (current?.observation && !current.error) {
+        const hydrated = Math.max(current.observation.tasks.page.revision, current.observation.artifacts.page.revision);
+        const listedRevision = snap.observations.find(o => metadataSelectionKey(o.row.selection) === canonicalKey)?.row.revision ?? 0;
+        const live = current.observation.lifecycle === null || !terminal.has(current.observation.lifecycle);
+        due = listedRevision > hydrated || (live && (last === null || at - last >= 4000));
+      }
+      if (!due || (last !== null && at - last < 2000)) return;
       last = at;
       void store.hydrateDetail(selection);
     };
     attempt();
-    return store.subscribe(attempt);
+    const tick = setInterval(() => { if (!document.hidden) attempt(); }, 2000);
+    const unsubscribe = store.subscribe(attempt);
+    return () => { clearInterval(tick); unsubscribe(); };
   }, [deferAutoRead, canonicalKey, state.view.kind, store]);
   const initialNativeRead = useRef(false);
   const initialRoutingRead = useRef(false);
@@ -319,7 +328,6 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     </> : null;
   return <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10 text-xs text-muted">
     <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
-      {canonical && cardTitle && <p className="text-[11px] font-semibold text-txt break-words">{cardTitle}</p>}
       <button className="self-start font-mono text-[9px] text-faint hover:text-muted" aria-label={`Job ${headerJobId}`} onClick={() => {
         void navigator.clipboard.writeText(headerJobId).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
       }}>Job {headerJobId}</button>
@@ -331,7 +339,7 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       </div>}
     </div>
     {workerCount > 0 && <CompactSwarmDashboard
-      title={cardTitle} lifecycle={observation?.lifecycle ?? nativeSummary?.lifecycle ?? job.status}
+      title={cardTitle} lifecycle={terminal.has(job.status) ? job.status : observation?.lifecycle ?? nativeSummary?.lifecycle ?? job.status}
       workerStatuses={taskStatusById}
       expert={(preferCanonicalRoster || nativeRows.length === 0) && expert && expert.kind !== 'unavailable' ? expert : undefined}
       headerModel={expertHeaderModel(currentHeader(state, expertKey)) ?? nativeSummary?.display?.model ?? undefined}

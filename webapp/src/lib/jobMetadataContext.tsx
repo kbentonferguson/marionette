@@ -71,8 +71,10 @@ export function currentExpert(state: JobMetadataState, key: string) {
   // An unrelated lane failure stamps every cached detail stale; a hydrated expert
   // whose own list row is still fresh stays visible.
   if (selected.freshness !== 'observed' && !selected.observation.expert) return undefined;
-  const latest = Math.max(0, ...[...state.observations, ...state.pins.flatMap(p => p.observation ? [p.observation] : [])].filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision), state.headers[key]?.observation.row.revision ?? 0);
-  return selected.observation.tasks.page.revision >= latest && selected.observation.artifacts.page.revision >= latest ? selected.observation.expert : undefined;
+  // A live job's list row runs ahead of the last detail read between refreshes. The roster
+  // stays visible from that read and the refresh cadence catches it up; the card takes its
+  // lifecycle from the fresher list row, so a settled job never renders as running.
+  return selected.observation.expert;
 }
 export function currentHeader(state: JobMetadataState, key: string) {
   const expert = currentExpert(state, key);

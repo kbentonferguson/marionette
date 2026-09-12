@@ -137,3 +137,51 @@ def test_lane_revision_skew_degrades_expert_not_lanes(tmp_path):
     }
     expert = reader._expert(attached, row, selection, skewed, dict(tasks=None, artifacts=None))
     assert expert == job_expert.unavailable('lane_revision_skew')
+
+
+def test_read_page_retries_snapshot_unavailable_then_returns_live_page(monkeypatch):
+    from types import SimpleNamespace
+
+    from harness import job_readmodel
+
+    naps = []
+    monkeypatch.setattr(job_readmodel.time, 'sleep', naps.append)
+    pages = iter([
+        SimpleNamespace(outcome='unavailable', reason='read_snapshot_unavailable', retry_after_ms=40),
+        SimpleNamespace(outcome='unavailable', reason='read_snapshot_unavailable', retry_after_ms=None),
+        SimpleNamespace(outcome='complete', reason=None, retry_after_ms=None),
+    ])
+    calls = []
+
+    def method(*args, **kwargs):
+        calls.append((args, kwargs))
+        return next(pages)
+
+    page = job_readmodel._read_page(method, 'ref', cursor=None, limit=1)
+    assert page.outcome == 'complete'
+    assert len(calls) == 3 and calls[0] == (('ref',), dict(cursor=None, limit=1))
+    assert naps == [0.04, 0.1]
+
+
+def test_read_page_gives_up_after_bounded_retries(monkeypatch):
+    from types import SimpleNamespace
+
+    from harness import job_readmodel
+
+    monkeypatch.setattr(job_readmodel.time, 'sleep', lambda _s: None)
+    locked = SimpleNamespace(outcome='unavailable', reason='read_snapshot_unavailable', retry_after_ms=100)
+    calls = []
+    page = job_readmodel._read_page(lambda: calls.append(1) or locked)
+    assert page is locked and len(calls) == job_readmodel.SNAPSHOT_RETRIES
+
+
+def test_read_page_does_not_retry_other_outcomes(monkeypatch):
+    from types import SimpleNamespace
+
+    from harness import job_readmodel
+
+    monkeypatch.setattr(job_readmodel.time, 'sleep', lambda _s: pytest.fail('unexpected sleep'))
+    missing = SimpleNamespace(outcome='unavailable', reason='missing', retry_after_ms=None)
+    calls = []
+    assert job_readmodel._read_page(lambda: calls.append(1) or missing) is missing
+    assert calls == [1]
