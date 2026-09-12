@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { JobMetadataClient } from '../lib/jobMetadata';
+import { JobMetadataClient, metadataSelectionKey } from '../lib/jobMetadata';
 import { JobMetadataStore } from '../lib/useJobMetadata';
-import { context, handshake, list, response, token, view } from './jobMetadata.fixtures';
+import { context, detail, handshake, list, response, selection, token, view } from './jobMetadata.fixtures';
 
 let store: JobMetadataStore;
 let request: ReturnType<typeof vi.fn<(path: string, init?: RequestInit) => Promise<Response>>>;
@@ -160,4 +160,26 @@ it('changed metadata view_generation after view_changed rebuilds traversal from 
     state: 'ready',
     traversal: { mode: 'snapshot', after_revision: 0, cursor: null },
   });
+});
+
+it('hydrateDetail keeps the last hydrated observation visibly stale across a transient unavailable read', async () => {
+  await open();
+  const good = detail();
+  request.mockImplementation(async (path: string) => path.endsWith('/view') ? response(view()) : path.includes('/detail') ? response(good) : response(list()));
+  expect(await store.hydrateDetail(selection())).toBe('applied');
+  const key = metadataSelectionKey(selection());
+  expect(store.getSnapshot().detailCache[key]).toMatchObject({ freshness: 'observed', error: null });
+
+  const locked = { ...good, lifecycle: null,
+    tasks: { page: { outcome: 'unavailable', revision: 0, scanned: 0, checkpoint: 0, next_cursor: null }, rows: [] },
+    artifacts: { page: { outcome: 'unavailable', revision: 0, scanned: 0, checkpoint: 0, next_cursor: null }, rows: [] },
+    display: { kind: 'unavailable', reason: 'read_snapshot_unavailable' }, task_count: null, artifact_count: null,
+    history: { kind: 'unavailable', reason: 'read_snapshot_unavailable' }, cost: { kind: 'unavailable', reason: 'read_snapshot_unavailable' },
+    missing: ['history', 'cost', 'read_snapshot_unavailable'] };
+  request.mockImplementation(async (path: string) => path.endsWith('/view') ? response(view()) : path.includes('/detail') ? response(locked) : response(list()));
+  expect(await store.hydrateDetail(selection())).toBe('applied');
+  const entry = store.getSnapshot().detailCache[key];
+  expect(entry).toMatchObject({ freshness: 'stale', error: null });
+  expect(entry.observation?.tasks.rows).toHaveLength(1);
+  expect(entry.observation?.lifecycle).toBe('running');
 });

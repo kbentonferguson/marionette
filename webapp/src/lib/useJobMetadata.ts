@@ -52,6 +52,16 @@ function blank(epoch: number, view: ViewState): JobMetadataState {
   return { headerError: null, headerReads: {}, headers: {}, nextHeader: 0, selectedRefreshedAt: 0, startupStopped: false, activeSnapshotKeys: {}, localActive: { initialized: false, snapshotRevisions: {}, traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', keys: [], missing: [], observedAt: null }, nextPrimaryActive: 0, contextEpoch: 0, followedLocal: [], followedCursors: {}, nextFollowed: 0, actionPage: null, local: { observations: [], traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'ready', missing: [], observedAt: null }, localDetail: null, advanceNumber: 0, observedAt: {}, epoch, view, working: false, error: null, observations: [], removals: [], streams: [], nextStream: 0, nextForeground: 0, pins: [], detail: { kind: 'none' }, detailCache: {}, displayLimited: false };
 }
 function code(error: unknown): MetadataErrorCode { return error instanceof MetadataError ? error.code : 'outcome_unknown'; }
+/** A live job's expert projection is re-read after hydration and can miss a race the lanes
+ *  survived (`selection_changed`, `deadline`, `lane_revision_skew`). Those are transient, so
+ *  the last projected roster carries forward until the next read lands a fresh one. */
+const transientExpert = new Set(['selection_changed', 'deadline', 'lane_revision_skew', 'read_snapshot_unavailable']);
+function carryExpert(response: MetadataDetail, previous: MetadataDetail | null | undefined): MetadataDetail {
+  const current = response.expert, prior = previous?.expert;
+  if (!current || current.kind !== 'unavailable' || !transientExpert.has(current.reason ?? '')) return response;
+  if (!prior || prior.kind === 'unavailable') return response;
+  return { ...response, expert: prior };
+}
 const contextEvents = ['harness-project-switching', 'harness-project-selected', 'harness-session-changed', 'harness-config-changed'];
 
 /** One owner per workspace UI. Subscribers are passive; only the owner starts work. */
@@ -724,8 +734,13 @@ export class JobMetadataStore {
       const floor = Math.max(0, ...this.state.observations.filter(o => metadataSelectionKey(o.row.selection) === key).map(o => o.row.revision));
       const incomplete = response.tasks.page.revision < floor || response.artifacts.page.revision < floor
         || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
-      const entry: DetailState = { kind: 'selected', selection: captured, observation: response, cursors,
-        freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null };
+      // A transient unavailable read (store lock, lane skew) keeps the last hydrated roster
+      // visibly stale rather than blanking the card; the next tick re-hydrates.
+      const previous = this.state.detailCache[key]?.observation;
+      const entry: DetailState = incomplete && previous
+        ? { kind: 'selected', selection: captured, observation: previous, cursors, freshness: 'stale', error: null }
+        : { kind: 'selected', selection: captured, observation: carryExpert(response, previous), cursors,
+          freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null };
       const current = this.state.detail;
       const retained = Object.entries(this.state.detailCache).filter(([cached]) => cached !== key).slice(-7);
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(),
@@ -756,7 +771,7 @@ export class JobMetadataStore {
       const revisionFloor = Math.max(detail.observation?.tasks.page.revision ?? 0, ...this.state.observations.filter(o => metadataSelectionKey(o.row.selection) === metadataSelectionKey(detail.selection)).map(o => o.row.revision));
       const incomplete = response.tasks.page.revision < revisionFloor || response.artifacts.page.revision < revisionFloor || selectedHistoryUnavailable || [response.tasks.page.outcome, response.artifacts.page.outcome].some(o => o === 'unavailable' || o === 'cursor_expired');
       // An unavailable selected lookup retains the last observation visibly stale.
-      const observation = incomplete && detail.observation ? detail.observation : response;
+      const observation = incomplete && detail.observation ? detail.observation : carryExpert(response, detail.observation);
       this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + Number(scheduled), detail: { ...detail, observation, cursors: incomplete ? detail.cursors : captured,
         freshness: incomplete ? 'stale' : 'observed', error: incomplete ? 'unavailable' : null } });
     }, () => { if (scheduled) this.publish({ ...this.state, selectedRefreshedAt: Date.now(), advanceNumber: this.state.advanceNumber + 1 }); });

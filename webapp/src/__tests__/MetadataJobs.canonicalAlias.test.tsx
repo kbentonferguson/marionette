@@ -508,6 +508,26 @@ describe('metadataJobs alias dedupe', () => {
     expect(expert?.kind).toBe('available');
     expect(expert?.tasks).toHaveLength(4);
   });
+
+  it('keeps the hydrated roster when a live list row runs ahead of the last detail read', () => {
+    const c = context();
+    const selected = pmSelection(c);
+    const key = metadataSelectionKey(selected);
+    const detail = fourTaskDetail(selected, c);
+    const state = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      observations: [{ row: { ...pmRow(c), revision: detail.tasks.page.revision + 250 }, freshness: 'observed' }],
+      pins: [],
+      detail: { kind: 'none' },
+      detailCache: {
+        [key]: { kind: 'selected', selection: selected, cursors: { task_cursor: null, artifact_cursor: null }, observation: detail, freshness: 'observed', error: null },
+      },
+      headers: {},
+      error: null,
+      working: false,
+    } as unknown as JobMetadataState;
+    expect(currentExpert(state, key)?.tasks).toHaveLength(4);
+  });
 });
 
 describe('SwarmPane canonical alias presentation', () => {
@@ -534,6 +554,22 @@ describe('SwarmPane canonical alias presentation', () => {
       fixture.unmount();
     }
   });
+
+  it('re-hydrates a live canonical alias so the roster follows the job instead of freezing', async () => {
+    const fixture = await mountCanonicalAlias({ includePmList: false });
+    const detailCalls = () => fixture.requestJSON.mock.calls.filter(([, path]) => String(path).includes('/detail')).length;
+    try {
+      const row = await screen.findByTestId(`inspect-local-${localSummary().local_ref.job_id}`);
+      fireEvent.click(within(row).getByRole('button', { name: /Provider worker|canonical swarm goal|Synthetic alias/ }));
+      await screen.findByRole('group', { name: 'Workers' });
+      const first = detailCalls();
+      expect(first).toBeGreaterThan(0);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 4600)); });
+      await waitFor(() => expect(detailCalls()).toBeGreaterThan(first));
+    } finally {
+      fixture.unmount();
+    }
+  }, 15000);
 
   it('hides the alias once the canonical PM row is observed', async () => {
     const fixture = await mountCanonicalAlias({ includePmList: false });
