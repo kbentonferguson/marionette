@@ -30,8 +30,11 @@ def timestamp(value):
     """Wire timestamps must end in Z or ±HH:MM; normalize colon-less offsets."""
     if not isinstance(value, str) or len(value) > 64:
         return None
+    candidate = value.replace('Z', '+00:00')
+    if len(candidate) >= 5 and candidate[-5] in '+-' and candidate[-4:].isdigit():
+        candidate = candidate[:-2] + ':' + candidate[-2:]
     try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        parsed = datetime.fromisoformat(candidate)
     except ValueError:
         return None
     if not parsed.tzinfo:
