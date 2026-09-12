@@ -189,6 +189,11 @@ it('replaces a local placeholder only with its fresh exact canonical PM identity
   const canonical = { row: { ...summary(), selection: { ...selection(), job_ref: { job_id: 'job_canonical', state_id: 'store-A', version: 2, incarnation: 'pm-incarnation' } } }, freshness: 'observed' } satisfies MetadataObservation;
   expect(canonicalPMReplacesLocal(local, [canonical])).toBe(true);
   expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale' }])).toBe(false);
+  // Terminal is monotonic: a stale PM row that already reported complete still hides the
+  // alias, so the job cannot snap back to Active on the next stale flip.
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale', row: { ...canonical.row, lifecycle: 'complete' } }])).toBe(true);
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale', row: { ...canonical.row, lifecycle: 'failed' } }])).toBe(true);
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale', row: { ...canonical.row, lifecycle: null } }])).toBe(false);
   expect(canonicalPMReplacesLocal(local, [{ ...canonical, row: { ...canonical.row, ownership: { ...canonical.row.ownership, session_id: 'foreign' } } }])).toBe(false);
   expect(canonicalPMReplacesLocal(local, [{ ...canonical, row: { ...canonical.row, selection: { ...canonical.row.selection, job_ref: { ...canonical.row.selection.job_ref, incarnation: 'other' } } } }])).toBe(false);
 });

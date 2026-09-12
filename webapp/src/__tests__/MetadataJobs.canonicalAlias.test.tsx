@@ -480,6 +480,44 @@ describe('metadataJobs alias dedupe', () => {
     expect(jobs[0].local_ref?.incarnation).toBe(incarnation);
   });
 
+  it('moves a live alias to finished as soon as its canonical detail or a stale PM row reports terminal', () => {
+    const c = context();
+    const selected = pmSelection(c);
+    const key = metadataSelectionKey(selected);
+    const alias = localSummary({ lifecycle: 'running' });
+    const base = {
+      view: { kind: 'view', target: { repo: c.repo, session_id: c.session_id, scope: 'all' }, context: c, view: view(c.view_generation), refresh: 'idle' },
+      pins: [],
+      local: { observations: [{ row: alias, freshness: 'observed', observedAt: 1 }] satisfies LocalObservation[], traversal: { mode: 'snapshot', after_revision: 0, cursor: null }, state: 'complete', missing: [], observedAt: 1 },
+      localDetail: null,
+      detail: { kind: 'none' },
+      headers: {},
+      working: false,
+      error: null,
+    };
+    // List lanes have not caught up (no PM row yet), but the 4s detail hydrate already saw complete.
+    const detailSettled = {
+      ...base,
+      observations: [],
+      detailCache: { [key]: { kind: 'selected', selection: selected, cursors: { task_cursor: null, artifact_cursor: null }, observation: { ...fourTaskDetail(selected, c), lifecycle: 'complete' }, freshness: 'observed', error: null } },
+    } as unknown as JobMetadataState;
+    expect(metadataJobs(detailSettled).map(job => [job.id, job.status])).toEqual([['local-swarm-call_00_alias', 'complete']]);
+    // A still-running detail leaves the alias running.
+    const detailRunning = {
+      ...base,
+      observations: [],
+      detailCache: { [key]: { kind: 'selected', selection: selected, cursors: { task_cursor: null, artifact_cursor: null }, observation: { ...fourTaskDetail(selected, c), lifecycle: 'running' }, freshness: 'observed', error: null } },
+    } as unknown as JobMetadataState;
+    expect(metadataJobs(detailRunning).map(job => job.status)).toEqual(['running']);
+    // A PM row that reported complete and then went stale still replaces the alias: no snap back to Active.
+    const stalePM = {
+      ...base,
+      observations: [{ row: { ...pmRow(c), lifecycle: 'complete' }, freshness: 'stale' }],
+      detailCache: {},
+    } as unknown as JobMetadataState;
+    expect(metadataJobs(stalePM).map(job => [job.id, job.status])).toEqual([[canonical.job_ref.job_id, 'complete']]);
+  });
+
   it('keeps a hydrated expert when detail freshness is stale from an unrelated lane error', () => {
     const c = context();
     const selected = pmSelection(c);

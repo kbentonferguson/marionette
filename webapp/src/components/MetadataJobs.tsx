@@ -26,6 +26,7 @@ import { openAgentUrlExternal } from '../lib/agentLinks';
 import { canonicalExpertSelection, expertLookupKey, metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
 import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalRoute, LocalSummary } from '../lib/localJobMetadata';
+import type { MetadataActionResult } from '../lib/useJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
 
 const button = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
@@ -148,11 +149,17 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     const first = !initialPMRead.current;
     initialPMRead.current = true;
     lastPMRead.current = at;
+    // The store is single-flight. A read that lost to the list cadence or another
+    // job's refresh must not spend this 4s slot: re-arm so the next working=false
+    // publish retries at once instead of leaving a freshly expanded row blank.
+    const rearmIfSkipped = (result: Promise<MetadataActionResult>) => {
+      void result.then(outcome => { if (outcome === 'skipped') { lastPMRead.current = 0; if (first) initialPMRead.current = false; } });
+    };
     try {
       const own = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(selectedPM);
-      if (own) void store.readDetail();
-      else if (first || state.detail.kind === 'none') { store.select(selectedPM); void store.readDetail(); }
-      else void store.hydrateDetail(selectedPM); // another inspection owns the selection; refresh cache-only
+      if (own) rearmIfSkipped(store.readDetail());
+      else if (first || state.detail.kind === 'none') { store.select(selectedPM); rearmIfSkipped(store.readDetail()); }
+      else rearmIfSkipped(store.hydrateDetail(selectedPM)); // another inspection owns the selection; refresh cache-only
     } catch {
       initialPMRead.current = false;
     }
@@ -616,7 +623,10 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     const workerProgressFull = showWorkerProgress && finishedWorkers >= workerCount;
     const runningIcon = !job.local_ref && job.read_status !== 'unavailable' && job.status === 'running';
     const adapter = job.adapter || '';
-    return <div className="relative shrink-0 flex flex-col border-b border-edge/25 last:border-b-0" key={key} hidden={!isActive(job) && !isNativeActivity(job) && !finishedOpen && !open} data-job-id={job.id} data-job-source={job.source} data-testid={`inspect-${job.source}-${job.id}`} data-quality={quality(job)}
+    const rowHidden = !isActive(job) && !isNativeActivity(job) && !finishedOpen && !open;
+    // Tailwind's preflight [hidden] rule loses to the later .flex utility, so
+    // the display class must flip with the attribute or the row stays visible.
+    return <div className={`relative shrink-0 ${rowHidden ? 'hidden' : 'flex'} flex-col border-b border-edge/25 last:border-b-0`} key={key} hidden={rowHidden} data-job-id={job.id} data-job-source={job.source} data-testid={`inspect-${job.source}-${job.id}`} data-quality={quality(job)}
       onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
       <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-8' : 'pr-5'}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
         <span className="shrink-0 text-faint">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
