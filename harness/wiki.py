@@ -349,6 +349,25 @@ class WikiClient:
         except Exception:
             return []
 
+    def page_body(self, slug: str) -> str:
+        """Fetch one page body through the native wiki page endpoint."""
+        if not self.configured or not (slug or "").strip():
+            return ""
+        try:
+            safe_slug = urllib.parse.quote(slug.strip(), safe="")
+            req = urllib.request.Request(
+                f"{self.base_url}/wiki/page/{safe_slug}",
+                method="GET",
+                headers=self._auth_headers(),
+            )
+            with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
+                if r.status != 200:
+                    return ""
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            return str(data.get("body") or "") if isinstance(data, dict) else ""
+        except Exception:
+            return ""
+
     def query(self, question: str) -> str:
         """Query the wiki's LLM query/search surface.
 

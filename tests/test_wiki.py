@@ -96,6 +96,36 @@ def test_ingest_posts_correct_payload(monkeypatch):
     assert captured["auth"] == "Bearer secret"
 
 
+def test_page_body_fetches_the_native_page_endpoint(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"body": "The durable answer is later in the page."}).encode()
+
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["auth"] = req.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return FakeResp()
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+
+    body = WikiClient(
+        base_url="https://wiki.example.com", token="secret", timeout=7
+    ).page_body(
+        "incident-session-review-artifact-overwrite"
+    )
+
+    assert body == "The durable answer is later in the page."
+    assert captured["url"].endswith("/wiki/page/incident-session-review-artifact-overwrite")
+    assert captured["auth"] == "Bearer secret"
+    assert captured["timeout"] == 7
+
+
 def test_strip_cross_host_auth_headers():
     import urllib.request
     from harness.wiki import _strip_cross_host_auth_headers

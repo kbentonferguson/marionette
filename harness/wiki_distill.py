@@ -89,6 +89,10 @@ class WikiDistillMixin:
                 self._wiki_cache_pages = 0
                 return wiki_section
 
+            top_body = self._wiki.page_body(str(hits[0].get("slug") or ""))
+            if top_body:
+                hits[0] = {**hits[0], "snippet": top_body}
+
             authoritative = (
                 "WIKI HAS ALREADY BEEN QUERIED FOR THIS TURN. Relevant notes and "
                 "decisions from your durable wiki are provided in the section below. "

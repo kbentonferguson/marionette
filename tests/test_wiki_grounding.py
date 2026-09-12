@@ -55,11 +55,50 @@ def test_wiki_section_non_empty_with_mocked_search(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(s._wiki, "search_pages", fake_search)
+    monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     section = s._build_turn_wiki_section("what about the default driver?")
     assert section
     assert "WIKI HAS ALREADY BEEN QUERIED" in section
     assert "Driver decision" in section
     assert "stub-oracle-v2" in section
+
+
+def test_wiki_section_hydrates_top_page_inside_existing_budget(tmp_path):
+    s = _session(tmp_path)
+    s._task_profile = STANDARD
+
+    class FakeWiki:
+        configured = True
+
+        def search_pages(self, query, *, limit=5):
+            return [
+                {
+                    "title": "Overwrite incident",
+                    "slug": "overwrite-incident",
+                    "snippet": "A review artifact was overwritten.",
+                },
+                {
+                    "title": "Other note",
+                    "slug": "other-note",
+                    "snippet": "Keep this secondary candidate visible.",
+                },
+            ]
+
+        def page_body(self, slug):
+            assert slug == "overwrite-incident"
+            return (
+                "A" * 350
+                + " The prevention is reserving a unique path before writing."
+                + " Z" * 5000
+            )
+
+    s._wiki = FakeWiki()
+
+    section = s._build_turn_wiki_section("what prevents the overwrite now?")
+
+    assert "The prevention is reserving a unique path before writing." in section
+    assert "Keep this secondary candidate visible." in section
+    assert len(section) <= s._WIKI_GROUNDING_STANDARD_MAX_CHARS + 1
 
 
 def test_trailer_includes_wiki_after_cg(tmp_path, monkeypatch):
