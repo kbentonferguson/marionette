@@ -2554,8 +2554,8 @@ def drain_idle_turn(
                 row['input_id'] = queued['input_id']
             session._history.append(row)
             if queued.get('input_id'):
-                from .input_receipts import session_input_store
-                session_input_store(session).publish_injected([queued['input_id']], session.export_transcript_data())
+                from .input_receipts import publish_session_injected
+                publish_session_injected(session, [queued['input_id']])
         # Refresh the "current user message" reference so downstream
         # per-turn hooks (compaction, ingest, budget) attribute work
         # to the newly-running queued prompt instead of the previous

@@ -143,6 +143,7 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
         "submit_forced_budget": False,
         "has_work": None,
         "final_response_excerpt": "",
+        "provider_body": "",
     }
     if store is None:
         return snap
@@ -276,6 +277,8 @@ def _agentic_store_failure_snapshot(store: Any, job_id: str = "") -> dict:
             snap["provider"] = str(payload.get("provider") or "").strip()
         if not snap["model"] and payload.get("model"):
             snap["model"] = str(payload.get("model") or "").strip()
+        if not snap["provider_body"] and payload.get("provider_body"):
+            snap["provider_body"] = _provider_reject_message(payload.get("provider_body"))
         if payload.get("submit_forced_budget") is True:
             snap["submit_forced_budget"] = True
         if snap["has_work"] is None and isinstance(payload.get("has_work"), bool):
@@ -311,8 +314,11 @@ def _format_agentic_engine_error(
     parts = [f"Agentic engine error: {redact_secret_text(str(exc))}"]
     snap = snapshot or {}
     reason = redact_secret_text(str(snap.get("reason") or "").strip())
+    provider_body = redact_secret_text(str(snap.get("provider_body") or "").strip())
     if reason and reason not in parts[0]:
         parts.append(reason)
+    if provider_body and provider_body not in parts[0] and provider_body != reason:
+        parts.append(provider_body)
     if not reason:
         names = [str(item) for item in (snap.get("event_names") or []) if str(item).strip()]
         if names:
@@ -353,6 +359,28 @@ def _format_agentic_engine_error(
     if files:
         parts.append("unapplied worktree files: " + ", ".join(files))
     return "\n".join(parts)
+
+
+def _provider_reject_message(raw) -> str:
+    """Pull the human reject line out of a stored provider_body JSON blob."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "").strip()
+            if msg:
+                return _redact_text(msg)
+        msg = str(parsed.get("message") or "").strip()
+        if msg:
+            return _redact_text(msg)
+    return _redact_text(text)[-500:]
 
 
 def _redact_text(text: str) -> str:

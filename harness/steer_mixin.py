@@ -363,7 +363,8 @@ class SteerMixin:
                 if display and transcript is not None:
                     transcript.append({'type': 'message', 'role': 'user', 'text': action.text, 'input_id': action.id})
             if receipts is not None:
-                receipts.publish_injected([a.id for a in actions], self.export_transcript_data())
+                from .input_receipts import publish_session_injected
+                publish_session_injected(self, [a.id for a in actions])
             return True
 
     @staticmethod
