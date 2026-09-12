@@ -137,16 +137,26 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       void store.readDetail();
     }
   };
+  // First read selects the PM job. A detail left errored or stale by a failed lane read is
+  // re-read on a 4s cadence instead of staying blank until a manual Retry.
+  const lastPMRead = useRef(0);
+  const detailNeedsRead = !detail?.observation || detail.error !== null || detail.freshness === 'stale';
   useEffect(() => {
-    if (deferAutoRead || initialPMRead.current || !selectedPM || detail?.observation || state.working || state.view.kind !== 'view') return;
+    if (deferAutoRead || !selectedPM || !detailNeedsRead || state.working || state.view.kind !== 'view') return;
+    const at = Date.now();
+    if (initialPMRead.current && at - lastPMRead.current < 4000) return;
+    const first = !initialPMRead.current;
     initialPMRead.current = true;
+    lastPMRead.current = at;
     try {
-      store.select(selectedPM);
-      void store.readDetail();
+      const own = state.detail.kind === 'selected' && metadataSelectionKey(state.detail.selection) === metadataSelectionKey(selectedPM);
+      if (own) void store.readDetail();
+      else if (first || state.detail.kind === 'none') { store.select(selectedPM); void store.readDetail(); }
+      else void store.hydrateDetail(selectedPM); // another inspection owns the selection; refresh cache-only
     } catch {
       initialPMRead.current = false;
     }
-  }, [deferAutoRead, selectedPM, detail?.observation, state.working, state.view, store]);
+  }, [deferAutoRead, selectedPM, detailNeedsRead, state.working, state.view, state.detail, store]);
   // A local alias with a canonical PM ref hydrates that job cache-only: it never takes over
   // the selection. While the job is live it re-hydrates when the listed row's revision moves
   // past the cached detail or every 4s, so the roster follows routing and completion instead
@@ -164,12 +174,14 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
       if (snap.detail.kind === 'selected' && metadataSelectionKey(snap.detail.selection) === canonicalKey) return;
       const current = snap.detailCache[canonicalKey];
       const at = Date.now();
-      let due = !current?.observation && !current?.error;
-      if (current?.observation && !current.error) {
+      const cadence = last === null || at - last >= 4000;
+      let due = !current;
+      if (current && !current.observation) due = cadence;
+      else if (current?.observation) {
         const hydrated = Math.max(current.observation.tasks.page.revision, current.observation.artifacts.page.revision);
         const listedRevision = snap.observations.find(o => metadataSelectionKey(o.row.selection) === canonicalKey)?.row.revision ?? 0;
         const live = current.observation.lifecycle === null || !terminal.has(current.observation.lifecycle);
-        due = listedRevision > hydrated || (live && (last === null || at - last >= 4000));
+        due = listedRevision > hydrated || ((live || current.error !== null || current.freshness === 'stale') && cadence);
       }
       if (!due || (last !== null && at - last < 2000)) return;
       last = at;

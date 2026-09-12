@@ -183,3 +183,22 @@ it('hydrateDetail keeps the last hydrated observation visibly stale across a tra
   expect(entry.observation?.tasks.rows).toHaveLength(1);
   expect(entry.observation?.lifecycle).toBe('running');
 });
+
+it('a failed list-lane read leaves hydrated details stale but not errored; only a failed detail read errors its own key', async () => {
+  await open();
+  const good = detail();
+  request.mockImplementation(async (path: string) => path.endsWith('/view') ? response(view()) : path.includes('/detail') ? response(good) : response(list()));
+  expect(await store.hydrateDetail(selection())).toBe('applied');
+  const key = metadataSelectionKey(selection());
+
+  request.mockImplementation(async (path: string) => path.endsWith('/view') ? response(view()) : path.includes('/detail') ? response(good) : response({ code: 'store_unavailable' }, 503));
+  await store.advance();
+  const afterList = store.getSnapshot();
+  expect(afterList.error).not.toBeNull();
+  expect(afterList.detailCache[key]).toMatchObject({ freshness: 'stale', error: null });
+  expect(afterList.detailCache[key].observation?.tasks.rows).toHaveLength(1);
+
+  request.mockImplementation(async (path: string) => path.endsWith('/view') ? response(view()) : path.includes('/detail') ? response({ code: 'store_unavailable' }, 503) : response(list()));
+  await store.hydrateDetail(selection());
+  expect(store.getSnapshot().detailCache[key].error).not.toBeNull();
+});
