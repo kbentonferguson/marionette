@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   clearSwarmAwaitWaitHint,
+  confirmedTerminalJobIds,
   hasLiveBackgroundJobIds,
+  noteEmptyRecoveryDrain,
   PILOT_LOOKING_HINT,
   pilotResumePollAction,
   pruneTerminalJobIds,
+  RESULT_RECOVERY_DRAIN_LIMIT,
   seedPendingJobIdsFromHydrate,
   hydratePendingJobIdsAfterReload,
   pendingJobIdsFromSwarmLive,
@@ -642,6 +645,33 @@ describe("swarm await chrome", () => {
       ["job_other_session"],
       pending,
     )).toEqual([]);
+  });
+
+  it("drops a terminal id only after its bounded recovery drains ran empty so Still working can clear", () => {
+    const delivered = new Set(["job_with_card"]);
+    const terminalIds = ["job_with_card", "local-4953b070", "job_still_pending"];
+    const drains = new Map<string, number>();
+    // Delivered card confirms at once; result-less ids wait for the drains.
+    expect(confirmedTerminalJobIds({ terminalIds, deliveredJobIds: delivered, emptyDrains: drains }))
+      .toEqual(["job_with_card"]);
+    // Late exact results still get every drain below the limit.
+    for (let i = 0; i < RESULT_RECOVERY_DRAIN_LIMIT - 1; i++) {
+      noteEmptyRecoveryDrain(drains, ["local-4953b070"]);
+    }
+    expect(confirmedTerminalJobIds({ terminalIds, deliveredJobIds: delivered, emptyDrains: drains }))
+      .toEqual(["job_with_card"]);
+    // The interrupted worker that never produces a card is confirmed terminal
+    // at the limit; the id nobody drained still holds.
+    noteEmptyRecoveryDrain(drains, ["local-4953b070"]);
+    const confirmed = confirmedTerminalJobIds({ terminalIds, deliveredJobIds: delivered, emptyDrains: drains });
+    expect(confirmed).toEqual(["job_with_card", "local-4953b070"]);
+    expect(pruneTerminalJobIds(terminalIds, confirmed)).toEqual(["job_still_pending"]);
+    // Once every id is drained out the latch empties and no background id is live.
+    noteEmptyRecoveryDrain(drains, Array(RESULT_RECOVERY_DRAIN_LIMIT).fill("job_still_pending"));
+    expect(hasLiveBackgroundJobIds(pruneTerminalJobIds(
+      terminalIds,
+      confirmedTerminalJobIds({ terminalIds, deliveredJobIds: delivered, emptyDrains: drains }),
+    ))).toBe(false);
   });
 
   it("fences trailing getSessionState apply so late session-A poll cannot mutate B", () => {

@@ -136,6 +136,42 @@ export function pruneTerminalJobIds(
 }
 
 /**
+ * Empty recovery drains a terminal id gets before it counts as result-less.
+ * A late exact result normally lands within one or two drains; an
+ * interrupted run_parallel worker or cancelled implement never produces one.
+ */
+export const RESULT_RECOVERY_DRAIN_LIMIT = 8;
+
+/** Record one empty drain per id; returns the same Map for chaining. */
+export function noteEmptyRecoveryDrain(
+  counts: Map<string, number>,
+  ids: readonly string[],
+): Map<string, number> {
+  for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * Terminal ids the poll may drop from pendingJobIds this tick.
+ *
+ * A delivered swarm_result confirms. So does an exhausted recovery drain:
+ * without that exit the poll loops terminal -> drain -> nothing -> keep
+ * pending, and Still working… holds forever for a job that will never
+ * produce a result card.
+ */
+export function confirmedTerminalJobIds(opts: {
+  terminalIds: readonly string[];
+  deliveredJobIds: ReadonlySet<string>;
+  emptyDrains: ReadonlyMap<string, number>;
+  drainLimit?: number;
+}): string[] {
+  const limit = opts.drainLimit ?? RESULT_RECOVERY_DRAIN_LIMIT;
+  return opts.terminalIds.filter(
+    (id) => opts.deliveredJobIds.has(id) || (opts.emptyDrains.get(id) ?? 0) >= limit,
+  );
+}
+
+/**
  * Terminal ids owned by this conversation that still lack a visible result.
  * These need one final durable drain before pending ids are allowed to vanish.
  */
