@@ -253,6 +253,81 @@ class MetadataReader:
                           display=self._display(row), economics=dict(kind='unavailable', reason='selected_only'))
         return result
 
+    @staticmethod
+    def _coerce_store_job_ref(value, state_id):
+        if isinstance(value, JobRef):
+            return value if value.state_id == state_id else None
+        if not isinstance(value, dict):
+            return None
+        raw = value.get('job_ref') if isinstance(value.get('job_ref'), dict) else value
+        if not isinstance(raw, dict):
+            return None
+        try:
+            version = raw.get('version', 1)
+            ref = JobRef(raw['job_id'], raw['state_id'], version=int(version),
+                         incarnation=raw.get('incarnation'))
+        except (ValueError, KeyError, TypeError):
+            return None
+        return ref if ref.state_id == state_id else None
+
+    def _session_known_job_refs(self, ctx, selection):
+        """PM refs the harness already associates with this session (local + registry)."""
+        found = {}
+
+        def remember(ref):
+            if ref is not None and ref.job_id not in found:
+                found[ref.job_id] = ref
+
+        handle = self.local_handle
+        if handle is not None:
+            rows = getattr(handle, 'rows', None)
+            if isinstance(rows, dict):
+                def collect_local():
+                    for jid in sorted(rows):
+                        row = rows[jid]
+                        if not isinstance(row, dict) or row.get('deleted'):
+                            continue
+                        if row.get('session_id') != ctx.session_id:
+                            continue
+                        canonical = row.get('canonical')
+                        if (not isinstance(canonical, dict) or canonical.get('source') != 'harness'
+                                or canonical.get('session_id') != ctx.session_id):
+                            continue
+                        remember(self._coerce_store_job_ref(canonical.get('job_ref'), selection.state_id))
+                lock = getattr(handle, 'lock', None)
+                if lock is not None:
+                    with lock:
+                        collect_local()
+                else:
+                    collect_local()
+        for entry in self._registry:
+            if isinstance(entry, dict):
+                sid = entry.get('session_id')
+                payload = entry
+            else:
+                sid = getattr(entry, 'session_id', None)
+                payload = getattr(entry, 'job_ref', None)
+                if payload is None:
+                    payload = entry
+            if sid != ctx.session_id:
+                continue
+            remember(self._coerce_store_job_ref(payload, selection.state_id))
+        return tuple(found[key] for key in sorted(found)[:50])
+
+    def _exact_owned_row(self, store, job_ref, known, ctx, status):
+        try:
+            page = store.list_job_summaries(job_ref=job_ref, **EXACT_BUDGET)
+        except Exception:
+            return None
+        if page.outcome != 'complete' or len(page.items) != 1 or page.items[0].deleted:
+            return None
+        row = page.items[0]
+        if row.job_ref != job_ref or not self._owned(row, known, ctx):
+            return None
+        if status is not None and row.status != status:
+            return None
+        return row
+
     def read_job_page(self, ctx, selection, *, mode='snapshot', cursor=None, after_revision=0, status=None):
         if (mode not in ('snapshot', 'changes') or type(after_revision) is not int or after_revision < 0
                 or (status is not None and status not in PM_STATUSES)):
@@ -281,6 +356,15 @@ class MetadataReader:
             return result
         filters = dict(session_id=ctx.session_id if ctx.scope == 'session' else None,
                        origin='marionette' if selection.source == 'cli' else None, status=status)
+        # Exact reads run before the scan so every prepended row's revision is
+        # <= the scan page revision (the client parser requires it).
+        prepended = []
+        if (mode == 'snapshot' and pm_cursor is None and ctx.scope == 'session'
+                and selection.source == 'harness' and not known.cross_project):
+            for ref in self._session_known_job_refs(ctx, selection):
+                row = self._exact_owned_row(store, ref, known, ctx, status)
+                if row is not None:
+                    prepended.append(row)
         method = store.list_job_summaries if mode == 'snapshot' else store.read_job_summary_changes
         try:
             page = method(cursor=pm_cursor, after_revision=after_revision, **filters, **PAGE_BUDGET)
@@ -296,10 +380,23 @@ class MetadataReader:
             seen = self._seen.get(key, {})
             updates = []
             uncertain = False
+            present = set()
+            for row in prepended:
+                if len(result['rows']) >= 50 or row.job_ref in present:
+                    continue
+                present.add(row.job_ref)
+                result['rows'].append(self._summary(row, ctx, selection))
+                updates.append((row.job_ref, row.revision))
             for row in page.items:
                 owned = not row.deleted and self._owned(row, known, ctx)
                 previous_owned = self._previous_owned(row, known, ctx, status)
                 if owned:
+                    if row.job_ref in present:
+                        updates.append((row.job_ref, row.revision))
+                        continue
+                    if len(result['rows']) >= 50:
+                        continue
+                    present.add(row.job_ref)
                     result['rows'].append(self._summary(row, ctx, selection))
                     updates.append((row.job_ref, row.revision))
                 elif row.job_ref in seen or previous_owned:
@@ -310,6 +407,8 @@ class MetadataReader:
             if uncertain:
                 result.update(page=_page(checkpoint=after_revision), rows=[])
                 result['missing'].append('previous_membership_unavailable')
+            elif prepended and result['page']['outcome'] in ('complete', 'partial'):
+                result['page']['scanned'] = max(result['page']['scanned'], len(result['rows']))
             if _size(result) > 65536:
                 result.update(page=_page(checkpoint=after_revision), rows=[])
                 result['missing'].append('response_budget')
