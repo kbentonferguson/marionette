@@ -73,8 +73,20 @@ export class JobMetadataStore {
   private timer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private scheduleGeneration = 0;
+  /** Last successfully adopted view; survives target/invalidate so adopt can detect an unchanged generation. */
+  private lastAdmittedView: MetadataView | null = null;
   private sessionPages = new Map<string, Pick<JobMetadataState, 'observations' | 'local' | 'headers' | 'pins'>>();
   constructor(client = new JobMetadataClient()) { this.client = client; }
+  /** Flip to target without blanking streams, observations, or detail cache. */
+  private retargetInPlace(target: MetadataTarget, reason: Extract<ViewState, { kind: 'target' }>['reason']): void {
+    this.publish({
+      ...this.state,
+      epoch: this.state.epoch + 1,
+      contextEpoch: this.state.contextEpoch + 1,
+      working: this.inFlight,
+      view: { kind: 'target', target, reason },
+    });
+  }
   private sessionPageKey(target: { repo: string; session_id: string }): string {
     return `${target.repo}\n${target.session_id}`;
   }
@@ -130,7 +142,6 @@ export class JobMetadataStore {
   };
   setTarget(target: MetadataTarget): void {
     if (this.disposed) return;
-    // Every call is a new incarnation, even when the visible IDs are equal.
     this.rememberSessionPage();
     this.stopTicks();
     const nextTarget = validateMetadataTarget(target);
@@ -138,6 +149,11 @@ export class JobMetadataStore {
     const sameIds = previous.kind !== 'idle'
       && previous.target.repo === nextTarget.repo
       && previous.target.session_id === nextTarget.session_id;
+    if (sameIds) {
+      this.retargetInPlace(nextTarget, 'not_opened');
+      return;
+    }
+    this.lastAdmittedView = null;
     const page = this.restoreSessionPage(nextTarget);
     this.publish({
       ...blank(this.state.epoch + 1, { kind: 'target', target: nextTarget, reason: 'not_opened' }),
@@ -148,7 +164,7 @@ export class JobMetadataStore {
         local: page.local,
         headers: page.headers,
         pins: page.pins,
-        startupStopped: !sameIds,
+        startupStopped: true,
       } : {}),
     });
   }
@@ -156,7 +172,12 @@ export class JobMetadataStore {
     if (this.disposed) return;
     this.rememberSessionPage();
     const old = this.state.view;
-    this.publish({ ...blank(this.state.epoch + 1, old.kind === 'idle' ? old : { kind: 'target', target: old.target, reason: 'invalidated' }), contextEpoch: this.state.contextEpoch + 1, working: this.inFlight });
+    if (old.kind === 'idle') {
+      this.publish({ ...blank(this.state.epoch + 1, old), contextEpoch: this.state.contextEpoch + 1, working: this.inFlight });
+      return;
+    }
+    if (old.kind === 'view') this.lastAdmittedView = old.view;
+    this.retargetInPlace(old.target, 'invalidated');
   };
   closeConnection(): void { this.client.close(); this.client = new JobMetadataClient(); }
   dispose(): void {
@@ -210,13 +231,20 @@ export class JobMetadataStore {
   private adopt(view: MetadataView, target: MetadataTarget): void {
     const context: MetadataContext = { ...view.context, scope: target.scope };
     const previous = this.state.view;
-    const same = previous.kind === 'view' && sameMetadataContext(previous.context, context)
-      && previous.view.local?.incarnation === view.local?.incarnation;
+    const priorView = previous.kind === 'view' ? previous.view : this.lastAdmittedView;
+    const priorContext: MetadataContext | null = previous.kind === 'view'
+      ? previous.context
+      : previous.kind === 'target' && this.lastAdmittedView
+        ? { ...this.lastAdmittedView.context, scope: previous.target.scope }
+        : null;
+    const same = priorContext !== null && priorView !== null
+      && sameMetadataContext(priorContext, context)
+      && priorView.local?.incarnation === view.local?.incarnation;
     const sameSession = previous.kind !== 'idle'
       && previous.target.repo === target.repo
       && previous.target.session_id === target.session_id;
-    const sameIncarnation = previous.kind !== 'view'
-      || previous.view.local?.incarnation === view.local?.incarnation;
+    const sameIncarnation = priorView === null
+      || priorView.local?.incarnation === view.local?.incarnation;
     const keep = !same && sameSession && sameIncarnation && (this.state.observations.length || this.state.local.observations.length)
       ? {
         observations: this.state.observations,
@@ -227,6 +255,7 @@ export class JobMetadataStore {
       }
       : {};
     const base = same ? this.state : { ...blank(this.state.epoch, { kind: 'idle' }), ...keep, contextEpoch: this.state.contextEpoch + (previous.kind === 'view' ? 1 : 0) };
+    this.lastAdmittedView = view;
     this.publish({ ...base, error: this.sourceCapture?.key === this.captureKey(view) ? this.sourceCapture.error : null, working: true, view: { kind: 'view', target, context, view, refresh: 'idle' },
       streams: same ? base.streams : metadataStreams(view, target.scope).map(initialMetadataStream) });
   }
